@@ -1,0 +1,17 @@
+{
+  "guest": {
+    "arch": "aarch64",
+    "address": 65536,
+    "code_hex": "20 00 02 8b",
+    "instruction_count": 1,
+    "def_regs": ["x0"]
+  },
+  "host": {
+    "arch": "x86-64",
+    "address": 134512640,
+    "code_hex": "48 8d 04 11",
+    "instruction_count": 1,
+    "def_regs": ["rax"]
+  },
+  "init_map": [["x1", "rcx"], ["x2", "rdx"]]
+}

@@ -1,0 +1,61 @@
+# Architecture
+
+The refactored project treats rule learning as a pipeline of small, testable
+components.
+
+```text
+Compiler Driver
+  -> Source Mapper
+  -> Candidate Builder
+  -> Semantic Verifier
+  -> Rule Generalizer
+  -> Rule Store
+  -> Evaluation Harness
+```
+
+## Semantic Verifier
+
+The verifier is the first component being rebuilt. The initial target pair is
+AArch64 integer code to x86-64 integer code, because that can be evaluated
+against an existing complete rule table. It uses:
+
+- angr for shellcode loading, lifting, and symbolic execution
+- Claripy for symbolic bit-vectors and SMT queries
+- Z3 through Claripy's backend
+
+The equivalence check is formulated by contradiction:
+
+```text
+If output_guest != output_host is UNSAT, the checked output is equivalent.
+If it is SAT, the model is a counterexample.
+```
+
+The current implementation only checks register outputs. Memory, branches, and
+flags will be added as separate checks so failures can be classified cleanly.
+
+## Request Boundary
+
+Verifier input is intentionally JSON-shaped:
+
+```json
+{
+  "guest": {
+    "arch": "aarch64",
+    "address": 65536,
+    "code_hex": "20 00 02 8b",
+    "instruction_count": 1,
+    "def_regs": ["x0"]
+  },
+  "host": {
+    "arch": "x86-64",
+    "address": 134512640,
+    "code_hex": "48 8d 04 11",
+    "instruction_count": 1,
+    "def_regs": ["rax"]
+  },
+  "init_map": [["x1", "rcx"], ["x2", "rdx"]]
+}
+```
+
+This boundary should remain stable as candidate extraction and rule
+generalization are rebuilt around it.
