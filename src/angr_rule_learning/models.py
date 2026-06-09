@@ -28,7 +28,9 @@ class CodeFragment:
     def __post_init__(self) -> None:
         object.__setattr__(self, "arch", self.arch.strip().lower())
         object.__setattr__(self, "code_hex", _normalize_hex(self.code_hex))
-        object.__setattr__(self, "def_regs", tuple(_normalize_reg(reg) for reg in self.def_regs))
+        object.__setattr__(
+            self, "def_regs", tuple(_normalize_reg(reg) for reg in self.def_regs)
+        )
         if self.instruction_count < 1:
             raise ValueError("instruction_count must be positive")
 
@@ -47,7 +49,10 @@ class VerificationRequest:
         object.__setattr__(
             self,
             "init_map",
-            tuple((_normalize_reg(guest), _normalize_reg(host)) for guest, host in self.init_map),
+            tuple(
+                (_normalize_reg(guest), _normalize_reg(host))
+                for guest, host in self.init_map
+            ),
         )
         if len(self.guest.def_regs) != len(self.host.def_regs):
             raise ValueError("guest and host def_regs must have the same length")

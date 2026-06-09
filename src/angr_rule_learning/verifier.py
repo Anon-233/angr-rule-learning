@@ -10,7 +10,11 @@ logging.getLogger("angr.state_plugins.unicorn_engine").setLevel(logging.CRITICAL
 import angr
 import claripy
 
-from angr_rule_learning.models import RegisterCheck, VerificationRequest, VerificationResult
+from angr_rule_learning.models import (
+    RegisterCheck,
+    VerificationRequest,
+    VerificationResult,
+)
 
 
 ARCH_ALIASES = {
@@ -33,12 +37,19 @@ class ExecutedFragment:
 
 class AngrSemanticVerifier:
     def verify(self, request: VerificationRequest) -> VerificationResult:
-        guest_state = self._make_state(request.guest.arch, request.guest.code_bytes, request.guest.address)
-        host_state = self._make_state(request.host.arch, request.host.code_bytes, request.host.address)
+        guest_state = self._make_state(
+            request.guest.arch, request.guest.code_bytes, request.guest.address
+        )
+        host_state = self._make_state(
+            request.host.arch, request.host.code_bytes, request.host.address
+        )
 
         symbols: dict[str, claripy.ast.BV] = {}
         for guest_reg, host_reg in request.init_map:
-            width = max(self._reg_width(guest_state, guest_reg), self._reg_width(host_state, host_reg))
+            width = max(
+                self._reg_width(guest_state, guest_reg),
+                self._reg_width(host_state, host_reg),
+            )
             symbol = claripy.BVS(f"init_{guest_reg}_{host_reg}", width)
             symbols[guest_reg] = symbol
             symbols[host_reg] = symbol
@@ -61,14 +72,18 @@ class AngrSemanticVerifier:
         )
 
         register_checks = []
-        for guest_reg, host_reg in zip(request.guest.def_regs, request.host.def_regs, strict=True):
+        for guest_reg, host_reg in zip(
+            request.guest.def_regs, request.host.def_regs, strict=True
+        ):
             guest_value = self._read_reg(guest_final.state, guest_reg)
             host_value = self._read_reg(host_final.state, host_reg)
             guest_value, host_value = self._align_widths(guest_value, host_value)
             diff = guest_value != host_value
             solver = self._solver_for(guest_final.state, host_final.state)
             if solver.satisfiable(extra_constraints=[diff]):
-                counterexample = self._counterexample(guest_final.state, host_final.state, diff, symbols)
+                counterexample = self._counterexample(
+                    guest_final.state, host_final.state, diff, symbols
+                )
                 register_checks.append(RegisterCheck(guest_reg, host_reg, "fail"))
                 return VerificationResult(tuple(register_checks), counterexample)
             register_checks.append(RegisterCheck(guest_reg, host_reg, "pass"))
@@ -76,7 +91,9 @@ class AngrSemanticVerifier:
         return VerificationResult(tuple(register_checks))
 
     def _make_state(self, arch: str, code: bytes, address: int) -> angr.SimState:
-        project = angr.load_shellcode(code, arch=self._angr_arch(arch), load_address=address)
+        project = angr.load_shellcode(
+            code, arch=self._angr_arch(arch), load_address=address
+        )
         return project.factory.blank_state(addr=address)
 
     def _execute(
@@ -87,8 +104,12 @@ class AngrSemanticVerifier:
         instruction_count: int,
         state: angr.SimState,
     ) -> ExecutedFragment:
-        project = angr.load_shellcode(code, arch=self._angr_arch(arch), load_address=address)
-        successors = project.factory.successors(state, num_inst=instruction_count).successors
+        project = angr.load_shellcode(
+            code, arch=self._angr_arch(arch), load_address=address
+        )
+        successors = project.factory.successors(
+            state, num_inst=instruction_count
+        ).successors
         if len(successors) != 1:
             raise ValueError(f"expected exactly one successor, got {len(successors)}")
         return ExecutedFragment(successors[0])
@@ -127,7 +148,9 @@ class AngrSemanticVerifier:
         width = max(left.size(), right.size())
         return self._fit_width(left, width), self._fit_width(right, width)
 
-    def _solver_for(self, guest_state: angr.SimState, host_state: angr.SimState) -> claripy.Solver:
+    def _solver_for(
+        self, guest_state: angr.SimState, host_state: angr.SimState
+    ) -> claripy.Solver:
         solver = claripy.Solver()
         if guest_state.solver.constraints:
             solver.add(*guest_state.solver.constraints)

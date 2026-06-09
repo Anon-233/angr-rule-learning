@@ -6,7 +6,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from angr_rule_learning.models import CodeFragment, VerificationRequest, VerificationResult
+from angr_rule_learning.models import (
+    CodeFragment,
+    VerificationRequest,
+    VerificationResult,
+)
 from angr_rule_learning.verifier import AngrSemanticVerifier
 
 
@@ -20,7 +24,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="angr-rule-learning")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    verify_parser = subparsers.add_parser("verify", help="verify one candidate mapping JSON file")
+    verify_parser = subparsers.add_parser(
+        "verify", help="verify one candidate mapping JSON file"
+    )
     verify_parser.add_argument("request", type=Path)
 
     args = parser.parse_args(argv)
