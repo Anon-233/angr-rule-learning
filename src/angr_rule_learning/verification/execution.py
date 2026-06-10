@@ -18,6 +18,15 @@ class ExecutedFragment:
     state: angr.SimState
 
 
+@dataclass(frozen=True)
+class FragmentSuccessors:
+    successors: tuple[angr.SimState, ...]
+
+    @property
+    def count(self) -> int:
+        return len(self.successors)
+
+
 class FragmentExecutor:
     def make_state(self, fragment: CodeFragment) -> angr.SimState:
         project = angr.load_shellcode(
@@ -28,12 +37,18 @@ class FragmentExecutor:
         return project.factory.blank_state(addr=fragment.address)
 
     def execute(self, fragment: CodeFragment, state: angr.SimState) -> ExecutedFragment:
+        result = self.successors(fragment, state)
+        if result.count != 1:
+            raise ValueError(f"expected exactly one successor, got {result.count}")
+        return ExecutedFragment(result.successors[0])
+
+    def successors(
+        self, fragment: CodeFragment, state: angr.SimState
+    ) -> FragmentSuccessors:
         successors = state.project.factory.successors(
             state, num_inst=fragment.instruction_count
         ).successors
-        if len(successors) != 1:
-            raise ValueError(f"expected exactly one successor, got {len(successors)}")
-        return ExecutedFragment(successors[0])
+        return FragmentSuccessors(tuple(successors))
 
 
 def read_reg(state: angr.SimState, reg: str):
