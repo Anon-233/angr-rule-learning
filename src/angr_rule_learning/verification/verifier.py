@@ -3,6 +3,7 @@ from __future__ import annotations
 import claripy
 
 from angr_rule_learning.verification.checks import check_register_pair
+from angr_rule_learning.verification.flags import check_flag_pair
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.context import CheckContext
 from angr_rule_learning.verification.config import VerificationConfig
@@ -79,13 +80,6 @@ class SemanticVerifier:
             return _error(candidate.candidate_id, "verifier_internal_error", str(exc))
 
     def _verify(self, candidate: VerificationCandidate) -> VerificationReport:
-        if candidate.output_flags:
-            return _unsupported(
-                candidate.candidate_id,
-                "flag",
-                "flag_outputs",
-            )
-
         if candidate.preconditions:
             return _unsupported(
                 candidate.candidate_id,
@@ -162,6 +156,16 @@ class SemanticVerifier:
             return VerificationReport(
                 candidate.candidate_id, _overall_status(checks), checks=tuple(checks)
             )
+
+        for guest_flag, host_flag in candidate.output_flags:
+            check = check_flag_pair(context, guest_flag, host_flag)
+            checks.append(check)
+            if check.status != "pass" and self.config.fail_fast:
+                return VerificationReport(
+                    candidate.candidate_id,
+                    _overall_status(checks),
+                    checks=tuple(checks),
+                )
 
         for guest_reg, host_reg in candidate.output_registers:
             check = check_register_pair(context, guest_reg, host_reg)
