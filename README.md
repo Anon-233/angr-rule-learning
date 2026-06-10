@@ -22,16 +22,20 @@ Implemented:
 - register output equivalence checks
 - memory slot initialization and load/store event checks
 - `must_alias` memory slots and `may_alias` unsupported reporting
+- address binding expressions (`reg`, `reg + const`, `reg - const`)
+- four-state verifier reports: `pass`, `fail`, `unsupported`, `error`
+- explicit flag output checks for the first stable flag subset
+- terminal conditional branch guard checks
+- stronger memory SMT checks with shared relation checker
 - JSON/JSONL request/result boundary for future pipeline integration
 - batch CLI wrapper around the Python verifier API
 
 Not implemented yet:
 
 - precondition solving
-- branch guard equivalence
-- flags / condition code mapping
 - candidate extraction from compiler debug information
 - rule generalization and rule store
+- coverage evaluation against the complete AArch64 -> x86-64 integer rule table
 
 ## Usage
 

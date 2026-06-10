@@ -30,9 +30,14 @@ If output_guest != output_host is UNSAT, the checked output is equivalent.
 If it is SAT, the model is a counterexample.
 ```
 
-The current implementation checks register outputs plus simple memory load/store
-events for declared memory slots. Branch guards, flags, and precondition solving
-remain separate future checks so failures can be classified cleanly.
+The verifier checks semantic surfaces rather than instruction families:
+register outputs, memory events, explicit flags, and terminal branch guards.
+Instruction semantics come from angr; the verifier compares observed Claripy
+expressions through shared SMT relation checks.
+
+Reports use four top-level statuses: `pass`, `fail`, `unsupported`, and `error`.
+Each check result includes stable machine-readable reasons, counterexamples, and
+optional JSON-shaped metadata for downstream diagnostics.
 
 ## Request Boundary
 
