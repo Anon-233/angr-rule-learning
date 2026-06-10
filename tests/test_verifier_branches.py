@@ -107,3 +107,39 @@ def test_verifier_branch_with_output_flags_checks_explicitly() -> None:
     assert has_flag_check, (
         "branch candidate with output_flags must have explicit flag check"
     )
+
+
+X86_64_JMP_CMP_JE = "eb 04 48 39 c8 74 02"
+AARCH64_B_CMP_BEQ = "08 00 00 14 1f 00 01 eb 40 00 00 54"
+
+
+def test_verifier_reports_non_terminal_x86_jmp_as_unsupported() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="non-term-jmp",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_CMP_X0_X1_B_EQ, 2),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_JMP_CMP_JE, 3),
+        input_registers=(("x0", "rax"), ("x1", "rcx")),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported"
+    assert any(
+        check.reason == "non_terminal_branch_unsupported" for check in report.checks
+    )
+
+
+def test_verifier_reports_non_terminal_aarch64_b_as_unsupported() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="non-term-b",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_B_CMP_BEQ, 3),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_CMP_RAX_RCX_JE, 2),
+        input_registers=(("x0", "rax"), ("x1", "rcx")),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported"
+    assert any(
+        check.reason == "non_terminal_branch_unsupported" for check in report.checks
+    )

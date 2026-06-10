@@ -13,20 +13,33 @@ CONDITIONAL_BRANCH_MNEMONICS = {
     "x86-64": ("j",),
 }
 
+UNCONDITIONAL_CONTROL_FLOW_MNEMONICS = {
+    "aarch64": ("b", "br", "blr", "ret", "eret"),
+    "x86-64": ("jmp", "ret", "call", "syscall", "int"),
+}
+
 
 def has_non_terminal_branch(fragment: CodeFragment, state: object) -> bool:
     insns = _fragment_insns(fragment, state)
     if len(insns) < 2:
         return False
-    return any(
-        _is_conditional_branch(fragment.arch, insn.mnemonic) for insn in insns[:-1]
-    )
+    return any(_is_control_flow(fragment.arch, insn.mnemonic) for insn in insns[:-1])
 
 
 def _fragment_insns(fragment: CodeFragment, state: object) -> tuple[object, ...]:
     return tuple(
         state.project.arch.capstone.disasm(fragment.code_bytes, fragment.address)
     )
+
+
+def _is_control_flow(arch: str, mnemonic: str) -> bool:
+    normalized_arch = arch.strip().lower()
+    normalized_mnemonic = mnemonic.strip().lower()
+    if normalized_mnemonic in UNCONDITIONAL_CONTROL_FLOW_MNEMONICS.get(
+        normalized_arch, ()
+    ):
+        return True
+    return _is_conditional_branch(arch, mnemonic)
 
 
 def _is_conditional_branch(arch: str, mnemonic: str) -> bool:
