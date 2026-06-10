@@ -229,6 +229,7 @@ def test_report_to_json_is_stable() -> None:
                 "host": "mem0",
                 "reason": "memory_read_value_mismatch",
                 "counterexample": {"x1": 1},
+                "metadata": {},
             }
         ],
         "unsupported_features": [],

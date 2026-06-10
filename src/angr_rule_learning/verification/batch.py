@@ -14,12 +14,19 @@ class BatchSummary:
     total: int
     statuses: dict[str, int]
     failure_reasons: dict[str, int]
+    by_kind: dict[str, dict[str, int]]
+    top_reasons: dict[str, int]
 
     def to_json(self) -> dict[str, object]:
         return {
             "total": self.total,
             "statuses": dict(sorted(self.statuses.items())),
             "failure_reasons": dict(sorted(self.failure_reasons.items())),
+            "by_kind": {
+                kind: dict(sorted(statuses.items()))
+                for kind, statuses in sorted(self.by_kind.items())
+            },
+            "top_reasons": dict(sorted(self.top_reasons.items())),
         }
 
 
@@ -37,10 +44,15 @@ class BatchVerifier:
         reports = list(reports)
         statuses = Counter(report.status for report in reports)
         failure_reasons: Counter[str] = Counter()
+        by_kind: dict[str, Counter[str]] = {}
         for report in reports:
             failure_reasons.update(report.failure_reasons)
+            for check in report.checks:
+                by_kind.setdefault(check.kind, Counter()).update((check.status,))
         return BatchSummary(
             total=len(reports),
             statuses=dict(statuses),
             failure_reasons=dict(failure_reasons),
+            by_kind={kind: dict(counter) for kind, counter in by_kind.items()},
+            top_reasons=dict(failure_reasons),
         )

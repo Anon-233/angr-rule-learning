@@ -138,6 +138,8 @@ def test_batch_verifier_summarizes_statuses_and_failure_reasons() -> None:
         "total": 3,
         "statuses": {"fail": 1, "pass": 1, "unsupported": 1},
         "failure_reasons": {"memory": 1, "register_mismatch": 1},
+        "by_kind": {"register": {"fail": 1}},
+        "top_reasons": {"memory": 1, "register_mismatch": 1},
     }
 
 
@@ -167,3 +169,4 @@ def test_cli_writes_report_jsonl_and_summary_json(tmp_path) -> None:
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["total"] == 1
     assert summary["statuses"] == {"pass": 1}
+    assert summary["by_kind"]["register"] == {"pass": 1}

@@ -6,6 +6,14 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 
+REPORT_STATUSES = {"pass", "fail", "unsupported", "error"}
+CHECK_STATUSES = REPORT_STATUSES
+
+
+def _freeze_mapping(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    return MappingProxyType(dict(value))
+
+
 @dataclass(frozen=True)
 class CheckResult:
     kind: str
@@ -14,11 +22,13 @@ class CheckResult:
     host: str
     reason: str = ""
     counterexample: Mapping[str, int] = field(default_factory=dict)
+    metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self, "counterexample", MappingProxyType(dict(self.counterexample))
-        )
+        if self.status not in CHECK_STATUSES:
+            raise ValueError(f"unsupported check status: {self.status}")
+        object.__setattr__(self, "counterexample", _freeze_mapping(self.counterexample))
+        object.__setattr__(self, "metadata", _freeze_mapping(self.metadata))
 
 
 @dataclass(frozen=True)
@@ -30,6 +40,8 @@ class VerificationReport:
     events: tuple[Mapping[str, Any], ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
+        if self.status not in REPORT_STATUSES:
+            raise ValueError(f"unsupported report status: {self.status}")
         object.__setattr__(self, "checks", tuple(self.checks))
         object.__setattr__(
             self,
@@ -39,7 +51,7 @@ class VerificationReport:
         object.__setattr__(
             self,
             "events",
-            tuple(MappingProxyType(dict(event)) for event in self.events),
+            tuple(_freeze_mapping(event) for event in self.events),
         )
 
     @property

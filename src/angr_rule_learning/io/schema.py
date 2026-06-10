@@ -111,6 +111,7 @@ def report_to_json(report: VerificationReport) -> dict[str, Any]:
                 "counterexample": _json_value(
                     check.counterexample, f"checks[{index}].counterexample"
                 ),
+                "metadata": _json_value(check.metadata, f"checks[{index}].metadata"),
             }
             for index, check in enumerate(report.checks)
         ],
