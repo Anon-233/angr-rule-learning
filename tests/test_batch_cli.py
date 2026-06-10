@@ -128,7 +128,12 @@ def test_batch_verifier_summarizes_statuses_and_failure_reasons() -> None:
             ),
         ),
         VerificationReport(
-            "unsupported0", "unsupported", unsupported_features=("memory",)
+            "unsupported0",
+            "unsupported",
+            checks=(
+                CheckResult("memory", "unsupported", "mem", "mem", reason="memory"),
+            ),
+            unsupported_features=("memory",),
         ),
     ]
 
@@ -138,7 +143,7 @@ def test_batch_verifier_summarizes_statuses_and_failure_reasons() -> None:
         "total": 3,
         "statuses": {"fail": 1, "pass": 1, "unsupported": 1},
         "failure_reasons": {"memory": 1, "register_mismatch": 1},
-        "by_kind": {"register": {"fail": 1}},
+        "by_kind": {"memory": {"unsupported": 1}, "register": {"fail": 1}},
         "top_reasons": {"memory": 1, "register_mismatch": 1},
     }
 

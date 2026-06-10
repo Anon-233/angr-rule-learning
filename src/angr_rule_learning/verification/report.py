@@ -62,6 +62,4 @@ class VerificationReport:
 
     @property
     def failure_reasons(self) -> dict[str, int]:
-        reasons = Counter(check.reason for check in self.checks if check.reason)
-        reasons.update(self.unsupported_features)
-        return dict(reasons)
+        return dict(Counter(check.reason for check in self.checks if check.reason))

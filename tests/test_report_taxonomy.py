@@ -87,3 +87,12 @@ def test_batch_summary_counts_by_kind_and_top_reasons() -> None:
         "register_mismatch": 1,
         "unsupported_flag": 1,
     }
+
+
+def test_failure_reasons_does_not_double_count_unsupported() -> None:
+    from angr_rule_learning.verification.verifier import _unsupported
+
+    report = _unsupported("test", "execution", "preconditions")
+
+    assert report.unsupported_features == ("preconditions",)
+    assert report.failure_reasons == {"preconditions": 1}
