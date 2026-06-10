@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from angr_rule_learning.verification.candidate import (
+    AliasDeclaration,
     CodeFragment,
     MemoryAccessExpectation,
     MemoryBinding,
@@ -58,6 +59,29 @@ def test_verifier_accepts_equivalent_store() -> None:
             slots=(MemorySlot("mem0", 4),),
             bindings=(MemoryBinding("mem0", "x1", "rcx", "write"),),
             accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.equivalent
+    assert report.status == "pass"
+
+
+def test_verifier_accepts_must_alias_load_slots() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="must-alias-load",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_LDR_W0_X1, 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_EAX_RCX_PTR, 1),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4), MemorySlot("mem1", 4)),
+            bindings=(
+                MemoryBinding("mem0", "x1", "rdx", "read"),
+                MemoryBinding("mem1", "x2", "rcx", "read"),
+            ),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+            alias=(AliasDeclaration(("mem0", "mem1"), "must_alias"),),
         ),
     )
 

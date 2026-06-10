@@ -20,11 +20,14 @@ Implemented:
 - AArch64 and x86-64 shellcode fragments
 - register initialization mapping
 - register output equivalence checks
-- JSON request/result boundary for future pipeline integration
+- memory slot initialization and load/store event checks
+- `must_alias` memory slots and `may_alias` unsupported reporting
+- JSON/JSONL request/result boundary for future pipeline integration
+- batch CLI wrapper around the Python verifier API
 
 Not implemented yet:
 
-- memory mapping and load/store equivalence
+- precondition solving
 - branch guard equivalence
 - flags / condition code mapping
 - candidate extraction from compiler debug information

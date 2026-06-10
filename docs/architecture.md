@@ -30,8 +30,9 @@ If output_guest != output_host is UNSAT, the checked output is equivalent.
 If it is SAT, the model is a counterexample.
 ```
 
-The current implementation only checks register outputs. Memory, branches, and
-flags will be added as separate checks so failures can be classified cleanly.
+The current implementation checks register outputs plus simple memory load/store
+events for declared memory slots. Branch guards, flags, and precondition solving
+remain separate future checks so failures can be classified cleanly.
 
 ## Request Boundary
 
@@ -39,21 +40,37 @@ Verifier input is intentionally JSON-shaped:
 
 ```json
 {
+  "candidate_id": "aarch64-add-x86-64-lea",
   "guest": {
     "arch": "aarch64",
     "address": 65536,
     "code_hex": "20 00 02 8b",
-    "instruction_count": 1,
-    "def_regs": ["x0"]
+    "instruction_count": 1
   },
   "host": {
     "arch": "x86-64",
     "address": 134512640,
     "code_hex": "48 8d 04 11",
-    "instruction_count": 1,
-    "def_regs": ["rax"]
+    "instruction_count": 1
   },
-  "init_map": [["x1", "rcx"], ["x2", "rdx"]]
+  "inputs": {
+    "registers": [["x1", "rcx"], ["x2", "rdx"]]
+  },
+  "outputs": {
+    "registers": [["x0", "rax"]],
+    "flags": []
+  },
+  "memory": {
+    "slots": [],
+    "bindings": [],
+    "accesses": [],
+    "alias": []
+  },
+  "preconditions": [],
+  "clobbers": {
+    "guest": [],
+    "host": []
+  }
 }
 ```
 

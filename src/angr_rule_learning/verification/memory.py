@@ -38,12 +38,24 @@ class MemoryInitializer:
         guest_state: angr.SimState,
         host_state: angr.SimState,
     ) -> MemoryLayout:
+        roots = _must_alias_roots(candidate)
         bases: dict[str, int] = {}
-        for index, slot in enumerate(candidate.memory.slots):
-            base = self._config.memory_base + index * self._config.memory_stride
+        base_by_root: dict[str, int] = {}
+        size_by_root: dict[str, int] = {}
+        for slot in candidate.memory.slots:
+            root = roots[slot.name]
+            if root not in base_by_root:
+                base_by_root[root] = (
+                    self._config.memory_base
+                    + len(base_by_root) * self._config.memory_stride
+                )
+            base = base_by_root[root]
             bases[slot.name] = base
+            size_by_root[root] = max(size_by_root.get(root, 0), slot.size)
+
+        for root, base in base_by_root.items():
             content = claripy.BVS(
-                f"{candidate.candidate_id}_{slot.name}_init", slot.size * 8
+                f"{candidate.candidate_id}_{root}_init", size_by_root[root] * 8
             )
             guest_state.memory.store(
                 base, content, endness=guest_state.arch.memory_endness
@@ -112,3 +124,25 @@ class MemoryEventRecorder:
             )
 
         return record
+
+
+def _must_alias_roots(candidate: VerificationCandidate) -> dict[str, str]:
+    parents = {slot.name: slot.name for slot in candidate.memory.slots}
+
+    def find(slot: str) -> str:
+        parent = parents[slot]
+        if parent != slot:
+            parents[slot] = find(parent)
+        return parents[slot]
+
+    def union(left: str, right: str) -> None:
+        parents[find(right)] = find(left)
+
+    for alias in candidate.memory.alias:
+        if alias.relation != "must_alias":
+            continue
+        root = alias.slots[0]
+        for slot in alias.slots[1:]:
+            union(root, slot)
+
+    return {slot: find(slot) for slot in parents}

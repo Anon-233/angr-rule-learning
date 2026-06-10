@@ -1,83 +1,95 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides stable guidance for AI coding agents working in this
+repository. It should describe durable engineering rules, not the current
+implementation inventory. Feature status, package maps, and task progress belong
+in README files, design docs, plans, or commit history.
 
-## Commands
+## Project Direction
+
+This repository rebuilds a binary translation rule-learning pipeline around an
+angr-backed semantic verifier. The verifier compares short guest and host
+machine-code fragments by constructing shared symbolic inputs, executing both
+fragments, and using SMT queries to check whether observable outputs can differ.
+
+Keep the project API-first:
+
+- Pipeline code should call typed Python APIs directly.
+- The CLI is an external convenience wrapper, not the core integration surface.
+- JSON/JSONL is an external boundary for tools and batch data exchange.
+- Verifier internals should work with typed models, not raw JSON dictionaries.
+
+## Architecture Principles
+
+- Keep schema parsing and report serialization isolated under `io/`.
+- Keep execution, memory modeling, SMT checks, and batch aggregation separated by
+  responsibility.
+- Prefer small, explicit dataclasses and focused functions over broad dynamic
+  dictionaries.
+- Treat unsupported semantic features explicitly. Return or report
+  `unsupported` rather than silently ignoring accepted input fields.
+- Do not add legacy schema compatibility unless it is explicitly requested. If a
+  legacy importer becomes necessary, implement it as a separate converter that
+  emits the current typed model.
+- Preserve strict validation at external boundaries. Unknown external fields
+  should fail loudly.
+- Keep failure reasons stable and machine-readable; downstream rule coverage and
+  quality analysis depend on them.
+
+## Verification Discipline
+
+- Use test-driven development for behavior changes and bug fixes: write the
+  failing regression test first, confirm it fails for the right reason, then
+  implement the minimal fix.
+- Run formatting after Python edits:
 
 ```bash
-# Run all tests
-uv run pytest
-
-# Run a single test file
-uv run pytest tests/test_verifier_registers.py -v
-
-# Format and lint
 uv run ruff format
+```
+
+- Run lint and tests before claiming work is complete:
+
+```bash
 uv run ruff check
-
-# Run the verifier CLI against a JSONL batch
-uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl --output report.jsonl --summary summary.json
+uv run pytest
 ```
 
-## Architecture
+- When changing CLI behavior, run an end-to-end CLI smoke test as well as the
+  Python test suite.
+- Treat third-party Python deprecation warnings separately from project
+  failures, but do not ignore project warnings or stderr noise from normal CLI
+  usage.
+- If a test passes immediately after being added, verify that it actually
+  exercises the intended missing behavior.
 
-This is a binary translation rule learning pipeline. The first milestone is an **angr-backed semantic verifier** that checks whether an AArch64 machine-code fragment is semantically equivalent to an x86-64 fragment. It injects shared symbolic inputs with Claripy, executes both fragments with angr, and proves output equivalence by contradiction: if `guest_output != host_output` is UNSAT, the outputs are equivalent; if SAT, the model is a counterexample.
+## Code Style
 
-### Package layout
+- Follow existing project structure and naming before introducing new
+  abstractions.
+- Keep JSON handling centralized; do not scatter ad hoc JSON parsing or
+  serialization across verifier logic.
+- Prefer structured APIs and Claripy/angr primitives over string parsing for
+  symbolic values, expressions, and machine state.
+- Keep changes scoped to the current task. Avoid unrelated refactors in the same
+  commit unless they are required to make the task correct.
+- Use comments sparingly, only where they clarify non-obvious verifier or SMT
+  behavior.
+- Do not commit generated files such as `__pycache__`, `.pyc`, coverage output,
+  or virtual-environment contents.
 
-```
-src/angr_rule_learning/
-  __init__.py          # re-exports core public API (SemanticVerifier, BatchVerifier, etc.)
-  cli.py               # thin argparse wrapper → readers → BatchVerifier → writers
+## Documentation Rules
 
-  verification/        # core verifier logic (the "API-first" layer)
-    candidate.py       # typed dataclasses: VerificationCandidate, CodeFragment, MemorySpec, etc.
-    report.py          # typed dataclasses: VerificationReport, CheckResult
-    verifier.py        # SemanticVerifier — orchestrates execution + checks
-    batch.py           # BatchVerifier + BatchSummary aggregation
-    execution.py       # FragmentExecutor — angr shellcode loading, state creation, stepping
-    checks.py          # check_register_pair — Claripy SMT equivalence queries
-    config.py          # VerificationConfig — tunables (memory base, max successors)
-    errors.py          # VerificationError exception
+- Keep this file stable and policy-oriented.
+- Record feature status and examples in README or design documents, not here.
+- Update docs when public schemas, CLI usage, or verifier semantics change.
+- Do not leave examples that use rejected legacy fields.
+- Prefer documenting semantic contracts and invariants over listing every file
+  in the current package layout.
 
-  io/                  # external JSON/JSONL boundary only
-    schema.py          # candidate_from_json(), report_to_json() — strict field validation
-    readers.py         # read_candidates(path) — JSON, JSONL, or directory of JSON files
-    writers.py         # write_reports_jsonl(), write_summary_json()
+## Git Hygiene
 
-  arch/
-    registry.py        # angr_arch_name() — maps user-facing arch strings to angr names
-
-  smt/
-    solver.py          # fit_width, align_widths, merged_solver — Claripy helpers
-```
-
-**Legacy modules** (`models.py`, `verifier.py` at the package root) predate the refactored layout and use a different schema (`init_map` / `def_regs`). New code should use `verification.candidate.VerificationCandidate` and the `io.schema` strict schema, which rejects legacy fields like `init_map`.
-
-### Data flow
-
-1. External JSON/JSONL → `io/readers.py` → `io/schema.py:candidate_from_json()` → `VerificationCandidate`
-2. `BatchVerifier.verify_many()` calls `SemanticVerifier.verify()` per candidate
-3. `SemanticVerifier.verify()`:
-   - Rejects unsupported features early (flag outputs, `may_alias`)
-   - Creates angr states via `FragmentExecutor.make_state()`
-   - Initializes shared symbolic input registers (Claripy BVS)
-   - Executes both fragments via `FragmentExecutor.execute()` (expects exactly one successor)
-   - Runs relational checks (currently: `check_register_pair` — width-aligned, contradiction-based)
-   - Short-circuits on first failing check
-   - Returns a `VerificationReport` with status `pass`, `fail`, or `unsupported`
-4. `io/writers.py` serializes reports to JSONL and summary to JSON
-
-### Key design rules
-
-- **JSON is an external boundary.** Pipeline code should construct `VerificationCandidate` objects directly and call `SemanticVerifier.verify()`, not shell out to the CLI.
-- **The schema is strict.** `io/schema.py` rejects unknown fields — no silent acceptance of legacy keys.
-- **The verifier checks one successor path only.** Multi-successor fragments return `unsupported` with reason `multi_successor_unsupported`.
-- **Register widths are normalized.** Guest and host registers may differ in width (e.g., `w0` vs `eax`); the SMT layer zero-extends to the wider width before comparison.
-- **Batch summary aggregates** status counts and failure reasons via `collections.Counter`.
-
-### What's implemented vs. planned
-
-Implemented: register output equivalence, memory model types (slots/bindings/accesses/alias), JSON/JSONL I/O, batch CLI, strict schema validation.
-
-Not yet implemented: memory load/store event recording and checks, flag/condition-code equivalence, branch guard equivalence, candidate extraction from compiler debug info, rule generalization.
+- Work on feature branches for implementation work.
+- Keep commits focused and use imperative commit messages.
+- Do not rewrite or revert unrelated user changes.
+- Before committing, check the worktree and review the diff for accidental
+  generated files or unrelated edits.

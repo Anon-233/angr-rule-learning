@@ -36,6 +36,13 @@ class SemanticVerifier:
                 unsupported_features=("flag_outputs",),
             )
 
+        if candidate.preconditions:
+            return VerificationReport(
+                candidate.candidate_id,
+                "unsupported",
+                unsupported_features=("preconditions",),
+            )
+
         if any(alias.relation == "may_alias" for alias in candidate.memory.alias):
             return VerificationReport(
                 candidate.candidate_id,

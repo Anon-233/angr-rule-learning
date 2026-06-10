@@ -9,8 +9,8 @@ from angr_rule_learning.arch.registry import angr_arch_name
 from angr_rule_learning.smt.solver import fit_width
 from angr_rule_learning.verification.candidate import CodeFragment
 
-
 logging.getLogger("angr.engines.unicorn").setLevel(logging.ERROR)
+logging.getLogger("angr.state_plugins.unicorn_engine").setLevel(logging.CRITICAL)
 
 
 @dataclass(frozen=True)
