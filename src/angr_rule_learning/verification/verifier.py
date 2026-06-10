@@ -166,6 +166,42 @@ class SemanticVerifier:
         is_branch = guest_successors.count == 2 or host_successors.count == 2
 
         if is_branch:
+            guest_post = guest_successors.successors[0]
+            host_post = host_successors.successors[0]
+
+            branch_context = CheckContext(
+                candidate=candidate,
+                guest_state=guest_post,
+                host_state=host_post,
+                symbols=symbols,
+                memory_layout=layout,
+                memory_events=tuple(recorder.events),
+            )
+
+            checks: list[CheckResult] = []
+
+            memory_checks = check_memory_events(branch_context)
+            checks.extend(memory_checks)
+            if (
+                any(check.status != "pass" for check in memory_checks)
+                and self.config.fail_fast
+            ):
+                return VerificationReport(
+                    candidate.candidate_id,
+                    _overall_status(checks),
+                    checks=tuple(checks),
+                )
+
+            for guest_flag, host_flag in candidate.output_flags:
+                check = check_flag_pair(branch_context, guest_flag, host_flag)
+                checks.append(check)
+                if check.status != "pass" and self.config.fail_fast:
+                    return VerificationReport(
+                        candidate.candidate_id,
+                        _overall_status(checks),
+                        checks=tuple(checks),
+                    )
+
             if guest_successors.count == 2 and host_successors.count == 2:
                 pre_context = CheckContext(
                     candidate=candidate,
@@ -191,7 +227,6 @@ class SemanticVerifier:
                     reason="branch_shape_unsupported",
                 )
 
-            checks: list[CheckResult] = []
             if branch_check is not None:
                 checks.append(branch_check)
                 if branch_check.status != "pass" and self.config.fail_fast:
@@ -210,11 +245,6 @@ class SemanticVerifier:
                         "registers",
                         reason="branch_register_outputs_unsupported",
                     )
-                )
-                return VerificationReport(
-                    candidate.candidate_id,
-                    _overall_status(checks),
-                    checks=tuple(checks),
                 )
 
             return VerificationReport(
