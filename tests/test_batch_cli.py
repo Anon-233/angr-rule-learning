@@ -162,8 +162,8 @@ def test_cli_writes_report_jsonl_and_summary_json(tmp_path) -> None:
     assert len(report_lines) == 1
     report = json.loads(report_lines[0])
     assert report["candidate_id"] == "cli0"
-    assert report["status"] == "unsupported"
+    assert report["status"] == "pass"
 
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert summary["total"] == 1
-    assert summary["statuses"] == {"unsupported": 1}
+    assert summary["statuses"] == {"pass": 1}
