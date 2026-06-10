@@ -22,15 +22,18 @@ def read_flag(state: object, flag: str) -> claripy.ast.BV:
     normalized = flag.strip().lower()
     if normalized.startswith("nzcv."):
         name = normalized.split(".", 1)[1]
+        if name not in AARCH64_NZCV_BITS:
+            raise ValueError(f"unsupported flag: {flag}")
         try:
-            bit = AARCH64_NZCV_BITS[name]
-        except KeyError as exc:
+            nzcv = state.regs.flags
+        except (AttributeError, KeyError) as exc:
             raise ValueError(f"unsupported flag: {flag}") from exc
-        nzcv = state.regs.flags
-        return nzcv[bit:bit]
-    try:
+        return nzcv[AARCH64_NZCV_BITS[name] : AARCH64_NZCV_BITS[name]]
+    if normalized in X86_FLAG_BITS:
+        try:
+            eflags = state.regs.eflags
+        except (AttributeError, KeyError) as exc:
+            raise ValueError(f"unsupported flag: {flag}") from exc
         bit = X86_FLAG_BITS[normalized]
-    except KeyError as exc:
-        raise ValueError(f"unsupported flag: {flag}") from exc
-    eflags = state.regs.eflags
-    return eflags[bit:bit]
+        return eflags[bit:bit]
+    raise ValueError(f"unsupported flag: {flag}")
