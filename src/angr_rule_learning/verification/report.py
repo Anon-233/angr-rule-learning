@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -62,4 +61,10 @@ class VerificationReport:
 
     @property
     def failure_reasons(self) -> dict[str, int]:
-        return dict(Counter(check.reason for check in self.checks if check.reason))
+        reasons: dict[str, int] = {}
+        for check in self.checks:
+            if check.reason:
+                reasons[check.reason] = 1
+        for feature in self.unsupported_features:
+            reasons.setdefault(feature, 1)
+        return reasons
