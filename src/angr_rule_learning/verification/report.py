@@ -64,7 +64,7 @@ class VerificationReport:
         reasons: dict[str, int] = {}
         for check in self.checks:
             if check.reason:
-                reasons[check.reason] = 1
+                reasons[check.reason] = reasons.get(check.reason, 0) + 1
         for feature in self.unsupported_features:
             reasons.setdefault(feature, 1)
         return reasons

@@ -96,3 +96,25 @@ def test_failure_reasons_does_not_double_count_unsupported() -> None:
 
     assert report.unsupported_features == ("preconditions",)
     assert report.failure_reasons == {"preconditions": 1}
+
+
+def test_failure_reasons_counts_multiple_same_reason_checks() -> None:
+    report = VerificationReport(
+        candidate_id="multi-fail",
+        status="fail",
+        checks=(
+            CheckResult("register", "fail", "x0", "rax", reason="register_mismatch"),
+            CheckResult("register", "fail", "x1", "rcx", reason="register_mismatch"),
+        ),
+    )
+
+    assert report.failure_reasons == {"register_mismatch": 2}
+
+
+def test_failure_reasons_does_not_double_count_unsupported_reason() -> None:
+    from angr_rule_learning.verification.verifier import _unsupported
+
+    report = _unsupported("test", "execution", "preconditions")
+
+    assert report.unsupported_features == ("preconditions",)
+    assert report.failure_reasons == {"preconditions": 1}
