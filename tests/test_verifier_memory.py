@@ -89,3 +89,45 @@ def test_verifier_accepts_must_alias_load_slots() -> None:
 
     assert report.equivalent
     assert report.status == "pass"
+
+
+def test_verifier_rejects_host_read_address_mismatch() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="host-read-addr-mismatch",
+        guest=CodeFragment("aarch64", 0x10000, "20 00 40 b9", 1),
+        host=CodeFragment("x86-64", 0x8048000, "8b 01", 1),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1", "rcx + 4", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "fail"
+    assert any(
+        check.reason == "host_memory_address_mismatch" for check in report.checks
+    )
+
+
+def test_verifier_rejects_host_write_address_mismatch() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="host-write-addr-mismatch",
+        guest=CodeFragment("aarch64", 0x10000, "20 00 00 b9", 1),
+        host=CodeFragment("x86-64", 0x8048000, "89 02", 1),
+        input_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1", "rcx", "write"),),
+            accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "fail"
+    assert any(
+        check.reason == "host_memory_address_mismatch" for check in report.checks
+    )

@@ -56,17 +56,31 @@ def check_memory_events(context: CheckContext) -> list[CheckResult]:
             continue
 
         base = context.memory_layout.slot_base(expectation.slot)
-        addr_result = checker.check_equal(
+
+        guest_addr_result = checker.check_equal(
             kind="memory",
             guest=expectation.slot,
             host=expectation.slot,
             guest_expr=guest_event.address,
             host_expr=claripy.BVV(base, guest_event.address.size()),
-            mismatch_reason="memory_address_mismatch",
-            metadata={"event_index": index},
+            mismatch_reason="guest_memory_address_mismatch",
+            metadata={"event_index": index, "side": "guest"},
         )
-        if addr_result.status != "pass":
-            checks.append(addr_result)
+        if guest_addr_result.status != "pass":
+            checks.append(guest_addr_result)
+            continue
+
+        host_addr_result = checker.check_equal(
+            kind="memory",
+            guest=expectation.slot,
+            host=expectation.slot,
+            guest_expr=claripy.BVV(base, host_event.address.size()),
+            host_expr=host_event.address,
+            mismatch_reason="host_memory_address_mismatch",
+            metadata={"event_index": index, "side": "host"},
+        )
+        if host_addr_result.status != "pass":
+            checks.append(host_addr_result)
             continue
 
         value_result = checker.check_equal(
