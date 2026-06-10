@@ -26,6 +26,15 @@ def has_non_terminal_branch(fragment: CodeFragment, state: object) -> bool:
     return any(_is_control_flow(fragment.arch, insn.mnemonic) for insn in insns[:-1])
 
 
+def has_terminal_unconditional_branch(fragment: CodeFragment, state: object) -> bool:
+    insns = _fragment_insns(fragment, state)
+    if not insns:
+        return False
+    last_mnemonic = insns[-1].mnemonic.strip().lower()
+    arch = fragment.arch.strip().lower()
+    return last_mnemonic in UNCONDITIONAL_CONTROL_FLOW_MNEMONICS.get(arch, ())
+
+
 def _fragment_insns(fragment: CodeFragment, state: object) -> tuple[object, ...]:
     return tuple(
         state.project.arch.capstone.disasm(fragment.code_bytes, fragment.address)

@@ -7,6 +7,7 @@ import angr
 from angr_rule_learning.verification.branches import (
     check_terminal_branch_guard,
     has_non_terminal_branch,
+    has_terminal_unconditional_branch,
 )
 from angr_rule_learning.verification.checks import check_register_pair
 from angr_rule_learning.verification.flags import check_flag_pair
@@ -161,6 +162,28 @@ class SemanticVerifier:
                 "multi_branch_unsupported",
                 "guest",
                 "host",
+            )
+
+        if guest_successors.count == 1 and has_terminal_unconditional_branch(
+            candidate.guest, guest_state
+        ):
+            return _unsupported(
+                candidate.candidate_id,
+                "branch",
+                "unconditional_branch_unsupported",
+                "branch",
+                "branch",
+            )
+
+        if host_successors.count == 1 and has_terminal_unconditional_branch(
+            candidate.host, host_state
+        ):
+            return _unsupported(
+                candidate.candidate_id,
+                "branch",
+                "unconditional_branch_unsupported",
+                "branch",
+                "branch",
             )
 
         is_branch = guest_successors.count == 2 or host_successors.count == 2

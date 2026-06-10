@@ -143,3 +143,37 @@ def test_verifier_reports_non_terminal_aarch64_b_as_unsupported() -> None:
     assert any(
         check.reason == "non_terminal_branch_unsupported" for check in report.checks
     )
+
+
+X86_64_TERMINAL_JMP = "eb 02"
+AARCH64_TERMINAL_B = "01 00 00 14"
+
+
+def test_verifier_reports_terminal_x86_jmp_as_unsupported() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="terminal-jmp",
+        guest=CodeFragment("aarch64", 0x10000, "d503201f", 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_TERMINAL_JMP, 1),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported"
+    assert any(
+        check.reason == "unconditional_branch_unsupported" for check in report.checks
+    )
+
+
+def test_verifier_reports_terminal_aarch64_b_as_unsupported() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="terminal-b",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_TERMINAL_B, 1),
+        host=CodeFragment("x86-64", 0x8048000, "90", 1),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported"
+    assert any(
+        check.reason == "unconditional_branch_unsupported" for check in report.checks
+    )
