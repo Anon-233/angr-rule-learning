@@ -33,9 +33,21 @@ Implemented:
 Not implemented yet:
 
 - precondition solving
+- branch target equivalence for direct or indirect branches
 - candidate extraction from compiler debug information
 - rule generalization and rule store
 - coverage evaluation against the complete AArch64 -> x86-64 integer rule table
+
+Known verifier coverage limit:
+
+- Only straight-line fragments and fragments ending in one conditional branch are
+  currently supported.
+- Non-terminal control flow, terminal direct unconditional branches such as
+  AArch64 `b` or x86-64 `jmp`, and terminal indirect branches such as AArch64
+  `br` or x86-64 `jmp reg` are reported as `unsupported`.
+- This is expected to prevent a meaningful subset of candidate rules from being
+  learned. Future verifier work should compare branch target mappings for
+  direct branches and symbolic target expressions for indirect branches.
 
 ## Usage
 

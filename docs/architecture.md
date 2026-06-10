@@ -39,6 +39,26 @@ Reports use four top-level statuses: `pass`, `fail`, `unsupported`, and `error`.
 Each check result includes stable machine-readable reasons, counterexamples, and
 optional JSON-shaped metadata for downstream diagnostics.
 
+### Branch Scope
+
+Branch support is intentionally narrow in the current verifier:
+
+- straight-line fragments are supported;
+- fragments ending in one conditional branch are supported by comparing the
+  taken-branch guard expressions;
+- non-terminal control flow is unsupported;
+- terminal direct unconditional branches, for example AArch64 `b` or x86-64
+  `jmp`, are unsupported;
+- terminal indirect branches, for example AArch64 `br` or x86-64 `jmp reg`, are
+  unsupported.
+
+This limitation affects rule-learning coverage. Candidate rules that require
+branch target equivalence are expected to be rejected as `unsupported`, even if
+the guest and host fragments are semantically equivalent. Future work should add
+separate checks for direct branch target mapping and indirect branch target
+expression equivalence; those are different semantic surfaces from the current
+conditional guard comparison.
+
 ## Request Boundary
 
 Verifier input is intentionally JSON-shaped:
