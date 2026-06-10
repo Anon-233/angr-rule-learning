@@ -108,9 +108,25 @@ class SemanticVerifier:
             candidate.input_registers,
         )
 
-        layout = MemoryInitializer(self.config).initialize(
-            candidate, guest_state, host_state
-        )
+        try:
+            layout = MemoryInitializer(self.config).initialize(
+                candidate, guest_state, host_state
+            )
+        except ValueError as exc:
+            if str(exc).startswith("unsupported address expression"):
+                return _unsupported(
+                    candidate.candidate_id,
+                    "memory",
+                    "unsupported_address_expression",
+                    "memory",
+                    "memory",
+                )
+            if str(exc) == "invalid_alias_declaration":
+                return _error(
+                    candidate.candidate_id, "invalid_alias_declaration", str(exc)
+                )
+            raise
+
         recorder = MemoryEventRecorder()
         recorder.install(guest_state, "guest")
         recorder.install(host_state, "host")
@@ -137,9 +153,7 @@ class SemanticVerifier:
         )
 
         checks: list[CheckResult] = []
-        memory_checks = check_memory_events(
-            candidate.memory.accesses, layout, recorder.events
-        )
+        memory_checks = check_memory_events(context)
         checks.extend(memory_checks)
         if (
             any(check.status != "pass" for check in memory_checks)

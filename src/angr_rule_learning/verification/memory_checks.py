@@ -2,19 +2,15 @@ from __future__ import annotations
 
 import claripy
 
-from angr_rule_learning.smt.solver import align_widths
-from angr_rule_learning.verification.candidate import MemoryAccessExpectation
-from angr_rule_learning.verification.memory import MemoryEvent, MemoryLayout
+from angr_rule_learning.verification.context import CheckContext
+from angr_rule_learning.verification.relations import RelationChecker
 from angr_rule_learning.verification.report import CheckResult
 
 
-def check_memory_events(
-    expectations: tuple[MemoryAccessExpectation, ...],
-    layout: MemoryLayout,
-    events: list[MemoryEvent],
-) -> list[CheckResult]:
-    guest_events = [e for e in events if e.side == "guest"]
-    host_events = [e for e in events if e.side == "host"]
+def check_memory_events(context: CheckContext) -> list[CheckResult]:
+    expectations = context.candidate.memory.accesses
+    guest_events = [e for e in context.memory_events if e.side == "guest"]
+    host_events = [e for e in context.memory_events if e.side == "host"]
 
     if len(guest_events) != len(expectations) or len(host_events) != len(expectations):
         return [
@@ -27,9 +23,10 @@ def check_memory_events(
             )
         ]
 
+    checker = RelationChecker(symbols=context.symbols, constraints=context.constraints)
     checks: list[CheckResult] = []
-    for expectation, guest_event, host_event in zip(
-        expectations, guest_events, host_events, strict=True
+    for index, (expectation, guest_event, host_event) in enumerate(
+        zip(expectations, guest_events, host_events, strict=True)
     ):
         if guest_event.kind != expectation.kind or host_event.kind != expectation.kind:
             checks.append(
@@ -58,53 +55,33 @@ def check_memory_events(
             )
             continue
 
-        base = layout.slot_base(expectation.slot)
-        guest_addr_solver = claripy.Solver()
-        host_addr_solver = claripy.Solver()
-        if guest_addr_solver.satisfiable(
-            extra_constraints=[guest_event.address != base]
-        ):
-            checks.append(
-                CheckResult(
-                    kind="memory",
-                    status="fail",
-                    guest=expectation.slot,
-                    host=expectation.slot,
-                    reason="memory_address_mismatch",
-                )
-            )
-            continue
-        if host_addr_solver.satisfiable(extra_constraints=[host_event.address != base]):
-            checks.append(
-                CheckResult(
-                    kind="memory",
-                    status="fail",
-                    guest=expectation.slot,
-                    host=expectation.slot,
-                    reason="memory_address_mismatch",
-                )
-            )
+        base = context.memory_layout.slot_base(expectation.slot)
+        addr_result = checker.check_equal(
+            kind="memory",
+            guest=expectation.slot,
+            host=expectation.slot,
+            guest_expr=guest_event.address,
+            host_expr=claripy.BVV(base, guest_event.address.size()),
+            mismatch_reason="memory_address_mismatch",
+            metadata={"event_index": index},
+        )
+        if addr_result.status != "pass":
+            checks.append(addr_result)
             continue
 
-        guest_value, host_value = align_widths(guest_event.value, host_event.value)
-        solver = claripy.Solver()
-        diff = guest_value != host_value
-        if solver.satisfiable(extra_constraints=[diff]):
-            checks.append(
-                CheckResult(
-                    kind="memory",
-                    status="fail",
-                    guest=expectation.slot,
-                    host=expectation.slot,
-                    reason=(
-                        "memory_read_value_mismatch"
-                        if expectation.kind == "read"
-                        else "memory_write_value_mismatch"
-                    ),
-                )
-            )
-            continue
-
-        checks.append(CheckResult("memory", "pass", expectation.slot, expectation.slot))
+        value_result = checker.check_equal(
+            kind="memory",
+            guest=expectation.slot,
+            host=expectation.slot,
+            guest_expr=guest_event.value,
+            host_expr=host_event.value,
+            mismatch_reason=(
+                "memory_read_value_mismatch"
+                if expectation.kind == "read"
+                else "memory_write_value_mismatch"
+            ),
+            metadata={"event_index": index, "width": expectation.width},
+        )
+        checks.append(value_result)
 
     return checks

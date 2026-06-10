@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import angr
 import claripy
 
+from angr_rule_learning.verification.addressing import parse_address_binding
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.config import VerificationConfig
 from angr_rule_learning.verification.execution import write_reg
@@ -28,6 +29,29 @@ class MemoryEvent:
     endness: str
 
 
+def validate_alias_declarations(candidate: VerificationCandidate) -> None:
+    must_alias_pairs: set[tuple[str, str]] = set()
+    disjoint_pairs: set[tuple[str, str]] = set()
+    for alias in candidate.memory.alias:
+        pairs = {
+            tuple(sorted((left, right)))
+            for index, left in enumerate(alias.slots)
+            for right in alias.slots[index + 1 :]
+        }
+        if alias.relation == "must_alias":
+            must_alias_pairs.update(pairs)
+        elif alias.relation == "disjoint":
+            disjoint_pairs.update(pairs)
+    if must_alias_pairs & disjoint_pairs:
+        raise ValueError("invalid_alias_declaration")
+
+
+def _write_bound_address(state: angr.SimState, expression: str, base: int) -> None:
+    binding = parse_address_binding(expression)
+    register_value = base - binding.offset
+    write_reg(state, binding.register, claripy.BVV(register_value, state.arch.bits))
+
+
 class MemoryInitializer:
     def __init__(self, config: VerificationConfig) -> None:
         self._config = config
@@ -38,6 +62,7 @@ class MemoryInitializer:
         guest_state: angr.SimState,
         host_state: angr.SimState,
     ) -> MemoryLayout:
+        validate_alias_declarations(candidate)
         roots = _must_alias_roots(candidate)
         bases: dict[str, int] = {}
         base_by_root: dict[str, int] = {}
@@ -65,10 +90,9 @@ class MemoryInitializer:
             )
 
         for binding in candidate.memory.bindings:
-            base_value = claripy.BVV(bases[binding.slot], guest_state.arch.bits)
-            write_reg(guest_state, binding.guest_addr, base_value)
-            host_base_value = claripy.BVV(bases[binding.slot], host_state.arch.bits)
-            write_reg(host_state, binding.host_addr, host_base_value)
+            base = bases[binding.slot]
+            _write_bound_address(guest_state, binding.guest_addr, base)
+            _write_bound_address(host_state, binding.host_addr, base)
 
         return MemoryLayout(bases)
 
