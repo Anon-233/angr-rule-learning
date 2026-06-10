@@ -38,27 +38,15 @@ Run tests:
 uv run pytest
 ```
 
-Verify the sample request:
+Verify a JSONL batch:
 
 ```bash
-uv run angr-rule-learning verify examples/aarch64_x86_64_add.json
+uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl --output report.jsonl --summary summary.json
 ```
 
-Expected result:
-
-```json
-{
-  "counterexample": {},
-  "equivalent": true,
-  "register_checks": [
-    {
-      "guest_reg": "x0",
-      "host_reg": "rax",
-      "status": "pass"
-    }
-  ]
-}
-```
+The CLI is an external wrapper around the Python verifier API. Full pipeline
+code should call `SemanticVerifier` or `BatchVerifier` directly instead of
+shelling out to the CLI.
 
 ## Design Direction
 
