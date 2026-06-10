@@ -20,6 +20,49 @@ from angr_rule_learning.verification.report import CheckResult
 from angr_rule_learning.verification.report import VerificationReport
 
 
+def _unsupported(
+    candidate_id: str,
+    kind: str,
+    reason: str,
+    guest: str = "",
+    host: str = "",
+) -> VerificationReport:
+    return VerificationReport(
+        candidate_id,
+        "unsupported",
+        checks=(CheckResult(kind, "unsupported", guest, host, reason=reason),),
+        unsupported_features=(reason,),
+    )
+
+
+def _error(candidate_id: str, reason: str, detail: str) -> VerificationReport:
+    return VerificationReport(
+        candidate_id,
+        "error",
+        checks=(
+            CheckResult(
+                "execution",
+                "error",
+                "guest",
+                "host",
+                reason=reason,
+                metadata={"detail": detail},
+            ),
+        ),
+    )
+
+
+def _overall_status(checks: list[CheckResult]) -> str:
+    statuses = {check.status for check in checks}
+    if "error" in statuses:
+        return "error"
+    if "unsupported" in statuses:
+        return "unsupported"
+    if "fail" in statuses:
+        return "fail"
+    return "pass"
+
+
 class SemanticVerifier:
     def __init__(
         self,
@@ -30,25 +73,31 @@ class SemanticVerifier:
         self.config = config or VerificationConfig()
 
     def verify(self, candidate: VerificationCandidate) -> VerificationReport:
+        try:
+            return self._verify(candidate)
+        except Exception as exc:
+            return _error(candidate.candidate_id, "verifier_internal_error", str(exc))
+
+    def _verify(self, candidate: VerificationCandidate) -> VerificationReport:
         if candidate.output_flags:
-            return VerificationReport(
+            return _unsupported(
                 candidate.candidate_id,
-                "unsupported",
-                unsupported_features=("flag_outputs",),
+                "flag",
+                "flag_outputs",
             )
 
         if candidate.preconditions:
-            return VerificationReport(
+            return _unsupported(
                 candidate.candidate_id,
-                "unsupported",
-                unsupported_features=("preconditions",),
+                "execution",
+                "preconditions",
             )
 
         if any(alias.relation == "may_alias" for alias in candidate.memory.alias):
-            return VerificationReport(
+            return _unsupported(
                 candidate.candidate_id,
-                "unsupported",
-                unsupported_features=("unsupported_may_alias",),
+                "memory",
+                "unsupported_may_alias",
             )
 
         guest_state = self.executor.make_state(candidate.guest)
@@ -70,10 +119,12 @@ class SemanticVerifier:
             guest_executed = self.executor.execute(candidate.guest, guest_state)
             host_executed = self.executor.execute(candidate.host, host_state)
         except ValueError:
-            return VerificationReport(
+            return _unsupported(
                 candidate.candidate_id,
-                "unsupported",
-                unsupported_features=("multi_successor_unsupported",),
+                "execution",
+                "multi_successor_unsupported",
+                "guest",
+                "host",
             )
 
         context = CheckContext(
@@ -90,20 +141,29 @@ class SemanticVerifier:
             candidate.memory.accesses, layout, recorder.events
         )
         checks.extend(memory_checks)
-        if any(check.status == "fail" for check in memory_checks):
+        if (
+            any(check.status != "pass" for check in memory_checks)
+            and self.config.fail_fast
+        ):
             return VerificationReport(
-                candidate.candidate_id, "fail", checks=tuple(checks)
+                candidate.candidate_id, _overall_status(checks), checks=tuple(checks)
             )
 
         for guest_reg, host_reg in candidate.output_registers:
             check = check_register_pair(context, guest_reg, host_reg)
             checks.append(check)
-            if check.status == "fail":
+            if check.status != "pass" and self.config.fail_fast:
                 return VerificationReport(
-                    candidate.candidate_id, "fail", checks=tuple(checks)
+                    candidate.candidate_id,
+                    _overall_status(checks),
+                    checks=tuple(checks),
                 )
 
-        return VerificationReport(candidate.candidate_id, "pass", checks=tuple(checks))
+        return VerificationReport(
+            candidate.candidate_id,
+            _overall_status(checks),
+            checks=tuple(checks),
+        )
 
     @staticmethod
     def _initialize_input_registers(

@@ -9,6 +9,7 @@ class VerificationConfig:
     emit_events: bool = False
     memory_base: int = 0x70000000
     memory_stride: int = 0x1000
+    fail_fast: bool = False
 
     def __post_init__(self) -> None:
         if self.max_successors < 1:
