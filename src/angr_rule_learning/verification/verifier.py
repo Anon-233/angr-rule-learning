@@ -4,6 +4,7 @@ import claripy
 
 from angr_rule_learning.verification.checks import check_register_pair
 from angr_rule_learning.verification.candidate import VerificationCandidate
+from angr_rule_learning.verification.context import CheckContext
 from angr_rule_learning.verification.config import VerificationConfig
 from angr_rule_learning.verification.execution import (
     FragmentExecutor,
@@ -75,6 +76,15 @@ class SemanticVerifier:
                 unsupported_features=("multi_successor_unsupported",),
             )
 
+        context = CheckContext(
+            candidate=candidate,
+            guest_state=guest_executed.state,
+            host_state=host_executed.state,
+            symbols=symbols,
+            memory_layout=layout,
+            memory_events=tuple(recorder.events),
+        )
+
         checks: list[CheckResult] = []
         memory_checks = check_memory_events(
             candidate.memory.accesses, layout, recorder.events
@@ -86,13 +96,7 @@ class SemanticVerifier:
             )
 
         for guest_reg, host_reg in candidate.output_registers:
-            check = check_register_pair(
-                guest_executed.state,
-                host_executed.state,
-                guest_reg,
-                host_reg,
-                symbols,
-            )
+            check = check_register_pair(context, guest_reg, host_reg)
             checks.append(check)
             if check.status == "fail":
                 return VerificationReport(
