@@ -164,9 +164,7 @@ class SemanticVerifier:
                 "host",
             )
 
-        if guest_successors.count == 1 and has_terminal_unconditional_branch(
-            candidate.guest, guest_state
-        ):
+        if has_terminal_unconditional_branch(candidate.guest, guest_state):
             return _unsupported(
                 candidate.candidate_id,
                 "branch",
@@ -175,15 +173,22 @@ class SemanticVerifier:
                 "branch",
             )
 
-        if host_successors.count == 1 and has_terminal_unconditional_branch(
-            candidate.host, host_state
-        ):
+        if has_terminal_unconditional_branch(candidate.host, host_state):
             return _unsupported(
                 candidate.candidate_id,
                 "branch",
                 "unconditional_branch_unsupported",
                 "branch",
                 "branch",
+            )
+
+        if guest_successors.count == 0 or host_successors.count == 0:
+            return _unsupported(
+                candidate.candidate_id,
+                "branch",
+                "branch_shape_unsupported",
+                "guest",
+                "host",
             )
 
         is_branch = guest_successors.count == 2 or host_successors.count == 2

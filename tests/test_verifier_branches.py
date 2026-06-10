@@ -177,3 +177,53 @@ def test_verifier_reports_terminal_aarch64_b_as_unsupported() -> None:
     assert any(
         check.reason == "unconditional_branch_unsupported" for check in report.checks
     )
+
+
+X86_64_JMP_RAX = "ff e0"
+AARCH64_BR_X0 = "00 00 1f d6"
+X86_64_RET = "c3"
+
+
+def test_verifier_reports_x86_jmp_rax_as_unsupported() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="jmp-rax",
+        guest=CodeFragment("aarch64", 0x10000, "1f2003d5", 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_JMP_RAX, 1),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported", f"got {report.status}"
+    assert any(
+        check.reason == "unconditional_branch_unsupported" for check in report.checks
+    )
+
+
+def test_verifier_reports_aarch64_br_x0_as_unsupported() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="br-x0",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_BR_X0, 1),
+        host=CodeFragment("x86-64", 0x8048000, "90", 1),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported", f"got {report.status}"
+    assert any(
+        check.reason == "unconditional_branch_unsupported" for check in report.checks
+    )
+
+
+def test_verifier_reports_x86_ret_as_unsupported() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="ret",
+        guest=CodeFragment("aarch64", 0x10000, "1f2003d5", 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_RET, 1),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported", f"got {report.status}"
+    assert any(
+        check.reason == "unconditional_branch_unsupported" for check in report.checks
+    )
