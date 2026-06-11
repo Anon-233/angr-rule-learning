@@ -18,6 +18,21 @@ Compiler/Debug Info
   -> Coverage Evaluation
 ```
 
+The extractor package (`src/angr_rule_learning/extraction/`) implements the
+first two stages:
+
+```text
+single C source
+  -> extraction.ExtractionPipeline
+  -> candidate JSONL
+  -> verification.BatchVerifier
+```
+
+The pipeline compiles source to guest/host objects, extracts functions and
+debug information, builds alignment regions, mines bounded semantic windows,
+infers verifier surfaces, and emits candidate JSONL compatible with the
+existing verifier boundary.
+
 Only the semantic verification stage is implemented today. The existing CLI
 accepts candidate JSON/JSONL directly so verifier work can proceed before source
 mapping and candidate extraction are rebuilt.

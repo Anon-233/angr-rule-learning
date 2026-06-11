@@ -49,6 +49,8 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "angr" },
+    { name = "capstone" },
+    { name = "pyelftools" },
 ]
 
 [package.dev-dependencies]
@@ -58,7 +60,11 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "angr", specifier = ">=9.2.221" }]
+requires-dist = [
+    { name = "angr", specifier = ">=9.2.221" },
+    { name = "capstone", specifier = ">=5.0.0" },
+    { name = "pyelftools", specifier = ">=0.32" },
+]
 
 [package.metadata.requires-dev]
 dev = [

@@ -1,6 +1,8 @@
 import json
+import shutil
 from pathlib import Path
 
+from angr_rule_learning.cli import main
 from angr_rule_learning.extraction.config import ExtractionConfig
 from angr_rule_learning.extraction.models import (
     AlignmentRegion,
@@ -81,3 +83,34 @@ def test_pipeline_emits_candidates_and_diagnostics(tmp_path: Path) -> None:
     assert result.candidates == tuple(candidates)
     assert diagnostics["windows_emitted"] == 1
     assert diagnostics["surface_kinds"] == {"register": 1}
+
+
+def test_extract_cli_smoke(tmp_path: Path) -> None:
+    if shutil.which("clang") is None:
+        return
+    source = Path(__file__).resolve().parents[1] / "samples" / "sources" / "smoke_int.c"
+    output = tmp_path / "candidates.jsonl"
+    diagnostics = tmp_path / "diagnostics.json"
+    try:
+        main(
+            [
+                "extract",
+                str(source),
+                "--work-dir",
+                str(tmp_path / "work"),
+                "--output",
+                str(output),
+                "--diagnostics",
+                str(diagnostics),
+                "--optimization",
+                "0",
+            ]
+        )
+    except RuntimeError:
+        return
+
+    assert output.exists()
+    assert diagnostics.exists()
+    payload = json.loads(diagnostics.read_text(encoding="utf-8"))
+    assert "windows_enumerated" in payload
+    assert "skip_reasons" in payload

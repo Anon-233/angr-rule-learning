@@ -63,6 +63,16 @@ uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl \
   --summary /tmp/angr-rule-learning-summary.json
 ```
 
+Extract verifier candidates from one C source file:
+
+```bash
+uv run angr-rule-learning extract samples/sources/smoke_int.c \
+  --work-dir /tmp/angr-rule-learning-extract \
+  --output /tmp/angr-rule-learning-candidates.jsonl \
+  --diagnostics /tmp/angr-rule-learning-diagnostics.json \
+  --optimization 0
+```
+
 The CLI is a thin wrapper around `BatchVerifier`. Pipeline code should call the
 Python API directly.
 
