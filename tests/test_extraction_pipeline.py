@@ -2,6 +2,8 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
+
 from angr_rule_learning.cli import main
 from angr_rule_learning.extraction.config import ExtractionConfig
 from angr_rule_learning.extraction.models import (
@@ -11,6 +13,7 @@ from angr_rule_learning.extraction.models import (
 )
 from angr_rule_learning.extraction.pipeline import ExtractionPipeline
 from angr_rule_learning.io.readers import read_candidates
+from angr_rule_learning.verification.report import CheckResult, VerificationReport
 
 
 def _inst(
@@ -147,3 +150,227 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
             assert host_reg not in ("nzcv", "rflags"), (
                 f"flag in output: {candidate.candidate_id}"
             )
+
+
+class _FakePassingVerifier:
+    def verify_many(self, candidates):
+        return [
+            VerificationReport(
+                candidate.candidate_id,
+                "pass",
+                checks=(
+                    CheckResult(
+                        kind="register",
+                        status="pass",
+                        guest=candidate.output_registers[0][0]
+                        if candidate.output_registers
+                        else "x0",
+                        host=candidate.output_registers[0][1]
+                        if candidate.output_registers
+                        else "rax",
+                    ),
+                ),
+            )
+            for candidate in candidates
+        ]
+
+
+class _FakeFailingVerifier:
+    def verify_many(self, candidates):
+        return [
+            VerificationReport(
+                candidate.candidate_id,
+                "fail",
+                checks=(
+                    CheckResult(
+                        kind="register",
+                        status="fail",
+                        guest=candidate.output_registers[0][0]
+                        if candidate.output_registers
+                        else "x0",
+                        host=candidate.output_registers[0][1]
+                        if candidate.output_registers
+                        else "rax",
+                        reason="register_mismatch",
+                    ),
+                ),
+            )
+            for candidate in candidates
+        ]
+
+
+def _asm_inst(
+    arch: str,
+    address: int,
+    code: bytes,
+    mnemonic: str,
+    op_str: str,
+    reads: tuple[str, ...],
+    writes: tuple[str, ...],
+) -> ExtractedInstruction:
+    return ExtractedInstruction(
+        arch=arch,
+        address=address,
+        size=len(code),
+        code_bytes=code,
+        mnemonic=mnemonic,
+        op_str=op_str,
+        function="add",
+        source=SourceLocation("sample.c", 1),
+        read_registers=reads,
+        write_registers=writes,
+    )
+
+
+def test_pipeline_writes_rules_for_verified_passing_windows(tmp_path: Path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+    candidates_output = tmp_path / "candidates.jsonl"
+    diagnostics_path = tmp_path / "diagnostics.json"
+    rules_output = tmp_path / "rules" / "rules.txt"
+    rules_diagnostics = tmp_path / "rules" / "rules_diagnostics.json"
+    region = AlignmentRegion(
+        region_id="add:sample.c:1:0",
+        function="add",
+        source_file="sample.c",
+        source_lines=(1,),
+        guest_instructions=(
+            _asm_inst(
+                "aarch64",
+                0x1000,
+                bytes.fromhex("2000020b"),
+                "add",
+                "w0, w0, w1",
+                ("w0", "w1"),
+                ("w0",),
+            ),
+        ),
+        host_instructions=(
+            _asm_inst(
+                "x86-64",
+                0x2000,
+                bytes.fromhex("01f0"),
+                "add",
+                "eax, esi",
+                ("eax", "esi"),
+                ("eax",),
+            ),
+        ),
+    )
+    pipeline = ExtractionPipeline(
+        build_driver=None,
+        object_extractor=None,
+        region_provider=lambda config, diagnostics: (region,),
+        verifier=_FakePassingVerifier(),
+    )
+
+    result = pipeline.run(
+        ExtractionConfig(source=source, work_dir=tmp_path / "work"),
+        candidates_output=candidates_output,
+        diagnostics_output=diagnostics_path,
+        verify=True,
+        rules_output=rules_output,
+        rules_diagnostics_output=rules_diagnostics,
+    )
+
+    assert len(result.candidates) == 1
+    assert len(result.reports) == 1
+    assert len(result.rules) == 1
+    assert rules_output.read_text(encoding="utf-8") == (
+        "1.Guest:\n"
+        "\tadd i32_reg1, i32_reg1, i32_reg2\n"
+        ".Host:\n"
+        "\tadd i32_reg1, i32_reg2\n"
+        "\n"
+    )
+    assert json.loads(rules_diagnostics.read_text(encoding="utf-8")) == {
+        "rules_considered": 1,
+        "rules_emitted": 1,
+        "rules_skipped": 0,
+        "skip_reasons": {},
+    }
+
+
+def test_pipeline_does_not_write_rules_for_failing_reports(tmp_path: Path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+    candidates_output = tmp_path / "candidates.jsonl"
+    diagnostics_path = tmp_path / "diagnostics.json"
+    rules_output = tmp_path / "rules.txt"
+    region = AlignmentRegion(
+        region_id="add:sample.c:1:0",
+        function="add",
+        source_file="sample.c",
+        source_lines=(1,),
+        guest_instructions=(
+            _asm_inst(
+                "aarch64",
+                0x1000,
+                b"\x01\x02\x03\x04",
+                "add",
+                "w0, w0, w1",
+                ("w0", "w1"),
+                ("w0",),
+            ),
+        ),
+        host_instructions=(
+            _asm_inst(
+                "x86-64",
+                0x2000,
+                b"\x01\xf0",
+                "add",
+                "eax, esi",
+                ("eax", "esi"),
+                ("eax",),
+            ),
+        ),
+    )
+    pipeline = ExtractionPipeline(
+        build_driver=None,
+        object_extractor=None,
+        region_provider=lambda config, diagnostics: (region,),
+        verifier=_FakeFailingVerifier(),
+    )
+
+    result = pipeline.run(
+        ExtractionConfig(source=source, work_dir=tmp_path / "work"),
+        candidates_output=candidates_output,
+        diagnostics_output=diagnostics_path,
+        verify=True,
+        rules_output=rules_output,
+    )
+
+    assert result.rules == ()
+    assert rules_output.read_text(encoding="utf-8") == ""
+
+
+def test_pipeline_rejects_rules_output_without_verification(tmp_path: Path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+    pipeline = ExtractionPipeline(region_provider=lambda config, diagnostics: ())
+
+    with pytest.raises(ValueError, match="rule output requires verify=True"):
+        pipeline.run(
+            ExtractionConfig(source=source, work_dir=tmp_path / "work"),
+            candidates_output=tmp_path / "candidates.jsonl",
+            diagnostics_output=tmp_path / "diagnostics.json",
+            verify=False,
+            rules_output=tmp_path / "rules.txt",
+        )
+
+
+def test_pipeline_rejects_rules_diagnostics_without_verification(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+    pipeline = ExtractionPipeline(region_provider=lambda config, diagnostics: ())
+
+    with pytest.raises(ValueError, match="rule output requires verify=True"):
+        pipeline.run(
+            ExtractionConfig(source=source, work_dir=tmp_path / "work"),
+            candidates_output=tmp_path / "candidates.jsonl",
+            diagnostics_output=tmp_path / "diagnostics.json",
+            verify=False,
+            rules_diagnostics_output=tmp_path / "rules_diagnostics.json",
+        )

@@ -17,6 +17,15 @@ from angr_rule_learning.extraction.models import AlignmentRegion, WindowPair
 from angr_rule_learning.extraction.object import ObjectExtractor
 from angr_rule_learning.extraction.surfaces import SurfaceInferer
 from angr_rule_learning.extraction.windows import VerifiedWindowSet, WindowMiner
+from angr_rule_learning.rules.generalize import (
+    GeneratedRule,
+    RuleDiagnostics,
+    RuleGeneralizer,
+)
+from angr_rule_learning.rules.writer import (
+    write_rule_diagnostics_json,
+    write_rules_text,
+)
 from angr_rule_learning.verification.batch import BatchVerifier
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
@@ -32,6 +41,8 @@ class ExtractionResult:
     candidates: tuple[VerificationCandidate, ...]
     reports: tuple[VerificationReport, ...]
     diagnostics: MiningDiagnostics
+    rules: tuple[GeneratedRule, ...] = ()
+    rule_diagnostics: RuleDiagnostics | None = None
 
 
 class ExtractionPipeline:
@@ -54,8 +65,19 @@ class ExtractionPipeline:
         candidates_output: Path,
         diagnostics_output: Path,
         verify: bool = False,
+        rules_output: Path | None = None,
+        rules_diagnostics_output: Path | None = None,
     ) -> ExtractionResult:
+        rule_generation_requested = (
+            rules_output is not None or rules_diagnostics_output is not None
+        )
+        if rule_generation_requested and not verify:
+            raise ValueError("rule output requires verify=True")
+
         diagnostics = MiningDiagnostics()
+        rule_diagnostics = RuleDiagnostics()
+        rule_generalizer = RuleGeneralizer(rule_diagnostics)
+        rules: list[GeneratedRule] = []
         regions = self._regions(config, diagnostics)
         miner = WindowMiner(config.window_limits, diagnostics)
         inferer = SurfaceInferer(diagnostics)
@@ -77,16 +99,33 @@ class ExtractionPipeline:
                 if verify and staged_candidates:
                     staged_reports = self._verifier.verify_many(staged_candidates)
                     reports.extend(staged_reports)
-                    for (window, _candidate), report in zip(
+                    for (window, candidate), report in zip(
                         emitted, staged_reports, strict=True
                     ):
                         diagnostics.record_window_verified(report.status)
                         if report.status == "pass":
                             verified.add(window)
+                        if rule_generation_requested:
+                            rule = rule_generalizer.generate(
+                                len(rules) + 1, window, candidate, report
+                            )
+                            if rule is not None:
+                                rules.append(rule)
         candidate_tuple = tuple(candidates)
+        rule_tuple = tuple(rules)
+        if rules_output is not None:
+            write_rules_text(rules_output, rule_tuple)
+        if rules_diagnostics_output is not None:
+            write_rule_diagnostics_json(rules_diagnostics_output, rule_diagnostics)
         write_candidates_jsonl(candidates_output, candidate_tuple)
         write_diagnostics_json(diagnostics_output, diagnostics)
-        return ExtractionResult(candidate_tuple, tuple(reports), diagnostics)
+        return ExtractionResult(
+            candidate_tuple,
+            tuple(reports),
+            diagnostics,
+            rule_tuple,
+            rule_diagnostics if rule_generation_requested else None,
+        )
 
     def _regions(
         self,
