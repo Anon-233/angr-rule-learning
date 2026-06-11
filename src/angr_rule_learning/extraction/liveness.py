@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from angr_rule_learning.extraction.models import (
     ExtractedFunction,
     ExtractedInstruction,
+    InstructionWindow,
 )
 
 
@@ -362,3 +363,118 @@ def _is_unresolved_indirect_control_flow(
             and _parse_direct_target(instruction.op_str, set()) is None
         )
     return False
+
+
+@dataclass(frozen=True)
+class WindowSurface:
+    inputs: tuple[str, ...] = ()
+    outputs: tuple[str, ...] = ()
+    input_families: tuple[str, ...] = ()
+    output_families: tuple[str, ...] = ()
+    kind: str = "register"
+    skip_reason: str | None = None
+
+    @property
+    def emitted(self) -> bool:
+        return self.skip_reason is None
+
+
+class WindowSurfaceInferer:
+    def __init__(self, liveness: LivenessIndex) -> None:
+        self._liveness = liveness
+
+    def infer(self, window: InstructionWindow) -> WindowSurface:
+        if not window.instructions:
+            return WindowSurface(skip_reason="no_verifiable_surface")
+        if any(
+            (entry := self._liveness.for_instruction(inst)) is None or entry.unsupported
+            for inst in window.instructions
+        ):
+            return WindowSurface(skip_reason="missing_liveness_surface")
+
+        arch = window.instructions[0].arch
+        last = window.instructions[-1]
+        last_liveness = self._liveness.require_instruction(last)
+        defs = _ordered_family_registers(
+            arch,
+            tuple(reg for inst in window.instructions for reg in inst.write_registers),
+        )
+        semantic_output_families = tuple(
+            family for family, _register in defs if family in last_liveness.live_out
+        )
+        terminal_branch = _is_conditional_branch(arch, last.mnemonic.strip().lower())
+
+        needed = set(semantic_output_families)
+        if terminal_branch:
+            needed.update(
+                family
+                for family in families_for_registers(arch, last.read_registers)
+                if is_condition_family(arch, family)
+            )
+
+        for inst in reversed(window.instructions):
+            inst_entry = self._liveness.require_instruction(inst)
+            written = set(inst_entry.writes)
+            if written & needed:
+                needed.difference_update(written)
+                needed.update(inst_entry.reads)
+            elif terminal_branch and inst is last:
+                needed.update(inst_entry.reads)
+
+        if any(is_condition_family(arch, family) for family in needed):
+            return WindowSurface(skip_reason="external_live_condition_code_dependency")
+
+        input_pairs = _ordered_input_registers(arch, window.instructions, needed)
+        output_pairs = tuple(
+            (family, register)
+            for family, register in defs
+            if family in semantic_output_families
+        )
+        if not output_pairs and not terminal_branch:
+            return WindowSurface(skip_reason="no_verifiable_surface")
+
+        return WindowSurface(
+            inputs=tuple(register for _family, register in input_pairs),
+            outputs=tuple(register for _family, register in output_pairs),
+            input_families=tuple(family for family, _register in input_pairs),
+            output_families=tuple(family for family, _register in output_pairs),
+            kind=("branch" if terminal_branch and not output_pairs else "register"),
+        )
+
+
+def _ordered_family_registers(
+    arch: str,
+    registers: tuple[str, ...],
+) -> tuple[tuple[str, str], ...]:
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    for register in registers:
+        family = family_for_register(arch, register)
+        if family and family not in seen:
+            seen.add(family)
+            result.append((family, register))
+    return tuple(result)
+
+
+def _ordered_input_registers(
+    arch: str,
+    instructions: tuple[ExtractedInstruction, ...],
+    needed: set[str],
+) -> tuple[tuple[str, str], ...]:
+    seen: set[str] = set()
+    result: list[tuple[str, str]] = []
+    all_reads = tuple(reg for inst in instructions for reg in inst.read_registers)
+    all_writes = tuple(reg for inst in instructions for reg in inst.write_registers)
+    write_families = {family_for_register(arch, reg) for reg in all_writes}
+
+    for family, register in _ordered_family_registers(arch, all_reads):
+        if family in needed and family in write_families and family not in seen:
+            seen.add(family)
+            result.append((family, register))
+
+    for family, register in _ordered_family_registers(arch, all_reads):
+        if family in needed and family not in seen:
+            seen.add(family)
+            result.append((family, register))
+
+    return tuple(result)

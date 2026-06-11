@@ -1,5 +1,6 @@
 from angr_rule_learning.extraction.liveness import (
     LivenessAnalyzer,
+    WindowSurfaceInferer,
     abi_exit_live_out,
     families_for_registers,
     family_for_register,
@@ -8,6 +9,7 @@ from angr_rule_learning.extraction.liveness import (
 from angr_rule_learning.extraction.models import (
     ExtractedFunction,
     ExtractedInstruction,
+    InstructionWindow,
 )
 
 
@@ -186,3 +188,91 @@ def test_aarch64_return_liveness_uses_return_and_callee_saved_seed() -> None:
     assert {"x19", "x28", "x29", "x30", "sp"}.issubset(
         index.for_instruction(function.instructions[1]).live_out
     )
+
+
+def _window(
+    instructions: tuple[ExtractedInstruction, ...], side: str = "host"
+) -> InstructionWindow:
+    return InstructionWindow("r1", side, instructions)
+
+
+def test_window_surface_ignores_dead_flag_write() -> None:
+    function = _function(
+        (
+            _inst(
+                0x1000,
+                "add",
+                "eax, ecx",
+                reads=("eax", "ecx"),
+                writes=("eax", "rflags"),
+            ),
+            _inst(0x1004, "ret"),
+        )
+    )
+    index = LivenessAnalyzer().analyze((function,))
+
+    surface = WindowSurfaceInferer(index).infer(_window((function.instructions[0],)))
+
+    assert surface.skip_reason is None
+    assert surface.outputs == ("eax",)
+    assert surface.output_families == ("rax",)
+    assert surface.inputs == ("eax", "ecx")
+    assert surface.input_families == ("rax", "rcx")
+    assert surface.kind == "register"
+
+
+def test_window_surface_rejects_external_live_condition_code_dependency() -> None:
+    function = _function(
+        (
+            _inst(0x1000, "jl", "0x1008", reads=("rflags",)),
+            _inst(0x1004, "mov", "eax, 1", writes=("eax",)),
+            _inst(0x1008, "ret"),
+        )
+    )
+    index = LivenessAnalyzer().analyze((function,))
+
+    surface = WindowSurfaceInferer(index).infer(_window((function.instructions[0],)))
+
+    assert surface.skip_reason == "external_live_condition_code_dependency"
+
+
+def test_window_surface_keeps_local_compare_and_branch() -> None:
+    function = _function(
+        (
+            _inst(
+                0x1000,
+                "cmp",
+                "eax, ecx",
+                reads=("eax", "ecx"),
+                writes=("rflags",),
+            ),
+            _inst(0x1004, "jl", "0x100C", reads=("rflags",)),
+            _inst(0x1008, "mov", "eax, 1", writes=("eax",)),
+            _inst(0x100C, "ret"),
+        )
+    )
+    index = LivenessAnalyzer().analyze((function,))
+
+    surface = WindowSurfaceInferer(index).infer(
+        _window((function.instructions[0], function.instructions[1]))
+    )
+
+    assert surface.skip_reason is None
+    assert surface.kind == "branch"
+    assert surface.outputs == ()
+    assert surface.inputs == ("eax", "ecx")
+    assert surface.input_families == ("rax", "rcx")
+
+
+def test_window_surface_reports_no_verifiable_surface_for_dead_write() -> None:
+    function = _function(
+        (
+            _inst(0x1000, "mov", "ecx, 1", writes=("ecx",)),
+            _inst(0x1004, "ret"),
+        )
+    )
+    index = LivenessAnalyzer().analyze((function,))
+
+    surface = WindowSurfaceInferer(index).infer(_window((function.instructions[0],)))
+
+    assert surface.skip_reason == "no_verifiable_surface"
