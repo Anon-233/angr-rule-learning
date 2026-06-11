@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from angr_rule_learning.extraction.models import ExtractedInstruction, WindowPair
+from angr_rule_learning.extraction.liveness import family_for_register
 from angr_rule_learning.rules.registers import (
     RegisterClass,
     RegisterClassError,
@@ -90,6 +91,15 @@ class RuleGeneralizer:
             )
             host_lines = _generalize_instructions(
                 window.host.instructions, mapping, host_arch
+            )
+            guest_lines, host_lines = _annotate_dead_writes(
+                guest_lines,
+                host_lines,
+                candidate,
+                window,
+                mapping,
+                guest_arch,
+                host_arch,
             )
             region_guest = (
                 region.guest_instructions
@@ -441,3 +451,50 @@ def _labels_are_consistent(
         if guest_labels != host_labels:
             return False
     return True
+
+
+def _annotate_dead_writes(
+    guest_lines: tuple[str, ...],
+    host_lines: tuple[str, ...],
+    candidate: VerificationCandidate,
+    window: WindowPair,
+    mapping: dict[str, str],
+    guest_arch: str,
+    host_arch: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    output_regs = {reg for pair in candidate.output_registers for reg in pair}
+    cc_families = {"nzcv", "rflags"}
+
+    def _dead_writes(
+        instructions: tuple[ExtractedInstruction, ...],
+    ) -> tuple[str, ...]:
+        dead: list[str] = []
+        for inst in instructions:
+            for reg in inst.write_registers:
+                family = family_for_register(inst.arch, reg)
+                if family in cc_families or is_allowed_literal_register(inst.arch, reg):
+                    continue
+                if reg not in output_regs:
+                    dead.append(reg)
+        return tuple(dead)
+
+    guest_dead = _dead_writes(window.guest.instructions)
+    host_dead = _dead_writes(window.host.instructions)
+
+    if not guest_dead and not host_dead:
+        return guest_lines, host_lines
+
+    def _apply(lines: tuple[str, ...], dead_regs: tuple[str, ...]) -> tuple[str, ...]:
+        if not dead_regs:
+            return lines
+        result: list[str] = []
+        regs_str = ", ".join(mapping.get(r, r) for r in dead_regs)
+        result.append(f"{{save {regs_str}}}")
+        result.extend(lines)
+        result.append(f"{{restore {regs_str}}}")
+        return tuple(result)
+
+    return (
+        _apply(guest_lines, guest_dead),
+        _apply(host_lines, host_dead),
+    )

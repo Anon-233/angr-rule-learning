@@ -387,6 +387,7 @@ class WindowSurface:
     input_families: tuple[str, ...] = ()
     output_families: tuple[str, ...] = ()
     effective_instructions: tuple[ExtractedInstruction, ...] = ()
+    dead_write_registers: tuple[str, ...] = ()
     kind: str = "register"
     skip_reason: str | None = None
 
@@ -449,12 +450,23 @@ class WindowSurfaceInferer:
         if not output_pairs and not terminal_branch:
             return WindowSurface(skip_reason="no_verifiable_surface")
 
+        output_family_set = set(semantic_output_families)
+        dead_write_registers: list[str] = []
+        for inst in window.instructions:
+            for reg in inst.write_registers:
+                family = family_for_register(arch, reg)
+                if family not in output_family_set and not is_condition_family(
+                    arch, family
+                ):
+                    dead_write_registers.append(reg)
+
         return WindowSurface(
             inputs=tuple(register for _family, register in input_pairs),
             outputs=tuple(register for _family, register in output_pairs),
             input_families=tuple(family for family, _register in input_pairs),
             output_families=tuple(family for family, _register in output_pairs),
             effective_instructions=window.instructions,
+            dead_write_registers=tuple(dead_write_registers),
             kind=("branch" if terminal_branch and not output_pairs else "register"),
         )
 
