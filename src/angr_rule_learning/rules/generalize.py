@@ -66,6 +66,7 @@ class _RuleSkip(ValueError):
 class RuleGeneralizer:
     def __init__(self, diagnostics: RuleDiagnostics | None = None) -> None:
         self.diagnostics = diagnostics or RuleDiagnostics()
+        self._emitted_keys: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 
     def generate(
         self,
@@ -91,6 +92,12 @@ class RuleGeneralizer:
         except _RuleSkip as exc:
             self.diagnostics.record_skipped(exc.reason)
             return None
+
+        key = (guest_lines, host_lines)
+        if key in self._emitted_keys:
+            self.diagnostics.record_skipped("duplicate_rule")
+            return None
+        self._emitted_keys.add(key)
 
         rule = GeneratedRule(
             rule_id=rule_id,
@@ -154,13 +161,11 @@ def _generalize_instructions(
     mapping: dict[str, str],
     arch: str,
 ) -> tuple[str, ...]:
-    lines = tuple(
-        _generalize_line(_instruction_text(inst), mapping, arch)
-        for inst in instructions
-    )
-    if not lines:
+    texts = tuple(_instruction_text(inst) for inst in instructions)
+    reg_lines = tuple(_generalize_line(text, mapping, arch) for text in texts)
+    if not reg_lines:
         raise _RuleSkip("unsupported_rule_shape")
-    return lines
+    return _replace_immediates(reg_lines, arch)
 
 
 def _instruction_text(instruction: ExtractedInstruction) -> str:
@@ -185,6 +190,27 @@ def _generalize_line(text: str, mapping: dict[str, str], arch: str) -> str:
     if _remaining_registers(rewritten, arch):
         raise _RuleSkip("unmapped_register_surface")
     return rewritten
+
+
+_AARCH64_IMM_RE = re.compile(r"#(0x[0-9a-fA-F]+|-?\d+)")
+_X86_64_IMM_RE = re.compile(r"(?<![#\w])(0x[0-9a-fA-F]+|-?\d+)(?![A-Za-z0-9_])")
+
+
+def _replace_immediates(lines: tuple[str, ...], arch: str) -> tuple[str, ...]:
+    pattern = _AARCH64_IMM_RE if arch == "aarch64" else _X86_64_IMM_RE
+    imm_map: dict[str, str] = {}
+    imm_counter = 0
+
+    def _replacer(match: re.Match[str]) -> str:
+        nonlocal imm_counter
+        value = match.group(0)
+        if value not in imm_map:
+            imm_counter += 1
+            prefix = "#" if arch == "aarch64" else ""
+            imm_map[value] = f"{prefix}imm{imm_counter}"
+        return imm_map[value]
+
+    return tuple(pattern.sub(_replacer, line) for line in lines)
 
 
 def _remaining_registers(text: str, arch: str) -> tuple[str, ...]:
