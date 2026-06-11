@@ -94,3 +94,6 @@ def test_object_extractor_reads_compiled_host_object(tmp_path: Path) -> None:
     add_function = next(function for function in functions if function.name == "add")
     assert add_function.instructions
     assert len(add_function.instructions) > 0
+    assert any(inst.source is not None for inst in add_function.instructions), (
+        "source locations must be resolved for compiled object"
+    )

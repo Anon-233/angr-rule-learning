@@ -119,15 +119,25 @@ class ObjectExtractor:
                     entry.decode("utf-8", errors="replace")
                     for entry in line_program["include_directory"]
                 ]
+                _dwarf5 = line_program.header.version >= 5
                 for entry in line_program.get_entries():
                     state = entry.state
-                    if state is None or state.end_sequence or state.file == 0:
+                    if state is None or state.end_sequence:
                         continue
-                    file_entry = file_entries[state.file - 1]
+                    file_index = state.file if _dwarf5 else state.file - 1
+                    if file_index < 0 or file_index >= len(file_entries):
+                        continue
+                    file_entry = file_entries[file_index]
                     file_name = file_entry.name.decode("utf-8", errors="replace")
                     if file_entry.dir_index:
-                        directory = include_dirs[file_entry.dir_index - 1]
-                        file_name = f"{directory}/{file_name}"
+                        dir_index = (
+                            file_entry.dir_index
+                            if _dwarf5
+                            else file_entry.dir_index - 1
+                        )
+                        if 0 <= dir_index < len(include_dirs):
+                            directory = include_dirs[dir_index]
+                            file_name = f"{directory}/{file_name}"
                     result[int(state.address)] = SourceLocation(
                         file=file_name,
                         line=int(state.line),

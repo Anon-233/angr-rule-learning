@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
-from angr_rule_learning.extraction.models import ExtractedInstruction, WindowPair
+from angr_rule_learning.extraction.models import (
+    ExtractedInstruction,
+    InstructionWindow,
+    WindowPair,
+)
 from angr_rule_learning.verification.candidate import (
     Clobbers,
     CodeFragment,
@@ -15,6 +19,10 @@ class SurfaceInferer:
         self._diagnostics = diagnostics
 
     def infer(self, pair: WindowPair) -> VerificationCandidate | None:
+        if _has_memory_access(pair.guest) or _has_memory_access(pair.host):
+            self._diagnostics.record_window_skipped("unsupported_memory_surface")
+            return None
+
         guest_reads = _ordered_unique(
             reg for inst in pair.guest.instructions for reg in inst.read_registers
         )
@@ -95,3 +103,19 @@ def _candidate_id(pair: WindowPair) -> str:
         f"h{pair.host.instructions[0].address:x}"
         f"-{pair.host.instructions[-1].end_address:x}"
     )
+
+
+def _has_memory_access(window: InstructionWindow) -> bool:
+    for inst in window.instructions:
+        if inst.arch == "aarch64":
+            if inst.mnemonic.lower().startswith(
+                ("ldr", "str", "ldp", "stp", "ldur", "stur")
+            ):
+                return True
+            if "[" in inst.op_str or "]" in inst.op_str:
+                return True
+        elif inst.arch == "x86-64":
+            op_str_lower = inst.op_str.lower()
+            if "[" in op_str_lower or "]" in op_str_lower or "ptr" in op_str_lower:
+                return True
+    return False

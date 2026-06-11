@@ -78,3 +78,16 @@ def test_surface_inferer_skips_ambiguous_register_counts() -> None:
 
     assert candidate is None
     assert diagnostics.to_json()["skip_reasons"] == {"ambiguous_register_surface": 1}
+
+
+def test_surface_inferer_skips_memory_access_window() -> None:
+    pair = _pair(
+        _inst("aarch64", 0x1000, ("x1",), ("x0",), mnemonic="ldr"),
+        _inst("x86-64", 0x2000, ("rcx",), ("rax",), mnemonic="mov"),
+    )
+    diagnostics = MiningDiagnostics()
+
+    candidate = SurfaceInferer(diagnostics).infer(pair)
+
+    assert candidate is None
+    assert diagnostics.to_json()["skip_reasons"] == {"unsupported_memory_surface": 1}

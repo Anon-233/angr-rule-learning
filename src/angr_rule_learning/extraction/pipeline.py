@@ -96,17 +96,20 @@ class ExtractionPipeline:
         if self._region_provider is not None:
             return self._region_provider(config, diagnostics)
         artifacts = self._build_driver.build(config)
-        return self._extract_regions(artifacts, diagnostics)
+        return self._extract_regions(artifacts, config, diagnostics)
 
     def _extract_regions(
         self,
         artifacts: BuildArtifacts,
+        config: ExtractionConfig,
         diagnostics: MiningDiagnostics,
     ) -> tuple[AlignmentRegion, ...]:
         guest_functions = self._object_extractor.extract(
-            artifacts.guest_object, "aarch64"
+            artifacts.guest_object, config.guest_arch
         )
-        host_functions = self._object_extractor.extract(artifacts.host_object, "x86-64")
+        host_functions = self._object_extractor.extract(
+            artifacts.host_object, config.host_arch
+        )
         block_builder = BasicBlockBuilder()
         guest_blocks = tuple(
             block

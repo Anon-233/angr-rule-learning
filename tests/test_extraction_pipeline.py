@@ -90,7 +90,7 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
         return
     source = Path(__file__).resolve().parents[1] / "samples" / "sources" / "smoke_int.c"
     output = tmp_path / "candidates.jsonl"
-    diagnostics = tmp_path / "diagnostics.json"
+    diagnostics_path = tmp_path / "diagnostics.json"
     try:
         main(
             [
@@ -101,16 +101,25 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
                 "--output",
                 str(output),
                 "--diagnostics",
-                str(diagnostics),
+                str(diagnostics_path),
                 "--optimization",
                 "0",
             ]
         )
-    except RuntimeError:
-        return
+    except RuntimeError as exc:
+        if "error: unable to create target" in str(exc).lower():
+            return
+        if "cannot find clang" in str(exc).lower():
+            return
+        raise
 
     assert output.exists()
-    assert diagnostics.exists()
-    payload = json.loads(diagnostics.read_text(encoding="utf-8"))
-    assert "windows_enumerated" in payload
+    assert diagnostics_path.exists()
+    payload = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert payload["regions"] > 0, f"expected regions > 0, got {payload}"
+    assert payload["windows_enumerated"] > 0, f"expected windows > 0, got {payload}"
     assert "skip_reasons" in payload
+
+    candidates = list(read_candidates(output))
+    for candidate in candidates:
+        assert candidate.candidate_id
