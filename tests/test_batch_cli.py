@@ -175,3 +175,49 @@ def test_cli_writes_report_jsonl_and_summary_json(tmp_path) -> None:
     assert summary["total"] == 1
     assert summary["statuses"] == {"pass": 1}
     assert summary["by_kind"]["register"] == {"pass": 1}
+
+
+def test_extract_cli_rejects_rules_output_without_verify(tmp_path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "extract",
+                str(source),
+                "--work-dir",
+                str(tmp_path / "work"),
+                "--output",
+                str(tmp_path / "candidates.jsonl"),
+                "--diagnostics",
+                str(tmp_path / "diagnostics.json"),
+                "--rules-output",
+                str(tmp_path / "rules.txt"),
+            ]
+        )
+
+    assert excinfo.value.code == 2
+
+
+def test_extract_cli_rejects_rules_diagnostics_without_verify(tmp_path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "extract",
+                str(source),
+                "--work-dir",
+                str(tmp_path / "work"),
+                "--output",
+                str(tmp_path / "candidates.jsonl"),
+                "--diagnostics",
+                str(tmp_path / "diagnostics.json"),
+                "--rules-diagnostics",
+                str(tmp_path / "rules_diagnostics.json"),
+            ]
+        )
+
+    assert excinfo.value.code == 2

@@ -37,6 +37,8 @@ def main(argv: list[str] | None = None) -> None:
     extract_parser.add_argument("--guest-max-window", type=int, default=2)
     extract_parser.add_argument("--host-max-window", type=int, default=3)
     extract_parser.add_argument("--verify", action="store_true")
+    extract_parser.add_argument("--rules-output", type=Path)
+    extract_parser.add_argument("--rules-diagnostics", type=Path)
 
     args = parser.parse_args(argv)
     if args.command == "verify":
@@ -46,6 +48,12 @@ def main(argv: list[str] | None = None) -> None:
         write_reports_jsonl(args.output, reports)
         write_summary_json(args.summary, verifier.summarize(reports))
     elif args.command == "extract":
+        if (
+            args.rules_output is not None or args.rules_diagnostics is not None
+        ) and not args.verify:
+            extract_parser.error(
+                "--rules-output and --rules-diagnostics require --verify"
+            )
         config = ExtractionConfig(
             source=args.source,
             work_dir=args.work_dir,
@@ -63,4 +71,6 @@ def main(argv: list[str] | None = None) -> None:
             candidates_output=args.output,
             diagnostics_output=args.diagnostics,
             verify=args.verify,
+            rules_output=args.rules_output,
+            rules_diagnostics_output=args.rules_diagnostics,
         )
