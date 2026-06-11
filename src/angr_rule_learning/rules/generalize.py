@@ -382,12 +382,16 @@ def _replace_immediates_shared(
     for line in guest_lines:
         for m in guest_pattern.finditer(line):
             c = _imm_canonical(m, guest_arch)
+            if c in ("0", "00", "000"):
+                continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
                 next_id += 1
     for line in host_lines:
         for m in host_pattern.finditer(line):
             c = _imm_canonical(m, host_arch)
+            if c in ("0", "00", "000"):
+                continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
                 next_id += 1
@@ -400,6 +404,8 @@ def _replace_immediates_shared(
     ) -> tuple[str, ...]:
         def _replacer(match: re.Match[str]) -> str:
             c = _imm_canonical(match, arch)
+            if c in ("0", "00", "000"):
+                return match.group(0)
             return f"{prefix}imm{canonical_to_id[c]}"
 
         return tuple(pattern.sub(_replacer, line) for line in lines)
@@ -494,7 +500,7 @@ def _annotate_dead_writes(
             mapping.get(r, r)
             for r, idx in sorted(first_write.items(), key=lambda x: x[1])
         ]
-        result.append(f"save {", ".join(save_regs)}")
+        result.append(f"save {', '.join(save_regs)}")
         for idx, line in enumerate(lines):
             result.append(line)
             restore_now = [
@@ -503,7 +509,7 @@ def _annotate_dead_writes(
                 if last_idx == idx
             ]
             if restore_now:
-                result.append(f"restore {", ".join(restore_now)}")
+                result.append(f"restore {', '.join(restore_now)}")
         return tuple(result)
 
     return (
