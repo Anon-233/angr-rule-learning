@@ -9,6 +9,11 @@ from angr_rule_learning.rules.registers import (
     UnsupportedRegisterClass,
     classify_register,
 )
+from angr_rule_learning.rules.writer import (
+    format_rule,
+    write_rule_diagnostics_json,
+    write_rules_text,
+)
 
 __all__ = [
     "GeneratedRule",
@@ -18,4 +23,7 @@ __all__ = [
     "RuleGeneralizer",
     "UnsupportedRegisterClass",
     "classify_register",
+    "format_rule",
+    "write_rule_diagnostics_json",
+    "write_rules_text",
 ]
