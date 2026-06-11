@@ -465,36 +465,48 @@ def _annotate_dead_writes(
     output_regs = {reg for pair in candidate.output_registers for reg in pair}
     cc_families = {"nzcv", "rflags"}
 
-    def _dead_writes(
+    def _dead_write_info(
         instructions: tuple[ExtractedInstruction, ...],
-    ) -> tuple[str, ...]:
-        dead: list[str] = []
-        for inst in instructions:
+    ) -> tuple[dict[str, int], dict[str, int]]:
+        first_write: dict[str, int] = {}
+        last_read: dict[str, int] = {}
+        for idx, inst in enumerate(instructions):
             for reg in inst.write_registers:
                 family = family_for_register(inst.arch, reg)
                 if family in cc_families or is_allowed_literal_register(inst.arch, reg):
                     continue
-                if reg not in output_regs:
-                    dead.append(reg)
-        return tuple(dead)
+                if reg not in output_regs and reg not in first_write:
+                    first_write[reg] = idx
+            for reg in inst.read_registers:
+                if reg in first_write:
+                    last_read[reg] = idx
+        return first_write, last_read
 
-    guest_dead = _dead_writes(window.guest.instructions)
-    host_dead = _dead_writes(window.host.instructions)
-
-    if not guest_dead and not host_dead:
-        return guest_lines, host_lines
-
-    def _apply(lines: tuple[str, ...], dead_regs: tuple[str, ...]) -> tuple[str, ...]:
-        if not dead_regs:
+    def _apply(
+        lines: tuple[str, ...],
+        instructions: tuple[ExtractedInstruction, ...],
+    ) -> tuple[str, ...]:
+        first_write, last_read = _dead_write_info(instructions)
+        if not first_write:
             return lines
         result: list[str] = []
-        regs_str = ", ".join(mapping.get(r, r) for r in dead_regs)
-        result.append(f"{{save {regs_str}}}")
-        result.extend(lines)
-        result.append(f"{{restore {regs_str}}}")
+        save_regs = [
+            mapping.get(r, r)
+            for r, idx in sorted(first_write.items(), key=lambda x: x[1])
+        ]
+        result.append(f"save {", ".join(save_regs)}")
+        for idx, line in enumerate(lines):
+            result.append(line)
+            restore_now = [
+                mapping.get(r, r)
+                for r, last_idx in last_read.items()
+                if last_idx == idx
+            ]
+            if restore_now:
+                result.append(f"restore {", ".join(restore_now)}")
         return tuple(result)
 
     return (
-        _apply(guest_lines, guest_dead),
-        _apply(host_lines, host_dead),
+        _apply(guest_lines, window.guest.instructions),
+        _apply(host_lines, window.host.instructions),
     )
