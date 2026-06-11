@@ -235,3 +235,41 @@ def test_generalizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
     assert "i32_reg" in rule.guest_lines[0]
     assert "i32_reg" in rule.host_lines[0]
     assert diagnostics.to_json()["rules_emitted"] == 1
+
+
+def test_generalizer_allows_two_address_input_output_pair() -> None:
+    diagnostics = RuleDiagnostics()
+    generalizer = RuleGeneralizer(diagnostics)
+    window = _window_pair(
+        (_inst("aarch64", 0x1000, "add", "w8, w0, w8"),),
+        (_inst("x86-64", 0x2000, "add", "eax, ecx"),),
+    )
+    candidate = _candidate(
+        input_registers=(("w8", "eax"), ("w0", "ecx")),
+        output_registers=(("w8", "eax"),),
+    )
+    report = _passing_report(candidate.candidate_id)
+
+    rule = generalizer.generate(1, window, candidate, report)
+
+    assert rule is not None
+    assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg1",)
+    assert rule.host_lines == ("add i32_reg1, i32_reg2",)
+    assert diagnostics.rules_emitted == 1
+
+
+def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
+    diagnostics = RuleDiagnostics()
+    generalizer = RuleGeneralizer(diagnostics)
+    window = _window_pair(
+        (_inst("aarch64", 0x1000, "add", "w8, w0, w8"),),
+        (_inst("x86-64", 0x2000, "add", "eax, ecx"),),
+    )
+    candidate = _candidate(
+        input_registers=(("w0", "eax"), ("w8", "ecx")),
+        output_registers=(("w8", "eax"),),
+    )
+    report = _passing_report(candidate.candidate_id)
+
+    assert generalizer.generate(1, window, candidate, report) is None
+    assert diagnostics.skip_reasons["unsupported_rule_shape"] == 1

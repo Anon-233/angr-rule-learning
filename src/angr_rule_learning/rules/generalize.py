@@ -116,10 +116,20 @@ def _build_placeholder_map(
         host_class = _classify_for_rule(host_arch, host_reg)
         if guest_class != host_class:
             raise _RuleSkip("register_class_mismatch")
-        existing = mapping.get(guest_reg) or mapping.get(host_reg)
+        guest_existing = mapping.get(guest_reg)
+        host_existing = mapping.get(host_reg)
+        if (
+            guest_existing is not None
+            and host_existing is not None
+            and guest_existing != host_existing
+        ):
+            raise _RuleSkip("unsupported_rule_shape")
+
+        existing = guest_existing or host_existing
         if existing is None:
             existing = f"{guest_class.placeholder_prefix}_reg{next_id}"
             next_id += 1
+
         for register in (guest_reg, host_reg):
             previous = mapping.get(register)
             if previous is not None and previous != existing:
@@ -186,3 +196,13 @@ def _remaining_registers(text: str, arch: str) -> tuple[str, ...]:
         if token in known:
             remaining.append(token)
     return tuple(remaining)
+
+
+def _placeholder_clash(
+    mapping: dict[str, str], register: str, placeholder: str
+) -> bool:
+    """Check if placeholder is already assigned to a different register."""
+    for mapped_reg, mapped_ph in mapping.items():
+        if mapped_ph == placeholder and mapped_reg != register:
+            return True
+    return False
