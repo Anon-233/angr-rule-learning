@@ -19,6 +19,12 @@ class SurfaceInferer:
         self._diagnostics = diagnostics
 
     def infer(self, pair: WindowPair) -> VerificationCandidate | None:
+        if _has_unsupported_control_flow(pair.guest) or _has_unsupported_control_flow(
+            pair.host
+        ):
+            self._diagnostics.record_window_skipped("unsupported_control_flow_surface")
+            return None
+
         if _has_memory_access(pair.guest) or _has_memory_access(pair.host):
             self._diagnostics.record_window_skipped("unsupported_memory_surface")
             return None
@@ -115,7 +121,25 @@ def _has_memory_access(window: InstructionWindow) -> bool:
             if "[" in inst.op_str or "]" in inst.op_str:
                 return True
         elif inst.arch == "x86-64":
+            if inst.mnemonic.lower() in ("push", "pop"):
+                return True
             op_str_lower = inst.op_str.lower()
             if "[" in op_str_lower or "]" in op_str_lower or "ptr" in op_str_lower:
+                return True
+    return False
+
+
+_UNSUPPORTED_CONTROL_FLOW = {
+    "aarch64": frozenset(("b", "br", "blr", "ret")),
+    "x86-64": frozenset(("jmp", "ret", "call")),
+}
+
+
+def _has_unsupported_control_flow(window: InstructionWindow) -> bool:
+    for inst in window.instructions:
+        mnemonic = inst.mnemonic.lower()
+        arch = inst.arch
+        if arch in _UNSUPPORTED_CONTROL_FLOW:
+            if mnemonic in _UNSUPPORTED_CONTROL_FLOW[arch]:
                 return True
     return False

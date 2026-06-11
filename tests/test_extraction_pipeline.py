@@ -123,3 +123,9 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
     candidates = list(read_candidates(output))
     for candidate in candidates:
         assert candidate.candidate_id
+        host_hex = candidate.host.code_hex
+        assert host_hex != "55", f"push candidate leaked: {candidate.candidate_id}"
+        assert host_hex != "c3", f"ret candidate leaked: {candidate.candidate_id}"
+        assert not host_hex.startswith("e8"), (
+            f"call candidate leaked: {candidate.candidate_id}"
+        )
