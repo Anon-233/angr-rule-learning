@@ -238,36 +238,19 @@ def _replace_labels_shared(
     host_lines: tuple[str, ...],
     host_arch: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    label_to_id: dict[str, int] = {}
-    next_id = 1
     hex_re = {"aarch64": _AARCH64_HEX_RE, "x86-64": _X86_64_HEX_RE}
     prefix = {"aarch64": "#", "x86-64": ""}
-
-    def _collect(lines: tuple[str, ...], arch: str) -> None:
-        nonlocal next_id
-        for line in lines:
-            if _is_branch_line(line, arch):
-                m = hex_re[arch].search(line)
-                if m:
-                    target = m.group(1).lower()
-                    if target not in label_to_id:
-                        label_to_id[target] = next_id
-                        next_id += 1
-
-    _collect(guest_lines, guest_arch)
-    _collect(host_lines, host_arch)
 
     def _replace_side(lines: tuple[str, ...], arch: str) -> tuple[str, ...]:
         result: list[str] = []
         p = prefix[arch]
+        pos = 0
         for line in lines:
             if _is_branch_line(line, arch):
                 m = hex_re[arch].search(line)
                 if m:
-                    target = m.group(1).lower()
-                    if target in label_to_id:
-                        lid = label_to_id[target]
-                        line = line.replace(f"{p}{m.group(1)}", f"{p}label{lid}")
+                    pos += 1
+                    line = line.replace(f"{p}{m.group(1)}", f"{p}label{pos}")
             result.append(line)
         return tuple(result)
 
