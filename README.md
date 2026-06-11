@@ -1,82 +1,89 @@
 # angr-rule-learning
 
-This is a new Python implementation of the binary translation rule learning
-pipeline. The old implementation is preserved outside this subproject at:
+`angr-rule-learning` is a Python prototype for learning and validating binary
+translation rules. The current implementation focuses on the semantic verifier:
+it accepts paired guest/host machine-code fragments, executes them with angr,
+and uses Claripy/SMT checks to decide whether the requested semantic surfaces
+are equivalent.
 
-```text
-../legacy_original_20260609
-```
+The first supported rule-learning target is AArch64 integer fragments translated
+to x86-64 integer fragments. The package is intentionally API-first so future
+candidate extraction, rule generalization, rule storage, and coverage evaluation
+can reuse the verifier without shelling out to the CLI.
 
-The first milestone is an angr-backed semantic verifier for AArch64 integer
-rules targeting x86-64. It accepts concrete guest/host machine-code fragments,
-injects shared symbolic inputs with Claripy, executes both fragments with
-angr, and proves output equivalence by asking whether a difference is
-satisfiable.
-
-## Current Scope
+## Current Status
 
 Implemented:
 
-- AArch64 and x86-64 shellcode fragments
-- register initialization mapping
-- register output equivalence checks
-- memory slot initialization and load/store event checks
-- `must_alias` memory slots and `may_alias` unsupported reporting
-- address binding expressions (`reg`, `reg + const`, `reg - const`)
-- four-state verifier reports: `pass`, `fail`, `unsupported`, `error`
-- explicit flag output checks for the first stable flag subset
-- terminal conditional branch guard checks
-- stronger memory SMT checks with shared relation checker
-- JSON/JSONL request/result boundary for future pipeline integration
-- batch CLI wrapper around the Python verifier API
+- typed verifier candidate and report models;
+- JSON/JSONL candidate input and JSON report/summary output;
+- batch verifier API and CLI wrapper;
+- AArch64 and x86-64 shellcode execution through angr;
+- shared symbolic input register initialization;
+- SMT relation checks for register outputs, memory events, explicit flags, and
+  terminal conditional branch guards;
+- memory slots, address bindings, load/store events, `must_alias`, and
+  `may_alias` unsupported reporting;
+- four-state diagnostics: `pass`, `fail`, `unsupported`, and `error`.
 
 Not implemented yet:
 
-- precondition solving
-- branch target equivalence for direct or indirect branches
-- candidate extraction from compiler debug information
-- rule generalization and rule store
-- coverage evaluation against the complete AArch64 -> x86-64 integer rule table
+- compiler/debug-info based candidate extraction;
+- rule generalization and rule store;
+- coverage evaluation against a reference rule table;
+- precondition solving;
+- branch target equivalence for direct or indirect branches.
 
-Known verifier coverage limit:
+## Quick Start
 
-- Only straight-line fragments and fragments ending in one conditional branch are
-  currently supported.
-- Non-terminal control flow, terminal direct unconditional branches such as
-  AArch64 `b` or x86-64 `jmp`, and terminal indirect branches such as AArch64
-  `br` or x86-64 `jmp reg` are reported as `unsupported`.
-- This is expected to prevent a meaningful subset of candidate rules from being
-  learned. Future verifier work should compare branch target mappings for
-  direct branches and symbolic target expressions for indirect branches.
+Install dependencies with uv:
 
-## Usage
+```bash
+uv sync
+```
 
-Run tests:
+Run the test suite:
 
 ```bash
 uv run pytest
 ```
 
-Verify a JSONL batch:
+Run lint and formatting checks:
 
 ```bash
-uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl --output report.jsonl --summary summary.json
+uv run ruff check
+uv run ruff format --check
 ```
 
-The CLI is an external wrapper around the Python verifier API. Full pipeline
-code should call `SemanticVerifier` or `BatchVerifier` directly instead of
-shelling out to the CLI.
+Verify the example JSONL batch:
 
-## Design Direction
+```bash
+uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl \
+  --output /tmp/angr-rule-learning-report.jsonl \
+  --summary /tmp/angr-rule-learning-summary.json
+```
 
-The new system should keep data boundaries explicit:
+The CLI is a thin wrapper around `BatchVerifier`. Pipeline code should call the
+Python API directly.
 
-- compiler/candidate extraction produces structured candidate JSON
-- the semantic verifier consumes candidate JSON and emits structured JSON
-- rule generalization consumes successful verifier results
-- evaluation reports coverage, pass/fail reasons, and rule usefulness
-- coverage can be computed against the existing complete AArch64 -> x86-64
-  integer rule table
+## Documentation
 
-This avoids the old implementation's dependency on parsing fragile textual
-logs from the symbolic execution engine.
+- [Architecture](docs/architecture.md): current package structure, data flow,
+  and extension points.
+- [Verifier](docs/verifier.md): semantic verifier behavior, SMT checks, memory
+  model, branch scope, and known coverage limits.
+- [Candidate Format](docs/candidate-format.md): input candidate JSON, report
+  JSON, and batch summary schemas.
+
+## Repository Layout
+
+```text
+src/angr_rule_learning/
+  arch/          architecture-name and flag helpers
+  io/            JSON/JSONL readers, writers, and schema conversion
+  smt/           shared bit-vector width utilities
+  verification/  verifier models, execution, checks, reports, and batching
+tests/           pytest coverage for verifier behavior and CLI output
+examples/        small candidate batches for smoke testing
+docs/            architecture and format documentation
+```
