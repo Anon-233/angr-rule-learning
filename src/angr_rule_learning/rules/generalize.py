@@ -286,25 +286,41 @@ def _replace_labels_shared(
                 host_targets.append((target, sl))
 
     label_by_src: dict[tuple[str, int], int] = {}
+    pos_label: dict[int, int] = {}
     next_id = 1
     guest_label_ids: list[int] = []
     host_label_ids: list[int] = []
 
+    guest_unresolved_pos = 0
     for _target, sl in guest_targets:
         if sl is not None and sl in label_by_src:
             guest_label_ids.append(label_by_src[sl])
-        else:
-            if sl is not None:
-                label_by_src[sl] = next_id
+        elif sl is not None:
+            label_by_src[sl] = next_id
             guest_label_ids.append(next_id)
             next_id += 1
+        else:
+            guest_unresolved_pos += 1
+            if guest_unresolved_pos not in pos_label:
+                pos_label[guest_unresolved_pos] = next_id
+                next_id += 1
+            guest_label_ids.append(pos_label[guest_unresolved_pos])
 
+    host_unresolved_pos = 0
     for _target, sl in host_targets:
         if sl is not None and sl in label_by_src:
             host_label_ids.append(label_by_src[sl])
-        else:
+        elif sl is not None:
             host_label_ids.append(next_id)
             next_id += 1
+        else:
+            host_unresolved_pos += 1
+            if host_unresolved_pos in pos_label:
+                host_label_ids.append(pos_label[host_unresolved_pos])
+            else:
+                pos_label[host_unresolved_pos] = next_id
+                host_label_ids.append(next_id)
+                next_id += 1
 
     def _replace_side(
         lines: tuple[str, ...],
