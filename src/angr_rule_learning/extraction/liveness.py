@@ -52,6 +52,9 @@ _X86_64_ALIASES: dict[str, str] = {
     "ip": "rip",
 }
 
+_FRAME_POINTER_FAMILIES = frozenset({"sp", "fp", "rsp", "rbp", "x29"})
+
+
 _X86_FLAG_ALIASES = frozenset(
     {
         "rflags",
@@ -227,6 +230,20 @@ def _analyze_function(
         inst.address: families_for_registers(function.arch, inst.write_registers)
         for inst in instructions
     }
+
+    # Augment ABI implicit register effects at call sites
+    for inst in instructions:
+        mnemonic = inst.mnemonic.strip().lower()
+        if mnemonic in ("bl", "blr", "call"):
+            arch = function.arch
+            args = _call_argument_families(arch)
+            rets = _call_return_families(arch)
+            current_reads = set(reads[inst.address])
+            current_reads.update(args)
+            reads[inst.address] = tuple(sorted(current_reads))
+            current_writes = set(writes[inst.address])
+            current_writes.update(rets)
+            writes[inst.address] = tuple(sorted(current_writes))
     live_in: dict[int, frozenset[str]] = {
         inst.address: frozenset() for inst in instructions
     }
@@ -400,7 +417,10 @@ class WindowSurfaceInferer:
             tuple(reg for inst in window.instructions for reg in inst.write_registers),
         )
         semantic_output_families = tuple(
-            family for family, _register in defs if family in last_liveness.live_out
+            family
+            for family, _register in defs
+            if family in last_liveness.live_out
+            and family not in _FRAME_POINTER_FAMILIES
         )
         terminal_branch = _is_conditional_branch(arch, last.mnemonic.strip().lower())
 
@@ -478,3 +498,21 @@ def _ordered_input_registers(
             result.append((family, register))
 
     return tuple(result)
+
+
+def _call_argument_families(arch: str) -> tuple[str, ...]:
+    normalized = _normalize_arch(arch)
+    if normalized == "aarch64":
+        return ("x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7")
+    if normalized == "x86-64":
+        return ("rdi", "rsi", "rdx", "rcx", "r8", "r9")
+    return ()
+
+
+def _call_return_families(arch: str) -> tuple[str, ...]:
+    normalized = _normalize_arch(arch)
+    if normalized == "aarch64":
+        return ("x0",)
+    if normalized == "x86-64":
+        return ("rax",)
+    return ()

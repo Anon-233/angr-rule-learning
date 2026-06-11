@@ -38,7 +38,8 @@ _ARCHINFO_IDS = {
 }
 
 _ALLOWED_LITERAL_REGISTERS = {
-    "aarch64": frozenset({"xzr", "wzr"}),
+    "aarch64": frozenset({"xzr", "wzr", "sp", "wsp", "fp"}),
+    "x86-64": frozenset({"rsp", "esp", "sp", "rbp", "ebp", "bp"}),
 }
 
 _UNSUPPORTED_PREFIXES = {

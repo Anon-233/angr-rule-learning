@@ -276,3 +276,51 @@ def test_window_surface_reports_no_verifiable_surface_for_dead_write() -> None:
     surface = WindowSurfaceInferer(index).infer(_window((function.instructions[0],)))
 
     assert surface.skip_reason == "no_verifiable_surface"
+
+
+def test_call_site_reads_argument_registers_and_writes_return_register() -> None:
+    function = _function(
+        (
+            _inst(0x1000, "mov", "edi, 9", writes=("edi",)),
+            _inst(0x1003, "call", "0x1100"),
+            _inst(0x1008, "add", "eax, eax", reads=("eax",), writes=("eax", "rflags")),
+            _inst(0x100B, "ret"),
+        )
+    )
+
+    index = LivenessAnalyzer().analyze((function,))
+    call_entry = index.for_instruction(function.instructions[1])
+
+    # Argument registers should be live-in at the call site
+    assert "rdi" in call_entry.live_in, (
+        "rdi (argument register) must be live at call site"
+    )
+    # return register should be written (killed) at the call site
+    assert "rax" in call_entry.writes, (
+        "rax (return register) must be in call site writes"
+    )
+
+
+def test_aarch64_bl_implicit_parameter_register_liveness() -> None:
+    function = _function(
+        (
+            _inst(
+                0x4000,
+                "mov",
+                "w0, #9",
+                arch="aarch64",
+                writes=("w0",),
+            ),
+            _inst(0x4004, "bl", "0x5000", arch="aarch64"),
+            _inst(0x4008, "ret", arch="aarch64"),
+        ),
+        arch="aarch64",
+    )
+
+    index = LivenessAnalyzer().analyze((function,))
+    mov_entry = index.for_instruction(function.instructions[0])
+
+    # mov w0, #9 is a parameter setup before a call — w0/x0 should be live
+    assert "x0" in mov_entry.live_out, (
+        "x0 must be live after mov w0, #9 (used by bl as argument)"
+    )
