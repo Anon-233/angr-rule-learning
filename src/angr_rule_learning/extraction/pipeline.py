@@ -13,7 +13,14 @@ from angr_rule_learning.extraction.emit import (
     write_candidates_jsonl,
     write_diagnostics_json,
 )
-from angr_rule_learning.extraction.models import AlignmentRegion, WindowPair
+from angr_rule_learning.extraction.liveness import (
+    LivenessAnalyzer,
+    LivenessIndex,
+)
+from angr_rule_learning.extraction.models import (
+    AlignmentRegion,
+    WindowPair,
+)
 from angr_rule_learning.extraction.object import ObjectExtractor
 from angr_rule_learning.extraction.surfaces import SurfaceInferer
 from angr_rule_learning.extraction.windows import VerifiedWindowSet, WindowMiner
@@ -31,9 +38,13 @@ from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
 
 
-RegionProvider = Callable[
-    [ExtractionConfig, MiningDiagnostics], tuple[AlignmentRegion, ...]
-]
+@dataclass(frozen=True)
+class ExtractionData:
+    regions: tuple[AlignmentRegion, ...]
+    liveness: LivenessIndex
+
+
+RegionProvider = Callable[[ExtractionConfig, MiningDiagnostics], ExtractionData]
 
 
 @dataclass(frozen=True)
@@ -78,9 +89,10 @@ class ExtractionPipeline:
         rule_diagnostics = RuleDiagnostics()
         rule_generalizer = RuleGeneralizer(rule_diagnostics)
         rules: list[GeneratedRule] = []
-        regions = self._regions(config, diagnostics)
+        data = self._regions(config, diagnostics)
+        regions = data.regions
         miner = WindowMiner(config.window_limits, diagnostics)
-        inferer = SurfaceInferer(diagnostics)
+        inferer = SurfaceInferer(diagnostics, data.liveness)
         verified = VerifiedWindowSet()
         candidates: list[VerificationCandidate] = []
         reports: list[VerificationReport] = []
@@ -131,9 +143,10 @@ class ExtractionPipeline:
         self,
         config: ExtractionConfig,
         diagnostics: MiningDiagnostics,
-    ) -> tuple[AlignmentRegion, ...]:
+    ) -> ExtractionData:
         if self._region_provider is not None:
-            return self._region_provider(config, diagnostics)
+            regions = self._region_provider(config, diagnostics)
+            return ExtractionData(regions, LivenessIndex.empty())
         artifacts = self._build_driver.build(config)
         return self._extract_regions(artifacts, config, diagnostics)
 
@@ -142,13 +155,14 @@ class ExtractionPipeline:
         artifacts: BuildArtifacts,
         config: ExtractionConfig,
         diagnostics: MiningDiagnostics,
-    ) -> tuple[AlignmentRegion, ...]:
+    ) -> ExtractionData:
         guest_functions = self._object_extractor.extract(
             artifacts.guest_object, config.guest_arch
         )
         host_functions = self._object_extractor.extract(
             artifacts.host_object, config.host_arch
         )
+        liveness = LivenessAnalyzer().analyze(guest_functions + host_functions)
         block_builder = BasicBlockBuilder()
         guest_blocks = tuple(
             block
@@ -162,4 +176,5 @@ class ExtractionPipeline:
         )
         for _function in guest_functions:
             diagnostics.record_function()
-        return AlignmentRegionBuilder(diagnostics).build(guest_blocks, host_blocks)
+        regions = AlignmentRegionBuilder(diagnostics).build(guest_blocks, host_blocks)
+        return ExtractionData(regions, liveness)

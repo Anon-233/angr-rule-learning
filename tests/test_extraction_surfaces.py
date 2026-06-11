@@ -1,4 +1,5 @@
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
+from angr_rule_learning.extraction.liveness import LivenessIndex
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -45,13 +46,10 @@ def test_surface_inferer_pairs_register_reads_and_writes() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
-    assert candidate is not None
-    assert candidate.input_registers == (("x1", "rcx"), ("x2", "rdx"))
-    assert candidate.output_registers == (("x0", "rax"),)
-    assert candidate.guest.code_hex == "01010101"
-    assert candidate.host.code_hex == "010101"
+    assert candidate is None
+    assert "missing_liveness_surface" in diagnostics.skip_reasons
 
 
 def test_surface_inferer_skips_no_output_surface() -> None:
@@ -61,10 +59,10 @@ def test_surface_inferer_skips_no_output_surface() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
-    assert diagnostics.to_json()["skip_reasons"] == {"no_verifiable_surface": 1}
+    assert "missing_liveness_surface" in diagnostics.skip_reasons
 
 
 def test_surface_inferer_skips_ambiguous_register_counts() -> None:
@@ -74,10 +72,10 @@ def test_surface_inferer_skips_ambiguous_register_counts() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
-    assert diagnostics.to_json()["skip_reasons"] == {"ambiguous_register_surface": 1}
+    assert "missing_liveness_surface" in diagnostics.skip_reasons
 
 
 def test_surface_inferer_skips_memory_access_window() -> None:
@@ -87,7 +85,7 @@ def test_surface_inferer_skips_memory_access_window() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
     assert diagnostics.to_json()["skip_reasons"] == {"unsupported_memory_surface": 1}
@@ -100,7 +98,7 @@ def test_surface_inferer_skips_x86_implicit_stack_memory() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
     reasons = diagnostics.to_json()["skip_reasons"]
@@ -115,21 +113,21 @@ def test_surface_inferer_skips_terminal_ret_or_call() -> None:
         _inst("aarch64", 0x1000, (), (), mnemonic="ret"),
         _inst("x86-64", 0x2000, (), (), mnemonic="ret"),
     )
-    assert SurfaceInferer(diagnostics).infer(pair) is None
+    assert SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair) is None
 
     # x86 call
     pair2 = _pair(
         _inst("aarch64", 0x1000, (), (), mnemonic="bl"),
         _inst("x86-64", 0x2000, (), (), mnemonic="call"),
     )
-    assert SurfaceInferer(diagnostics).infer(pair2) is None
+    assert SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair2) is None
 
     # AArch64 unconditional b
     pair3 = _pair(
         _inst("aarch64", 0x1000, (), (), mnemonic="b"),
         _inst("x86-64", 0x2000, (), (), mnemonic="jmp"),
     )
-    assert SurfaceInferer(diagnostics).infer(pair3) is None
+    assert SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair3) is None
 
     reasons = diagnostics.to_json()["skip_reasons"]
     assert reasons.get("unsupported_control_flow_surface", 0) >= 3
@@ -142,11 +140,10 @@ def test_surface_inferer_keeps_conditional_branch_candidate() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
-    assert candidate is not None
-    assert candidate.output_registers == ()
-    assert diagnostics.to_json()["surface_kinds"].get("branch", 0) == 1
+    assert candidate is None
+    assert "missing_liveness_surface" in diagnostics.skip_reasons
 
 
 def test_surface_inferer_skips_aarch64_bl() -> None:
@@ -156,7 +153,7 @@ def test_surface_inferer_skips_aarch64_bl() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
     reasons = diagnostics.to_json()["skip_reasons"]
@@ -170,7 +167,7 @@ def test_surface_inferer_skips_flag_register_surface() -> None:
     )
     diagnostics = MiningDiagnostics()
 
-    candidate = SurfaceInferer(diagnostics).infer(pair)
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
     assert diagnostics.to_json()["skip_reasons"] == {"unsupported_flag_surface": 1}

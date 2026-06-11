@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
+from angr_rule_learning.extraction.liveness import (
+    LivenessIndex,
+    WindowSurfaceInferer,
+)
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -15,8 +19,13 @@ from angr_rule_learning.verification.candidate import (
 
 
 class SurfaceInferer:
-    def __init__(self, diagnostics: MiningDiagnostics) -> None:
+    def __init__(
+        self,
+        diagnostics: MiningDiagnostics,
+        liveness: LivenessIndex,
+    ) -> None:
         self._diagnostics = diagnostics
+        self._surface_inferer = WindowSurfaceInferer(liveness)
 
     def infer(self, pair: WindowPair) -> VerificationCandidate | None:
         if _has_unsupported_control_flow(pair.guest) or _has_unsupported_control_flow(
@@ -29,28 +38,22 @@ class SurfaceInferer:
             self._diagnostics.record_window_skipped("unsupported_memory_surface")
             return None
 
-        if _has_flag_surface(pair.guest) or _has_flag_surface(pair.host):
-            self._diagnostics.record_window_skipped("unsupported_flag_surface")
-            return None
+        guest_surface = self._surface_inferer.infer(pair.guest)
+        host_surface = self._surface_inferer.infer(pair.host)
+        for surface in (guest_surface, host_surface):
+            if surface.skip_reason is not None:
+                self._diagnostics.record_window_skipped(surface.skip_reason)
+                return None
 
-        guest_reads = _ordered_unique(
-            reg for inst in pair.guest.instructions for reg in inst.read_registers
-        )
-        host_reads = _ordered_unique(
-            reg for inst in pair.host.instructions for reg in inst.read_registers
-        )
-        guest_writes = _ordered_unique(
-            reg for inst in pair.guest.instructions for reg in inst.write_registers
-        )
-        host_writes = _ordered_unique(
-            reg for inst in pair.host.instructions for reg in inst.write_registers
-        )
-        if len(guest_reads) != len(host_reads) or len(guest_writes) != len(host_writes):
+        if len(guest_surface.inputs) != len(host_surface.inputs) or len(
+            guest_surface.outputs
+        ) != len(host_surface.outputs):
             self._diagnostics.record_window_skipped("ambiguous_register_surface")
             return None
-        if not guest_writes and not _has_terminal_conditional_branch(pair):
-            self._diagnostics.record_window_skipped("no_verifiable_surface")
+        if guest_surface.kind != host_surface.kind:
+            self._diagnostics.record_window_skipped("ambiguous_register_surface")
             return None
+
         candidate = VerificationCandidate(
             candidate_id=_candidate_id(pair),
             guest=CodeFragment(
@@ -65,8 +68,12 @@ class SurfaceInferer:
                 pair.host.code_hex,
                 pair.host.instruction_count,
             ),
-            input_registers=tuple(zip(guest_reads, host_reads, strict=True)),
-            output_registers=tuple(zip(guest_writes, host_writes, strict=True)),
+            input_registers=tuple(
+                zip(guest_surface.inputs, host_surface.inputs, strict=True)
+            ),
+            output_registers=tuple(
+                zip(guest_surface.outputs, host_surface.outputs, strict=True)
+            ),
             output_flags=(),
             memory=MemorySpec(),
             preconditions=(),
@@ -75,7 +82,9 @@ class SurfaceInferer:
         self._diagnostics.record_window_emitted(
             pair.guest.instruction_count,
             pair.host.instruction_count,
-            ("register",) if guest_writes else ("branch",),
+            ("branch",)
+            if guest_surface.kind == "branch" and not guest_surface.outputs
+            else ("register",),
         )
         return candidate
 
