@@ -74,6 +74,8 @@ class RuleGeneralizer:
         window: WindowPair,
         candidate: VerificationCandidate,
         report: VerificationReport,
+        *,
+        region: object = None,
     ) -> GeneratedRule | None:
         if report.status != "pass" or not report.equivalent:
             return None
@@ -89,13 +91,23 @@ class RuleGeneralizer:
             host_lines = _generalize_instructions(
                 window.host.instructions, mapping, host_arch
             )
+            region_guest = (
+                region.guest_instructions
+                if region is not None
+                else window.guest.instructions
+            )
+            region_host = (
+                region.host_instructions
+                if region is not None
+                else window.host.instructions
+            )
             guest_lines, host_lines = _replace_labels_shared(
                 guest_lines,
                 guest_arch,
                 host_lines,
                 host_arch,
-                window.guest.instructions,
-                window.host.instructions,
+                region_guest,
+                region_host,
             )
             if not _labels_are_consistent(guest_lines, host_lines):
                 raise _RuleSkip("mismatched_branch_targets")

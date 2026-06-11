@@ -119,7 +119,11 @@ class ExtractionPipeline:
                             verified.add(window)
                         if rule_generation_requested:
                             rule = rule_generalizer.generate(
-                                len(rules) + 1, window, candidate, report
+                                len(rules) + 1,
+                                window,
+                                candidate,
+                                report,
+                                region=region,
                             )
                             if rule is not None:
                                 rules.append(rule)
