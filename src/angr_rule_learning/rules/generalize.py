@@ -92,6 +92,8 @@ class RuleGeneralizer:
             guest_lines, host_lines = _replace_labels_shared(
                 guest_lines, guest_arch, host_lines, host_arch
             )
+            if not _labels_are_consistent(guest_lines, host_lines):
+                raise _RuleSkip("mismatched_branch_targets")
             guest_lines, host_lines = _replace_immediates_shared(
                 guest_lines, guest_arch, host_lines, host_arch
             )
@@ -343,3 +345,19 @@ def _placeholder_clash(
         if mapped_ph == placeholder and mapped_reg != register:
             return True
     return False
+
+
+_LABEL_RE = re.compile(r"#?label(\d+)")
+
+
+def _labels_are_consistent(
+    guest_lines: tuple[str, ...], host_lines: tuple[str, ...]
+) -> bool:
+    guest_labels = {
+        m.group(1) for line in guest_lines for m in _LABEL_RE.finditer(line)
+    }
+    host_labels = {m.group(1) for line in host_lines for m in _LABEL_RE.finditer(line)}
+    if guest_labels or host_labels:
+        if guest_labels != host_labels:
+            return False
+    return True
