@@ -90,7 +90,12 @@ class RuleGeneralizer:
                 window.host.instructions, mapping, host_arch
             )
             guest_lines, host_lines = _replace_labels_shared(
-                guest_lines, guest_arch, host_lines, host_arch
+                guest_lines,
+                guest_arch,
+                host_lines,
+                host_arch,
+                window.guest.instructions,
+                window.host.instructions,
             )
             if not _labels_are_consistent(guest_lines, host_lines):
                 raise _RuleSkip("mismatched_branch_targets")
@@ -237,26 +242,90 @@ def _replace_labels_shared(
     guest_arch: str,
     host_lines: tuple[str, ...],
     host_arch: str,
+    guest_instructions: tuple[ExtractedInstruction, ...] = (),
+    host_instructions: tuple[ExtractedInstruction, ...] = (),
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     hex_re = {"aarch64": _AARCH64_HEX_RE, "x86-64": _X86_64_HEX_RE}
     prefix = {"aarch64": "#", "x86-64": ""}
 
-    def _replace_side(lines: tuple[str, ...], arch: str) -> tuple[str, ...]:
+    def _addr_to_line(
+        instructions: tuple[ExtractedInstruction, ...],
+    ) -> dict[int, tuple[str, int] | None]:
+        result: dict[int, tuple[str, int] | None] = {}
+        for inst in instructions:
+            sl = inst.source
+            result[inst.address] = (sl.file, sl.line) if sl is not None else None
+        return result
+
+    guest_lines_map = _addr_to_line(guest_instructions)
+    host_lines_map = _addr_to_line(host_instructions)
+
+    def _resolve_source_line(
+        hex_target: str,
+        lines_map: dict[int, tuple[str, int] | None],
+    ) -> tuple[str, int] | None:
+        return lines_map.get(int(hex_target, 16))
+
+    guest_targets: list[tuple[str, tuple[str, int] | None]] = []
+    host_targets: list[tuple[str, tuple[str, int] | None]] = []
+
+    for line in guest_lines:
+        if _is_branch_line(line, guest_arch):
+            m = hex_re[guest_arch].search(line)
+            if m:
+                target = m.group(1)
+                sl = _resolve_source_line(target, guest_lines_map)
+                guest_targets.append((target, sl))
+
+    for line in host_lines:
+        if _is_branch_line(line, host_arch):
+            m = hex_re[host_arch].search(line)
+            if m:
+                target = m.group(1)
+                sl = _resolve_source_line(target, host_lines_map)
+                host_targets.append((target, sl))
+
+    label_by_src: dict[tuple[str, int], int] = {}
+    next_id = 1
+    guest_label_ids: list[int] = []
+    host_label_ids: list[int] = []
+
+    for _target, sl in guest_targets:
+        if sl is not None and sl in label_by_src:
+            guest_label_ids.append(label_by_src[sl])
+        else:
+            if sl is not None:
+                label_by_src[sl] = next_id
+            guest_label_ids.append(next_id)
+            next_id += 1
+
+    for _target, sl in host_targets:
+        if sl is not None and sl in label_by_src:
+            host_label_ids.append(label_by_src[sl])
+        else:
+            host_label_ids.append(next_id)
+            next_id += 1
+
+    def _replace_side(
+        lines: tuple[str, ...],
+        arch: str,
+        label_ids: list[int],
+    ) -> tuple[str, ...]:
         result: list[str] = []
         p = prefix[arch]
-        pos = 0
+        idx = 0
         for line in lines:
             if _is_branch_line(line, arch):
                 m = hex_re[arch].search(line)
-                if m:
-                    pos += 1
-                    line = line.replace(f"{p}{m.group(1)}", f"{p}label{pos}")
+                if m and idx < len(label_ids):
+                    line = line.replace(f"{p}{m.group(1)}", f"{p}label{label_ids[idx]}")
+                    idx += 1
             result.append(line)
         return tuple(result)
 
     return (
-        _replace_side(guest_lines, guest_arch),
-        _replace_side(host_lines, host_arch),
+        _replace_side(guest_lines, guest_arch, guest_label_ids),
+        _replace_side(host_lines, host_arch, host_label_ids),
     )
 
 
