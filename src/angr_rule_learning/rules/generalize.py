@@ -89,6 +89,9 @@ class RuleGeneralizer:
             host_lines = _generalize_instructions(
                 window.host.instructions, mapping, host_arch
             )
+            guest_lines, host_lines = _replace_immediates_shared(
+                guest_lines, guest_arch, host_lines, host_arch
+            )
         except _RuleSkip as exc:
             self.diagnostics.record_skipped(exc.reason)
             return None
@@ -165,7 +168,7 @@ def _generalize_instructions(
     reg_lines = tuple(_generalize_line(text, mapping, arch) for text in texts)
     if not reg_lines:
         raise _RuleSkip("unsupported_rule_shape")
-    return _replace_immediates(reg_lines, arch)
+    return reg_lines
 
 
 def _instruction_text(instruction: ExtractedInstruction) -> str:
@@ -196,21 +199,53 @@ _AARCH64_IMM_RE = re.compile(r"#(0x[0-9a-fA-F]+|-?\d+)")
 _X86_64_IMM_RE = re.compile(r"(?<![#\w])(0x[0-9a-fA-F]+|-?\d+)(?![A-Za-z0-9_])")
 
 
-def _replace_immediates(lines: tuple[str, ...], arch: str) -> tuple[str, ...]:
-    pattern = _AARCH64_IMM_RE if arch == "aarch64" else _X86_64_IMM_RE
-    imm_map: dict[str, str] = {}
-    imm_counter = 0
+def _replace_immediates_shared(
+    guest_lines: tuple[str, ...],
+    guest_arch: str,
+    host_lines: tuple[str, ...],
+    host_arch: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    canonical_to_id: dict[str, int] = {}
+    next_id = 1
 
-    def _replacer(match: re.Match[str]) -> str:
-        nonlocal imm_counter
-        value = match.group(0)
-        if value not in imm_map:
-            imm_counter += 1
-            prefix = "#" if arch == "aarch64" else ""
-            imm_map[value] = f"{prefix}imm{imm_counter}"
-        return imm_map[value]
+    guest_pattern = _AARCH64_IMM_RE if guest_arch == "aarch64" else _X86_64_IMM_RE
+    host_pattern = _AARCH64_IMM_RE if host_arch == "aarch64" else _X86_64_IMM_RE
 
-    return tuple(pattern.sub(_replacer, line) for line in lines)
+    for line in guest_lines:
+        for m in guest_pattern.finditer(line):
+            c = _imm_canonical(m, guest_arch)
+            if c not in canonical_to_id:
+                canonical_to_id[c] = next_id
+                next_id += 1
+    for line in host_lines:
+        for m in host_pattern.finditer(line):
+            c = _imm_canonical(m, host_arch)
+            if c not in canonical_to_id:
+                canonical_to_id[c] = next_id
+                next_id += 1
+
+    def _replace_side(
+        lines: tuple[str, ...],
+        pattern: re.Pattern[str],
+        arch: str,
+        prefix: str,
+    ) -> tuple[str, ...]:
+        def _replacer(match: re.Match[str]) -> str:
+            c = _imm_canonical(match, arch)
+            return f"{prefix}imm{canonical_to_id[c]}"
+
+        return tuple(pattern.sub(_replacer, line) for line in lines)
+
+    return (
+        _replace_side(guest_lines, guest_pattern, guest_arch, "#"),
+        _replace_side(host_lines, host_pattern, host_arch, ""),
+    )
+
+
+def _imm_canonical(match: re.Match[str], arch: str) -> str:
+    if arch == "aarch64":
+        return match.group(1).lower()
+    return match.group(0).lower()
 
 
 def _remaining_registers(text: str, arch: str) -> tuple[str, ...]:
