@@ -52,8 +52,6 @@ _X86_64_ALIASES: dict[str, str] = {
     "ip": "rip",
 }
 
-_FRAME_POINTER_FAMILIES = frozenset({"sp", "fp", "rsp", "rbp", "x29"})
-
 
 _X86_FLAG_ALIASES = frozenset(
     {
@@ -388,6 +386,7 @@ class WindowSurface:
     outputs: tuple[str, ...] = ()
     input_families: tuple[str, ...] = ()
     output_families: tuple[str, ...] = ()
+    effective_instructions: tuple[ExtractedInstruction, ...] = ()
     kind: str = "register"
     skip_reason: str | None = None
 
@@ -417,10 +416,7 @@ class WindowSurfaceInferer:
             tuple(reg for inst in window.instructions for reg in inst.write_registers),
         )
         semantic_output_families = tuple(
-            family
-            for family, _register in defs
-            if family in last_liveness.live_out
-            and family not in _FRAME_POINTER_FAMILIES
+            family for family, _register in defs if family in last_liveness.live_out
         )
         terminal_branch = _is_conditional_branch(arch, last.mnemonic.strip().lower())
 
@@ -458,6 +454,7 @@ class WindowSurfaceInferer:
             outputs=tuple(register for _family, register in output_pairs),
             input_families=tuple(family for family, _register in input_pairs),
             output_families=tuple(family for family, _register in output_pairs),
+            effective_instructions=window.instructions,
             kind=("branch" if terminal_branch and not output_pairs else "register"),
         )
 
