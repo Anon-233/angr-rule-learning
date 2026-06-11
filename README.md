@@ -7,9 +7,9 @@ and uses Claripy/SMT checks to decide whether the requested semantic surfaces
 are equivalent.
 
 The first supported rule-learning target is AArch64 integer fragments translated
-to x86-64 integer fragments. The package is intentionally API-first so future
-candidate extraction, rule generalization, rule storage, and coverage evaluation
-can reuse the verifier without shelling out to the CLI.
+to x86-64 integer fragments. The package is intentionally API-first so rule
+storage, coverage evaluation, broader extraction targets, and future learning
+stages can reuse the verifier without shelling out to the CLI.
 
 ## Current Status
 
