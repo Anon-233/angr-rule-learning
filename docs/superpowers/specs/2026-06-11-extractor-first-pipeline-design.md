@@ -71,7 +71,20 @@ It should invoke clang with fixed, reproducible defaults:
 - host target: x86-64 object file;
 - debug information enabled with `-g`;
 - low optimization by default, initially `-O0`;
+- freestanding source mode with `-ffreestanding` and `-fno-builtin`;
 - no linking.
+
+The default command shape is:
+
+```text
+clang -target <target-triple> -g -O0 -ffreestanding -fno-builtin -c <source> -o <object>
+```
+
+These defaults should live in typed extraction configuration instead of being
+scattered through the build driver. The first CLI should expose the clang binary
+and optimization level directly. Extra common and per-side compile flags may be
+configured through the API and can be exposed in the CLI once concrete use cases
+appear.
 
 The exact command should be visible in diagnostics so failed extraction runs can
 be reproduced. Later versions may allow user-provided compile flags, but the
@@ -334,8 +347,8 @@ other candidates.
 
 ## Testing Strategy
 
-Tests should start with small single-file C fixtures that compile quickly and
-exercise one concept at a time:
+Tests should start with small single-file C fixtures that compile quickly, avoid
+external headers or libc calls, and exercise one concept at a time:
 
 - pure register arithmetic;
 - one-to-one instruction mappings;
@@ -344,6 +357,14 @@ exercise one concept at a time:
 - source lines that produce multiple blocks;
 - ambiguous source/debug mapping;
 - windows with memory access that should be skipped in the first version.
+
+The repository should keep `samples/sources/smoke_int.c` as the default manual
+smoke fixture. The `samples/sources/` directory is reserved for source inputs
+that can later be fed to the learning pipeline, while `examples/` remains
+focused on verifier candidate examples. The smoke fixture intentionally includes
+several short integer functions, one simple branch function, one memory function
+for skip diagnostics, and a small `main` function, while remaining compilable as
+an object without linking.
 
 Each component should have focused tests:
 

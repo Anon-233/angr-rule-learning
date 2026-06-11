@@ -27,8 +27,12 @@ Important constraints:
 - Do not emit verifier candidates with no semantic checks.
 - Do not depend on `llvm-objdump` or `llvm-dwarfdump`; they are not guaranteed available.
 - Use pyelftools and Capstone directly, and declare them as direct dependencies because this package imports them.
+- Compile source with object-only clang commands; do not add static or dynamic linking.
+- Keep compile parameters in typed configuration instead of hard-coding them in the build driver.
+- Default compile flags are `-g -O0 -ffreestanding -fno-builtin`.
 - Keep window size configurable; default guest size is `1..2`, host size is `1..3`.
 - Window size and skip diagnostics are first-class outputs.
+- Use `samples/sources/smoke_int.c` as the repository smoke fixture for manual extractor checks.
 
 ## Target File Structure
 
@@ -62,6 +66,8 @@ Modify:
 - `README.md`: add one extraction command example.
 - `docs/architecture.md`: mention extraction package in package structure and data flow.
 - `docs/candidate-format.md`: mention extractor-produced candidate JSONL remains the same verifier format.
+- `docs/extractor-build-environment.md`: keep compile-environment decisions synchronized.
+- `samples/sources/smoke_int.c`: keep as the default source-input smoke fixture.
 
 ## Task 1: Extraction Models, Config, And Diagnostics
 
@@ -92,7 +98,7 @@ Create `tests/test_extraction_models.py`:
 ```python
 from pathlib import Path
 
-from angr_rule_learning.extraction.config import ExtractionConfig, WindowLimits
+from angr_rule_learning.extraction.config import CompileOptions, ExtractionConfig, WindowLimits
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
@@ -118,8 +124,38 @@ def test_extraction_config_defaults() -> None:
     assert config.work_dir == Path("build/extract")
     assert config.guest_arch == "aarch64"
     assert config.host_arch == "x86-64"
-    assert config.optimization == "0"
+    assert config.compile_options.optimization == "0"
+    assert config.compile_options.command_flags_for_side("guest") == (
+        "-g",
+        "-O0",
+        "-ffreestanding",
+        "-fno-builtin",
+    )
     assert config.window_limits.stage_order()[0] == (1, 1)
+
+
+def test_compile_options_exposes_side_specific_flags() -> None:
+    options = CompileOptions(
+        clang="custom-clang",
+        optimization="g",
+        common_flags=("-ffreestanding",),
+        guest_flags=("-mstrict-align",),
+        host_flags=("-mno-red-zone",),
+    )
+
+    assert options.clang == "custom-clang"
+    assert options.command_flags_for_side("guest") == (
+        "-g",
+        "-Og",
+        "-ffreestanding",
+        "-mstrict-align",
+    )
+    assert options.command_flags_for_side("host") == (
+        "-g",
+        "-Og",
+        "-ffreestanding",
+        "-mno-red-zone",
+    )
 
 
 def test_instruction_window_properties() -> None:
@@ -217,13 +253,36 @@ class WindowLimits:
 
 
 @dataclass(frozen=True)
+class CompileOptions:
+    clang: str = "clang"
+    optimization: str = "0"
+    debug: bool = True
+    common_flags: tuple[str, ...] = ("-ffreestanding", "-fno-builtin")
+    guest_flags: tuple[str, ...] = ()
+    host_flags: tuple[str, ...] = ()
+
+    def command_flags_for_side(self, side: str) -> tuple[str, ...]:
+        flags: list[str] = []
+        if self.debug:
+            flags.append("-g")
+        flags.append(f"-O{self.optimization}")
+        flags.extend(self.common_flags)
+        if side == "guest":
+            flags.extend(self.guest_flags)
+        elif side == "host":
+            flags.extend(self.host_flags)
+        else:
+            raise ValueError(f"unsupported compile side: {side}")
+        return tuple(flags)
+
+
+@dataclass(frozen=True)
 class ExtractionConfig:
     source: Path
     work_dir: Path
     guest_arch: str = "aarch64"
     host_arch: str = "x86-64"
-    optimization: str = "0"
-    clang: str = "clang"
+    compile_options: CompileOptions = field(default_factory=CompileOptions)
     window_limits: WindowLimits = field(default_factory=WindowLimits)
 ```
 
@@ -345,7 +404,7 @@ class WindowPair:
 Create `src/angr_rule_learning/extraction/__init__.py`:
 
 ```python
-from angr_rule_learning.extraction.config import ExtractionConfig, WindowLimits
+from angr_rule_learning.extraction.config import CompileOptions, ExtractionConfig, WindowLimits
 from angr_rule_learning.extraction.models import (
     AlignmentRegion,
     BasicBlock,
@@ -362,6 +421,7 @@ __all__ = [
     "ExtractedFunction",
     "ExtractedInstruction",
     "ExtractionConfig",
+    "CompileOptions",
     "InstructionWindow",
     "SourceLocation",
     "WindowLimits",
@@ -486,7 +546,7 @@ from pathlib import Path
 import subprocess
 
 from angr_rule_learning.extraction.build import BuildArtifacts, ClangBuildDriver
-from angr_rule_learning.extraction.config import ExtractionConfig
+from angr_rule_learning.extraction.config import CompileOptions, ExtractionConfig
 
 
 class RecordingRunner:
@@ -518,7 +578,37 @@ def test_build_driver_invokes_clang_for_guest_and_host(tmp_path: Path) -> None:
     assert runner.commands[1][:3] == ["clang", "-target", "x86_64-linux-gnu"]
     assert "-g" in runner.commands[0]
     assert "-O0" in runner.commands[0]
+    assert "-ffreestanding" in runner.commands[0]
+    assert "-fno-builtin" in runner.commands[0]
     assert "-c" in runner.commands[0]
+
+
+def test_build_driver_uses_configured_compile_options(tmp_path: Path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\\n", encoding="utf-8")
+    runner = RecordingRunner()
+    config = ExtractionConfig(
+        source=source,
+        work_dir=tmp_path / "out",
+        compile_options=CompileOptions(
+            clang="custom-clang",
+            optimization="1",
+            common_flags=("-ffreestanding",),
+            guest_flags=("-mstrict-align",),
+            host_flags=("-mno-red-zone",),
+        ),
+    )
+
+    ClangBuildDriver(runner=runner).build(config)
+
+    assert runner.commands[0][0] == "custom-clang"
+    assert runner.commands[1][0] == "custom-clang"
+    assert "-O1" in runner.commands[0]
+    assert "-O1" in runner.commands[1]
+    assert "-mstrict-align" in runner.commands[0]
+    assert "-mstrict-align" not in runner.commands[1]
+    assert "-mno-red-zone" in runner.commands[1]
+    assert "-mno-red-zone" not in runner.commands[0]
 
 
 def test_build_driver_reports_failed_command(tmp_path: Path) -> None:
@@ -592,8 +682,8 @@ class ClangBuildDriver:
         guest_object = config.work_dir / f"guest-{config.guest_arch}.o"
         host_object = config.work_dir / f"host-{config.host_arch}.o"
         commands = (
-            self._command(config, config.guest_arch, guest_object),
-            self._command(config, config.host_arch, host_object),
+            self._command(config, "guest", config.guest_arch, guest_object),
+            self._command(config, "host", config.host_arch, host_object),
         )
         for command in commands:
             result = self._runner(command)
@@ -606,17 +696,22 @@ class ClangBuildDriver:
             commands=tuple(tuple(command) for command in commands),
         )
 
-    def _command(self, config: ExtractionConfig, arch: str, output: Path) -> list[str]:
+    def _command(
+        self,
+        config: ExtractionConfig,
+        side: str,
+        arch: str,
+        output: Path,
+    ) -> list[str]:
         try:
             target = TARGETS[arch]
         except KeyError as exc:
             raise ValueError(f"unsupported extraction target: {arch}") from exc
         return [
-            config.clang,
+            config.compile_options.clang,
             "-target",
             target,
-            "-g",
-            f"-O{config.optimization}",
+            *config.compile_options.command_flags_for_side(side),
             "-c",
             str(config.source),
             "-o",
@@ -1910,7 +2005,7 @@ class ExtractionPipeline:
 Modify `src/angr_rule_learning/cli.py`:
 
 ```python
-from angr_rule_learning.extraction.config import ExtractionConfig, WindowLimits
+from angr_rule_learning.extraction.config import CompileOptions, ExtractionConfig, WindowLimits
 from angr_rule_learning.extraction.pipeline import ExtractionPipeline
 ```
 
@@ -1924,6 +2019,8 @@ Add parser:
     extract_parser.add_argument("--work-dir", required=True, type=Path)
     extract_parser.add_argument("--output", required=True, type=Path)
     extract_parser.add_argument("--diagnostics", required=True, type=Path)
+    extract_parser.add_argument("--clang", default="clang")
+    extract_parser.add_argument("--optimization", default="0")
     extract_parser.add_argument("--guest-max-window", type=int, default=2)
     extract_parser.add_argument("--host-max-window", type=int, default=3)
     extract_parser.add_argument("--verify", action="store_true")
@@ -1936,6 +2033,10 @@ Add command handling:
         config = ExtractionConfig(
             source=args.source,
             work_dir=args.work_dir,
+            compile_options=CompileOptions(
+                clang=args.clang,
+                optimization=args.optimization,
+            ),
             window_limits=WindowLimits(
                 guest_max=args.guest_max_window,
                 host_max=args.host_max_window,
@@ -1970,6 +2071,8 @@ Expected: tests pass and ruff reports `All checks passed!`.
 **Files:**
 - Modify: `README.md`
 - Modify: `docs/architecture.md`
+- Modify: `docs/candidate-format.md`
+- Modify: `docs/extractor-build-environment.md`
 - Modify: `docs/verifier.md`
 - Test: `tests/test_extraction_pipeline.py`
 
@@ -1986,8 +2089,7 @@ from angr_rule_learning.cli import main
 def test_extract_cli_smoke(tmp_path: Path) -> None:
     if shutil.which("clang") is None:
         return
-    source = tmp_path / "sample.c"
-    source.write_text("int add(int a, int b) { return a + b; }\\n", encoding="utf-8")
+    source = Path(__file__).resolve().parents[1] / "samples" / "sources" / "smoke_int.c"
     output = tmp_path / "candidates.jsonl"
     diagnostics = tmp_path / "diagnostics.json"
     try:
@@ -2001,6 +2103,8 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
                 str(output),
                 "--diagnostics",
                 str(diagnostics),
+                "--optimization",
+                "0",
             ]
         )
     except RuntimeError:
@@ -2021,10 +2125,11 @@ Add under Quick Start:
 Extract verifier candidates from one C source file:
 
 ```bash
-uv run angr-rule-learning extract examples/simple.c \
+uv run angr-rule-learning extract samples/sources/smoke_int.c \
   --work-dir /tmp/angr-rule-learning-extract \
   --output /tmp/angr-rule-learning-candidates.jsonl \
-  --diagnostics /tmp/angr-rule-learning-diagnostics.json
+  --diagnostics /tmp/angr-rule-learning-diagnostics.json \
+  --optimization 0
 ```
 ````
 
@@ -2047,6 +2152,8 @@ Run:
 uv run ruff format
 uv run ruff check
 uv run pytest -q
+clang -target aarch64-linux-gnu -g -O0 -ffreestanding -fno-builtin -c samples/sources/smoke_int.c -o /tmp/angr-rule-learning-smoke-aarch64.o
+clang -target x86_64-linux-gnu -g -O0 -ffreestanding -fno-builtin -c samples/sources/smoke_int.c -o /tmp/angr-rule-learning-smoke-x86_64.o
 uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl --output /tmp/angr-rule-learning-plan-check-report.jsonl --summary /tmp/angr-rule-learning-plan-check-summary.json
 git diff --check
 ```
@@ -2056,6 +2163,7 @@ Expected:
 ```text
 All checks passed!
 112+ tests passed
+Both smoke object compile commands exit 0
 CLI verify exits 0
 ```
 
@@ -2066,7 +2174,7 @@ The exact pytest count will be higher than 112 after extractor tests are added. 
 Run:
 
 ```bash
-git add README.md docs/architecture.md docs/verifier.md tests/test_extraction_pipeline.py
+git add README.md docs/architecture.md docs/candidate-format.md docs/extractor-build-environment.md docs/verifier.md tests/test_extraction_pipeline.py
 git commit -m "Document extractor-first candidate pipeline"
 ```
 
@@ -2080,6 +2188,8 @@ Before declaring this implementation complete, run:
 uv run ruff format --check
 uv run ruff check
 uv run pytest -q
+clang -target aarch64-linux-gnu -g -O0 -ffreestanding -fno-builtin -c samples/sources/smoke_int.c -o /tmp/angr-rule-learning-extractor-final-aarch64.o
+clang -target x86_64-linux-gnu -g -O0 -ffreestanding -fno-builtin -c samples/sources/smoke_int.c -o /tmp/angr-rule-learning-extractor-final-x86_64.o
 uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl --output /tmp/angr-rule-learning-extractor-final-report.jsonl --summary /tmp/angr-rule-learning-extractor-final-summary.json
 git status -sb
 ```
@@ -2089,6 +2199,7 @@ Required outcomes:
 - formatting check passes;
 - lint passes;
 - full pytest passes;
+- smoke source compiles to AArch64 and x86-64 relocatable objects;
 - existing verifier CLI smoke exits 0;
 - extractor docs describe the new `extract` command;
 - working tree is clean.
