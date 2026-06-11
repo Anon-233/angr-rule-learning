@@ -79,12 +79,14 @@ class RuleGeneralizer:
 
         self.diagnostics.record_considered()
         try:
-            mapping = _build_placeholder_map(candidate)
+            guest_arch = candidate.guest.arch
+            host_arch = candidate.host.arch
+            mapping = _build_placeholder_map(candidate, guest_arch, host_arch)
             guest_lines = _generalize_instructions(
-                window.guest.instructions, mapping, "aarch64"
+                window.guest.instructions, mapping, guest_arch
             )
             host_lines = _generalize_instructions(
-                window.host.instructions, mapping, "x86-64"
+                window.host.instructions, mapping, host_arch
             )
         except _RuleSkip as exc:
             self.diagnostics.record_skipped(exc.reason)
@@ -102,14 +104,16 @@ class RuleGeneralizer:
 
 def _build_placeholder_map(
     candidate: VerificationCandidate,
+    guest_arch: str,
+    host_arch: str,
 ) -> dict[str, str]:
     mapping: dict[str, str] = {}
     next_id = 1
     for guest_reg, host_reg in candidate.output_registers + candidate.input_registers:
         guest_reg = normalize_register_name(guest_reg)
         host_reg = normalize_register_name(host_reg)
-        guest_class = _classify_for_rule("aarch64", guest_reg)
-        host_class = _classify_for_rule("x86-64", host_reg)
+        guest_class = _classify_for_rule(guest_arch, guest_reg)
+        host_class = _classify_for_rule(host_arch, host_reg)
         if guest_class != host_class:
             raise _RuleSkip("register_class_mismatch")
         existing = mapping.get(guest_reg) or mapping.get(host_reg)

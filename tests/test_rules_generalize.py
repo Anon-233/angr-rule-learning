@@ -213,3 +213,25 @@ def test_nonpassing_reports_are_not_considered_for_rule_output() -> None:
         "rules_skipped": 0,
         "skip_reasons": {},
     }
+
+
+def test_generalizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
+    pair = _window_pair(
+        (_inst("aarch64", 0x1000, "add", "w8, w0, w1"),),
+        (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="sample:sample.c:1:0:g0:h0",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("amd64", 0x2000, "010203", 1),
+        input_registers=(("w0", "edi"), ("w1", "esi")),
+        output_registers=(("w8", "eax"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, pair, candidate, _passing_report())
+
+    assert rule is not None
+    assert "i32_reg" in rule.guest_lines[0]
+    assert "i32_reg" in rule.host_lines[0]
+    assert diagnostics.to_json()["rules_emitted"] == 1

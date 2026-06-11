@@ -1,9 +1,9 @@
 # Architecture
 
-`angr-rule-learning` is being rebuilt as a rule-learning pipeline with explicit
-data boundaries and independently testable components. The current repository
-implements the verifier-first core; candidate extraction, rule generalization,
-rule storage, and coverage evaluation are planned around the same data model.
+`angr-rule-learning` is a rule-learning pipeline with explicit data boundaries
+and independently testable components. The repository implements the verifier
+core, single-source candidate extraction, and verified text rule generation.
+Rule storage and coverage evaluation remain planned.
 
 ## Pipeline Shape
 
@@ -33,9 +33,10 @@ debug information, builds alignment regions, mines bounded semantic windows,
 infers verifier surfaces, and emits candidate JSONL compatible with the
 existing verifier boundary.
 
-Only the semantic verification stage is implemented today. The existing CLI
-accepts candidate JSON/JSONL directly so verifier work can proceed before source
-mapping and candidate extraction are rebuilt.
+With `--verify --rules-output`, the pipeline also runs verification and
+produces plain text rules with typed register placeholders. The existing CLI
+accepts candidate JSON/JSONL directly so verifier work can proceed
+independently of extraction.
 
 ## Package Structure
 
@@ -65,6 +66,20 @@ src/angr_rule_learning/
     report.py
     batch.py
     verifier.py
+  extraction/
+    config.py
+    build.py
+    object.py
+    blocks.py
+    align.py
+    windows.py
+    surfaces.py
+    emit.py
+    pipeline.py
+  rules/
+    registers.py
+    generalize.py
+    writer.py
 ```
 
 The package boundaries are:
@@ -76,20 +91,29 @@ The package boundaries are:
 - `smt`: holds shared bit-vector width helpers used by relation checks.
 - `verification`: owns the verifier data model, execution setup, semantic
   checks, report model, and batch API.
-- `cli.py`: provides a thin command-line wrapper over `BatchVerifier`.
+- `extraction`: compiles source, extracts functions and debug information,
+  builds alignment regions, mines bounded windows, infers verifier surfaces,
+  and orchestrates the source-to-candidate pipeline.
+- `rules`: classifies registers, generalizes verified extraction windows into
+  typed placeholder rules, and writes plain text rule output with diagnostics.
+- `cli.py`: provides a thin command-line wrapper over `BatchVerifier` and
+  `ExtractionPipeline`.
 
 ## Data Flow
 
 ```text
-candidate JSON/JSONL
-  -> io.readers.read_candidates()
-  -> io.schema.candidate_from_json()
-  -> verification.BatchVerifier.verify_many()
-  -> verification.SemanticVerifier.verify()
-  -> io.schema.report_to_json()
-  -> io.writers.write_reports_jsonl()
-  -> io.writers.write_summary_json()
+single C source
+  -> extraction.ExtractionPipeline
+  -> VerificationCandidate values + candidate JSONL
+  -> verification.BatchVerifier
+  -> VerificationReport values
+  -> rules.RuleGeneralizer
+  -> plain text rules + rule diagnostics
 ```
+
+Rule generation consumes `WindowPair + VerificationCandidate + VerificationReport`
+and produces text rules with typed register placeholders such as `i32_reg1`.
+It does not reconstruct assembly from candidate JSONL.
 
 The CLI is intentionally outside the verifier core. Future pipeline code should
 construct `VerificationCandidate` values directly, call `SemanticVerifier` or
@@ -157,9 +181,10 @@ semantic surfaces behind focused modules:
 - direct branch target mapping checks;
 - indirect branch target expression equivalence;
 - richer memory alias constraints;
-- candidate extraction from compiler debug/source mappings;
-- rule generalization and storage;
-- coverage reporting against an external rule table.
+- richer extraction beyond single-source smoke inputs;
+- memory rule learning and generalized memory rules;
+- generalized branch-target rule output;
+- rule store and coverage reporting against an external rule table.
 
 When adding a new capability, prefer a typed model change in
 `verification.candidate`, a small checker module, schema updates in `io`, and

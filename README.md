@@ -24,15 +24,18 @@ Implemented:
   terminal conditional branch guards;
 - memory slots, address bindings, load/store events, `must_alias`, and
   `may_alias` unsupported reporting;
-- four-state diagnostics: `pass`, `fail`, `unsupported`, and `error`.
+- four-state diagnostics: `pass`, `fail`, `unsupported`, and `error`;
+- compiler/debug-info based candidate extraction for one C source file;
+- verified rule generalization producing plain text rules with typed
+  register placeholders.
 
 Not implemented yet:
 
-- compiler/debug-info based candidate extraction;
-- rule generalization and rule store;
+- rule store;
 - coverage evaluation against a reference rule table;
 - precondition solving;
-- branch target equivalence for direct or indirect branches.
+- branch target equivalence for direct or indirect branches;
+- memory rule learning / generalized memory rules.
 
 ## Quick Start
 
@@ -73,8 +76,21 @@ uv run angr-rule-learning extract samples/sources/smoke_int.c \
   --optimization 0
 ```
 
-The CLI is a thin wrapper around `BatchVerifier`. Pipeline code should call the
-Python API directly.
+Extract, verify, and generate text rules:
+
+```bash
+uv run angr-rule-learning extract samples/sources/smoke_int.c \
+  --work-dir /tmp/angr-rule-learning-extract \
+  --output /tmp/angr-rule-learning-candidates.jsonl \
+  --diagnostics /tmp/angr-rule-learning-diagnostics.json \
+  --optimization 0 \
+  --verify \
+  --rules-output /tmp/angr-rule-learning-rules.txt \
+  --rules-diagnostics /tmp/angr-rule-learning-rules-diagnostics.json
+```
+
+The CLI is a thin wrapper around `ExtractionPipeline` and `BatchVerifier`.
+Pipeline code should call the Python API directly.
 
 ## Documentation
 
@@ -84,6 +100,8 @@ Python API directly.
   model, branch scope, and known coverage limits.
 - [Candidate Format](docs/candidate-format.md): input candidate JSON, report
   JSON, and batch summary schemas.
+- [Rule Generalization](docs/rule-generalization.md): text rule format,
+  register placeholders, and CLI usage.
 
 ## Repository Layout
 
@@ -93,7 +111,9 @@ src/angr_rule_learning/
   io/            JSON/JSONL readers, writers, and schema conversion
   smt/           shared bit-vector width utilities
   verification/  verifier models, execution, checks, reports, and batching
-tests/           pytest coverage for verifier behavior and CLI output
+  extraction/    compile, disassemble, source-align, mine windows, infer candidates
+  rules/         register classification, rule generalization, text formatting
+tests/           pytest coverage for verifier, extraction, rules, and CLI
 examples/        small candidate batches for smoke testing
 docs/            architecture and format documentation
 ```
