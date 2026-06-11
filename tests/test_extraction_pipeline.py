@@ -129,3 +129,21 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
         assert not host_hex.startswith("e8"), (
             f"call candidate leaked: {candidate.candidate_id}"
         )
+        guest_hex = candidate.guest.code_hex
+        assert guest_hex != "00000094", (
+            f"guest bl candidate leaked: {candidate.candidate_id}"
+        )
+        for guest_reg, host_reg in candidate.input_registers:
+            assert guest_reg not in ("nzcv", "rflags"), (
+                f"flag in input: {candidate.candidate_id}"
+            )
+            assert host_reg not in ("nzcv", "rflags"), (
+                f"flag in input: {candidate.candidate_id}"
+            )
+        for guest_reg, host_reg in candidate.output_registers:
+            assert guest_reg not in ("nzcv", "rflags"), (
+                f"flag in output: {candidate.candidate_id}"
+            )
+            assert host_reg not in ("nzcv", "rflags"), (
+                f"flag in output: {candidate.candidate_id}"
+            )

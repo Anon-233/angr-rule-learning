@@ -29,6 +29,10 @@ class SurfaceInferer:
             self._diagnostics.record_window_skipped("unsupported_memory_surface")
             return None
 
+        if _has_flag_surface(pair.guest) or _has_flag_surface(pair.host):
+            self._diagnostics.record_window_skipped("unsupported_flag_surface")
+            return None
+
         guest_reads = _ordered_unique(
             reg for inst in pair.guest.instructions for reg in inst.read_registers
         )
@@ -130,7 +134,7 @@ def _has_memory_access(window: InstructionWindow) -> bool:
 
 
 _UNSUPPORTED_CONTROL_FLOW = {
-    "aarch64": frozenset(("b", "br", "blr", "ret")),
+    "aarch64": frozenset(("b", "bl", "br", "blr", "ret")),
     "x86-64": frozenset(("jmp", "ret", "call")),
 }
 
@@ -141,5 +145,19 @@ def _has_unsupported_control_flow(window: InstructionWindow) -> bool:
         arch = inst.arch
         if arch in _UNSUPPORTED_CONTROL_FLOW:
             if mnemonic in _UNSUPPORTED_CONTROL_FLOW[arch]:
+                return True
+    return False
+
+
+_FLAG_REGISTERS = frozenset(("nzcv", "rflags"))
+
+
+def _has_flag_surface(window: InstructionWindow) -> bool:
+    for inst in window.instructions:
+        for reg in inst.read_registers:
+            if reg in _FLAG_REGISTERS:
+                return True
+        for reg in inst.write_registers:
+            if reg in _FLAG_REGISTERS:
                 return True
     return False

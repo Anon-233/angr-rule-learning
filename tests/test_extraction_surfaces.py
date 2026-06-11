@@ -147,3 +147,30 @@ def test_surface_inferer_keeps_conditional_branch_candidate() -> None:
     assert candidate is not None
     assert candidate.output_registers == ()
     assert diagnostics.to_json()["surface_kinds"].get("branch", 0) == 1
+
+
+def test_surface_inferer_skips_aarch64_bl() -> None:
+    pair = _pair(
+        _inst("aarch64", 0x1000, ("x0",), (), mnemonic="bl"),
+        _inst("x86-64", 0x2000, ("rax",), ("rax",), mnemonic="mov"),
+    )
+    diagnostics = MiningDiagnostics()
+
+    candidate = SurfaceInferer(diagnostics).infer(pair)
+
+    assert candidate is None
+    reasons = diagnostics.to_json()["skip_reasons"]
+    assert reasons.get("unsupported_control_flow_surface", 0) >= 1
+
+
+def test_surface_inferer_skips_flag_register_surface() -> None:
+    pair = _pair(
+        _inst("aarch64", 0x1000, ("x1", "x2"), ("x0", "nzcv"), mnemonic="subs"),
+        _inst("x86-64", 0x2000, ("rcx", "rdx"), ("rax", "rflags"), mnemonic="sub"),
+    )
+    diagnostics = MiningDiagnostics()
+
+    candidate = SurfaceInferer(diagnostics).infer(pair)
+
+    assert candidate is None
+    assert diagnostics.to_json()["skip_reasons"] == {"unsupported_flag_surface": 1}
