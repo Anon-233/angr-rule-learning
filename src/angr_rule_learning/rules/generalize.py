@@ -160,17 +160,18 @@ def _build_placeholder_map(
             raise _RuleSkip("register_class_mismatch")
         guest_existing = mapping.get(guest_reg)
         host_existing = mapping.get(host_reg)
-        if (
-            guest_existing is not None
-            and host_existing is not None
-            and guest_existing != host_existing
-        ):
-            raise _RuleSkip("unsupported_rule_shape")
 
-        existing = guest_existing or host_existing
-        if existing is None:
+        if guest_existing is None and host_existing is None:
             existing = f"{guest_class.placeholder_prefix}_reg{next_id}"
             next_id += 1
+        elif (
+            guest_existing is not None
+            and host_existing is not None
+            and guest_existing == host_existing
+        ):
+            existing = guest_existing
+        else:
+            raise _RuleSkip("unsupported_rule_shape")
 
         for register in (guest_reg, host_reg):
             previous = mapping.get(register)

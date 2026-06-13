@@ -245,8 +245,8 @@ def test_generalizer_allows_two_address_input_output_pair() -> None:
         (_inst("x86-64", 0x2000, "add", "eax, ecx"),),
     )
     candidate = _candidate(
-        input_registers=(("w8", "eax"), ("w0", "ecx")),
-        output_registers=(("w8", "eax"),),
+        inputs=(("w8", "eax"), ("w0", "ecx")),
+        outputs=(("w8", "eax"),),
     )
     report = _passing_report(candidate.candidate_id)
 
@@ -266,8 +266,8 @@ def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
         (_inst("x86-64", 0x2000, "add", "eax, ecx"),),
     )
     candidate = _candidate(
-        input_registers=(("w0", "eax"), ("w8", "ecx")),
-        output_registers=(("w8", "eax"),),
+        inputs=(("w0", "eax"), ("w8", "ecx")),
+        outputs=(("w8", "eax"),),
     )
     report = _passing_report(candidate.candidate_id)
 
