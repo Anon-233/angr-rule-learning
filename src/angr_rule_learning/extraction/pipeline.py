@@ -149,8 +149,7 @@ class ExtractionPipeline:
         diagnostics: MiningDiagnostics,
     ) -> ExtractionData:
         if self._region_provider is not None:
-            regions = self._region_provider(config, diagnostics)
-            return ExtractionData(regions, LivenessIndex.empty())
+            return self._region_provider(config, diagnostics)
         artifacts = self._build_driver.build(config)
         return self._extract_regions(artifacts, config, diagnostics)
 

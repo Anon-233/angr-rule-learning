@@ -239,6 +239,7 @@ _X86_64_HEX_RE = re.compile(r"\b(0x[0-9a-fA-F]+)\b")
 
 
 def _branch_prefixes(arch: str) -> tuple[str, ...]:
+    arch = normalize_arch_name(arch)
     if arch == "aarch64":
         return ("b.",)
     if arch == "x86-64":
@@ -246,8 +247,18 @@ def _branch_prefixes(arch: str) -> tuple[str, ...]:
     return ()
 
 
+def normalize_arch_name(arch: str) -> str:
+    normalized = arch.strip().lower()
+    if normalized in {"amd64", "x86_64"}:
+        return "x86-64"
+    if normalized == "arm64":
+        return "aarch64"
+    return normalized
+
+
 def _is_branch_line(line: str, arch: str) -> bool:
     mnemonic = line.split()[0].lower() if line.strip() else ""
+    arch = normalize_arch_name(arch)
     if arch == "aarch64":
         if mnemonic in _AARCH64_BRANCH_MNEMONICS:
             return True
@@ -267,6 +278,8 @@ def _replace_labels_shared(
     guest_instructions: tuple[ExtractedInstruction, ...] = (),
     host_instructions: tuple[ExtractedInstruction, ...] = (),
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    guest_arch_n = normalize_arch_name(guest_arch)
+    host_arch_n = normalize_arch_name(host_arch)
     hex_re = {"aarch64": _AARCH64_HEX_RE, "x86-64": _X86_64_HEX_RE}
     prefix = {"aarch64": "#", "x86-64": ""}
 
@@ -293,7 +306,7 @@ def _replace_labels_shared(
 
     for line in guest_lines:
         if _is_branch_line(line, guest_arch):
-            m = hex_re[guest_arch].search(line)
+            m = hex_re[guest_arch_n].search(line)
             if m:
                 target = m.group(1)
                 sl = _resolve_source_line(target, guest_lines_map)
@@ -301,7 +314,7 @@ def _replace_labels_shared(
 
     for line in host_lines:
         if _is_branch_line(line, host_arch):
-            m = hex_re[host_arch].search(line)
+            m = hex_re[host_arch_n].search(line)
             if m:
                 target = m.group(1)
                 sl = _resolve_source_line(target, host_lines_map)
@@ -362,8 +375,8 @@ def _replace_labels_shared(
         return tuple(result)
 
     return (
-        _replace_side(guest_lines, guest_arch, guest_label_ids),
-        _replace_side(host_lines, host_arch, host_label_ids),
+        _replace_side(guest_lines, guest_arch_n, guest_label_ids),
+        _replace_side(host_lines, host_arch_n, host_label_ids),
     )
 
 
@@ -376,8 +389,10 @@ def _replace_immediates_shared(
     canonical_to_id: dict[str, int] = {}
     next_id = 1
 
-    guest_pattern = _AARCH64_IMM_RE if guest_arch == "aarch64" else _X86_64_IMM_RE
-    host_pattern = _AARCH64_IMM_RE if host_arch == "aarch64" else _X86_64_IMM_RE
+    guest_arch_n = normalize_arch_name(guest_arch)
+    host_arch_n = normalize_arch_name(host_arch)
+    guest_pattern = _AARCH64_IMM_RE if guest_arch_n == "aarch64" else _X86_64_IMM_RE
+    host_pattern = _AARCH64_IMM_RE if host_arch_n == "aarch64" else _X86_64_IMM_RE
 
     for line in guest_lines:
         for m in guest_pattern.finditer(line):
@@ -411,13 +426,13 @@ def _replace_immediates_shared(
         return tuple(pattern.sub(_replacer, line) for line in lines)
 
     return (
-        _replace_side(guest_lines, guest_pattern, guest_arch, "#"),
-        _replace_side(host_lines, host_pattern, host_arch, ""),
+        _replace_side(guest_lines, guest_pattern, guest_arch_n, "#"),
+        _replace_side(host_lines, host_pattern, host_arch_n, ""),
     )
 
 
 def _imm_canonical(match: re.Match[str], arch: str) -> str:
-    if arch == "aarch64":
+    if normalize_arch_name(arch) == "aarch64":
         return match.group(1).lower()
     return match.group(0).lower()
 

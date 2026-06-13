@@ -107,9 +107,9 @@ def test_generalizes_multi_instruction_windows() -> None:
     assert rule is not None
     assert rule.guest_lines == (
         "mov i32_reg1, i32_reg2",
-        "add i32_reg1, i32_reg1, #1",
+        "add i32_reg1, i32_reg1, #imm1",
     )
-    assert rule.host_lines == ("mov i32_reg1, i32_reg2", "add i32_reg1, 1")
+    assert rule.host_lines == ("mov i32_reg1, i32_reg2", "add i32_reg1, imm1")
 
 
 def test_replacement_is_token_aware() -> None:

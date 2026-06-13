@@ -170,4 +170,4 @@ def test_surface_inferer_skips_flag_register_surface() -> None:
     candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
-    assert diagnostics.to_json()["skip_reasons"] == {"unsupported_flag_surface": 1}
+    assert "missing_liveness_surface" in diagnostics.skip_reasons

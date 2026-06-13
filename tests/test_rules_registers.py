@@ -13,8 +13,6 @@ from angr_rule_learning.rules.registers import (
 def test_classifies_aarch64_integer_register_widths() -> None:
     assert classify_register("aarch64", "w0") == RegisterClass("i", 32)
     assert classify_register("aarch64", "x0") == RegisterClass("i", 64)
-    assert classify_register("aarch64", "sp") == RegisterClass("i", 64)
-    assert classify_register("aarch64", "fp") == RegisterClass("i", 64)
     assert classify_register("aarch64", "lr") == RegisterClass("i", 64)
 
 
@@ -30,6 +28,14 @@ def test_classifies_x86_64_integer_subregister_widths() -> None:
 def test_normalizes_project_arch_names_for_archinfo() -> None:
     assert classify_register("amd64", "edi") == classify_register("x86-64", "edi")
     assert classify_register("aarch64", "X8") == RegisterClass("i", 64)
+
+
+def test_stack_and_frame_registers_are_literals() -> None:
+    for reg in ("sp", "wsp", "fp", "rsp", "esp", "rbp", "ebp", "bp"):
+        arch = "aarch64" if reg in ("sp", "wsp", "fp") else "x86-64"
+        assert is_allowed_literal_register(arch, reg)
+        with pytest.raises(RegisterClassError):
+            classify_register(arch, reg)
 
 
 def test_zero_registers_are_literals_not_classified_operands() -> None:
