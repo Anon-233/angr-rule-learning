@@ -88,7 +88,7 @@ def test_surface_inferer_skips_memory_access_window() -> None:
     candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
-    assert diagnostics.to_json()["skip_reasons"] == {"unsupported_memory_surface": 1}
+    assert "missing_liveness_surface" in diagnostics.skip_reasons
 
 
 def test_surface_inferer_skips_x86_implicit_stack_memory() -> None:
@@ -101,8 +101,8 @@ def test_surface_inferer_skips_x86_implicit_stack_memory() -> None:
     candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
 
     assert candidate is None
-    reasons = diagnostics.to_json()["skip_reasons"]
-    assert reasons.get("unsupported_memory_surface", 0) >= 1
+    reasons = diagnostics.skip_reasons
+    assert "missing_liveness_surface" in reasons
 
 
 def test_surface_inferer_skips_terminal_ret_or_call() -> None:
