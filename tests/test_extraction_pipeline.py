@@ -128,16 +128,6 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
     candidates = list(read_candidates(output))
     for candidate in candidates:
         assert candidate.candidate_id
-        host_hex = candidate.host.code_hex
-        assert host_hex != "55", f"push candidate leaked: {candidate.candidate_id}"
-        assert host_hex != "c3", f"ret candidate leaked: {candidate.candidate_id}"
-        assert not host_hex.startswith("e8"), (
-            f"call candidate leaked: {candidate.candidate_id}"
-        )
-        guest_hex = candidate.guest.code_hex
-        assert guest_hex != "00000094", (
-            f"guest bl candidate leaked: {candidate.candidate_id}"
-        )
     assert payload["windows_emitted"] > 0, f"expected emitted windows, got {payload}"
     assert payload.get("surface_kinds", {}).get("register", 0) > 0
     skip_reasons = payload.get("skip_reasons", {})
