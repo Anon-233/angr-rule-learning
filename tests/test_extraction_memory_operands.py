@@ -90,3 +90,15 @@ def test_unsupported_memory_forms_return_empty_tuple() -> None:
     assert extract_memory_operands(_inst("x86-64", "push", "rax")) == ()
     assert extract_memory_operands(_inst("aarch64", "ldp", "x0, x1, [sp]")) == ()
     assert extract_memory_operands(_inst("x86-64", "mov", "eax, [rax + rcx * 4]")) == ()
+
+
+def test_rejects_aarch64_post_index_addressing() -> None:
+    assert extract_memory_operands(_inst("aarch64", "ldr", "w0, [x1], #4")) == ()
+
+
+def test_rejects_aarch64_pre_index_writeback_addressing() -> None:
+    assert extract_memory_operands(_inst("aarch64", "ldr", "w0, [x1, #4]!")) == ()
+
+
+def test_rejects_aarch64_register_offset_addressing() -> None:
+    assert extract_memory_operands(_inst("aarch64", "ldr", "w0, [x1, x2]")) == ()

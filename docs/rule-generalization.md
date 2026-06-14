@@ -46,6 +46,49 @@ Registers are replaced with typed placeholders:
 The first implementation emits integer register rules only. It keeps
 immediates, offsets, scales, labels, and mnemonics literal.
 
+## Memory Operand Generalization
+
+When a verified candidate has a ``MemorySpec`` with address bindings, the
+generalizer rewrites memory operand text with address placeholders:
+
+- ``[addr64_N]`` for 64-bit address slot `N` (all addresses are currently 64-bit).
+- Future width variants (e.g. ``[addr32_N]``) are reserved for 32-bit guests.
+
+Each memory slot gets a ``MemoryBinding`` that pairs a guest address expression
+(e.g. ``x1`` or ``x1 + 4``) with a host address expression (e.g. ``rcx`` or
+``rcx + 4``).  The placeholder numbering follows the binding order.
+
+### Register vs Address Placeholders
+
+Register placeholders (``i32_reg1``) and address placeholders (``[addr64_1]``)
+use independent numbering.  A register that appears only as an address base
+(e.g. ``x1`` in ``ldr w0, [x1]``) is replaced by an address placeholder, not a
+register placeholder — it is not part of the register input/output surface.
+
+### Supported Memory Forms
+
+The memory parser currently supports:
+
+- AArch64: ``ldr``, ``ldur``, ``str``, ``stur`` with base-only ``[base]``
+  or base+displacement ``[base, #disp]``.
+- x86-64: ``mov`` with ``[reg]`` or ``[reg + disp]`` (32-bit and 64-bit).
+
+### Unsupported Memory Forms
+
+These are detected and reported as ``unsupported_memory_surface`` in
+diagnostics:
+
+- AArch64: ``ldp``, ``stp``, ``ldnp``, ``stnp``, register-offset addressing,
+  post/pre-index addressing.
+- x86-64: ``push``, ``pop``, indexed addressing with scale
+  (``[reg + reg*scale]``).
+- Both: any form not matching the supported patterns above.
+
+``lea`` on x86-64 uses memory-like addressing syntax (e.g. ``lea rcx, [rdx+4]``)
+but performs no memory access.  It is not treated as a memory surface and is
+instead handled by the register/liveness surface path.  Whether ``lea``-based
+rules can be learned depends on the verifier's register arithmetic support.
+
 ## Conservative Skips
 
 The generator skips verified windows when it cannot produce a safe generalized

@@ -141,9 +141,7 @@ def test_verifier_accepts_equivalent_load_with_positive_offset() -> None:
         output_registers=(("w0", "eax"),),
         memory=MemorySpec(
             slots=(MemorySlot("mem0", 4),),
-            bindings=(
-                MemoryBinding("mem0", "x1 + 4", "rcx + 4", "read"),
-            ),
+            bindings=(MemoryBinding("mem0", "x1 + 4", "rcx + 4", "read"),),
             accesses=(MemoryAccessExpectation("mem0", "read", 4),),
         ),
     )
@@ -157,17 +155,11 @@ def test_verifier_reports_unsupported_index_scale_address_expression() -> None:
     candidate = VerificationCandidate(
         candidate_id="unsupported-index-scale",
         guest=CodeFragment("aarch64", 0x10000, AARCH64_LDR_W0_X1, 1),
-        host=CodeFragment(
-            "x86-64", 0x8048000, X86_64_MOV_EAX_RCX_PTR, 1
-        ),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_EAX_RCX_PTR, 1),
         output_registers=(("w0", "eax"),),
         memory=MemorySpec(
             slots=(MemorySlot("mem0", 4),),
-            bindings=(
-                MemoryBinding(
-                    "mem0", "x1", "rcx + rdx * 4", "read"
-                ),
-            ),
+            bindings=(MemoryBinding("mem0", "x1", "rcx + rdx * 4", "read"),),
             accesses=(MemoryAccessExpectation("mem0", "read", 4),),
         ),
     )

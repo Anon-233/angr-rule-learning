@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from angr_rule_learning.extraction.memory_operands import (
     MemoryOperand,
     extract_memory_operands,
+    has_any_memory_access,
 )
 from angr_rule_learning.extraction.models import InstructionWindow, WindowPair
 from angr_rule_learning.verification.candidate import (
@@ -32,6 +33,16 @@ class MemorySurface:
 def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     guest_operands = _collect(pair.guest)
     host_operands = _collect(pair.host)
+
+    if _has_unparsed_memory(pair.guest, guest_operands) or _has_unparsed_memory(
+        pair.host, host_operands
+    ):
+        return MemorySurface(
+            MemorySpec(),
+            skip_reason="unsupported_memory_surface",
+            guest_operands=guest_operands,
+            host_operands=host_operands,
+        )
 
     if not guest_operands and not host_operands:
         return MemorySurface(MemorySpec())
@@ -90,3 +101,14 @@ def _collect(window: InstructionWindow) -> tuple[MemoryOperand, ...]:
     for instruction in window.instructions:
         operands.extend(extract_memory_operands(instruction))
     return tuple(operands)
+
+
+def _has_unparsed_memory(
+    window: InstructionWindow,
+    parsed: tuple[MemoryOperand, ...],
+) -> bool:
+    parsed_count = len(parsed)
+    memory_inst_count = sum(
+        1 for inst in window.instructions if has_any_memory_access(inst)
+    )
+    return memory_inst_count > parsed_count

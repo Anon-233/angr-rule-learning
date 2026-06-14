@@ -74,10 +74,15 @@ src/angr_rule_learning/
     align.py
     windows.py
     surfaces.py
+    memory_operands.py
+    memory_surfaces.py
+    liveness.py
+    diagnostics.py
     emit.py
     pipeline.py
   rules/
     registers.py
+    memory.py
     generalize.py
     writer.py
 ```
@@ -104,15 +109,33 @@ The package boundaries are:
 ```text
 single C source
   -> extraction.ExtractionPipeline
-  -> VerificationCandidate values + candidate JSONL
+     -> WindowMiner (enumerate instruction windows)
+     -> SurfaceInferer
+        -> memory_surfaces.infer_memory_surface (structured memory operand pairing)
+        -> liveness.WindowSurfaceInferer (register/liveness surface)
+     -> VerificationCandidate values + candidate JSONL
   -> verification.BatchVerifier
   -> VerificationReport values
   -> rules.RuleGeneralizer
+     -> rules.memory.rewrite_memory_operands (address placeholders)
+     -> rules.registers (register classification + generalization)
   -> plain text rules + rule diagnostics
 ```
 
+### Memory Surface Inference
+
+The extractor explicitly distinguishes "no memory access" from "memory access
+exists but is unsupported."  Structured memory operand parsing
+(`memory_operands.extract_memory_operands`) handles a subset of load/store/mov
+forms.  The surface inferer checks for broader memory access patterns via
+`has_any_memory_access` and emits `unsupported_memory_surface` in diagnostics
+when memory access is present but cannot be modelled.  This prevents windows
+with unsupported memory forms (push/pop, ldp/stp, indexed addressing) from
+being silently treated as register-only candidates.
+
 Rule generation consumes `WindowPair + VerificationCandidate + VerificationReport`
-and produces text rules with typed register placeholders such as `i32_reg1`.
+and produces text rules with typed register placeholders such as `i32_reg1`
+and memory address placeholders such as `[addr64_1]`.
 It does not reconstruct assembly from candidate JSONL.
 
 The CLI is intentionally outside the verifier core. Future pipeline code should
@@ -180,9 +203,9 @@ semantic surfaces behind focused modules:
 - precondition parsing and SMT constraint injection;
 - direct branch target mapping checks;
 - indirect branch target expression equivalence;
-- richer memory alias constraints;
+- richer memory alias constraints (may_alias, multi-slot memory surfaces);
 - richer extraction beyond single-source smoke inputs;
-- memory rule learning and generalized memory rules;
+- generalized memory rules for complex addressing (push/pop, ldp/stp, indexed);
 - generalized branch-target rule output;
 - rule store and coverage reporting against an external rule table.
 

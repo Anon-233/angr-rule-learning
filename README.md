@@ -25,9 +25,12 @@ Implemented:
 - memory slots, address bindings, load/store events, `must_alias`, and
   `may_alias` unsupported reporting;
 - four-state diagnostics: `pass`, `fail`, `unsupported`, and `error`;
+- memory rule learning: structured memory operand extraction, memory surface
+  inference, and generalized memory rules with address placeholders
+  (`[addr64_N]`) for simple load/store/mov patterns;
 - compiler/debug-info based candidate extraction for one C source file;
 - verified rule generalization producing plain text rules with typed
-  register placeholders.
+  register and address placeholders.
 
 Not implemented yet:
 
@@ -35,7 +38,9 @@ Not implemented yet:
 - coverage evaluation against a reference rule table;
 - precondition solving;
 - branch target equivalence for direct or indirect branches;
-- memory rule learning / generalized memory rules.
+- generalized memory rules for complex addressing modes (push/pop,
+  ldp/stp, indexed addressing with scale), multi-slot memory surfaces,
+  and memory alias constraints.
 
 ## Quick Start
 

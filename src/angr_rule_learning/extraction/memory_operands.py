@@ -64,6 +64,11 @@ def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     match = _AARCH64_MEM_RE.search(op_str)
     if match is None:
         return ()
+    # Reject forms where the match does not consume the entire operand string.
+    # This excludes post-index (e.g. "w0, [x1], #4"), pre-index writeback
+    # (e.g. "w0, [x1, #4]!"), and register-offset addressing.
+    if match.start() != 0 or match.end() != len(op_str):
+        return ()
     value = match.group("value").lower()
     width = _aarch64_register_width(value)
     if width is None:
@@ -143,6 +148,41 @@ def _aarch64_register_width(register: str) -> int | None:
     if register.startswith("x") or register in {"sp", "fp", "lr"}:
         return 8
     return None
+
+
+def has_any_memory_access(instruction: ExtractedInstruction) -> bool:
+    """Return True if the instruction text suggests memory access of any form.
+
+    This is a broad check that returns True even for memory access forms that
+    ``extract_memory_operands`` cannot yet parse (e.g. ``push``/``pop``,
+    ``ldp``/``stp``, indexed addressing).  Callers use it to distinguish
+    "no memory access at all" from "memory access exists but is unsupported".
+    """
+    arch = instruction.arch.strip().lower()
+    mnemonic = instruction.mnemonic.strip().lower()
+    op_str_lower = instruction.op_str.lower()
+    if arch == "aarch64":
+        if mnemonic in {
+            "ldr",
+            "str",
+            "ldur",
+            "stur",
+            "ldp",
+            "stp",
+            "ldnp",
+            "stnp",
+        }:
+            return True
+        if "[" in op_str_lower or "]" in op_str_lower:
+            return True
+    elif arch == "x86-64":
+        if mnemonic in {"push", "pop", "pusha", "popa"}:
+            return True
+        if mnemonic == "lea":
+            return False
+        if "[" in op_str_lower or "]" in op_str_lower or "ptr" in op_str_lower:
+            return True
+    return False
 
 
 def _x86_width(op_text: str, value_register: str) -> int | None:
