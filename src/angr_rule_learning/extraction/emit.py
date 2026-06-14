@@ -20,10 +20,38 @@ def candidate_to_json(candidate: VerificationCandidate) -> dict[str, object]:
             "flags": [list(pair) for pair in candidate.output_flags],
         },
         "memory": {
-            "slots": [],
-            "bindings": [],
-            "accesses": [],
-            "alias": [],
+            "slots": [
+                {
+                    "name": s.name,
+                    "size": s.size,
+                    "initial": s.initial,
+                }
+                for s in candidate.memory.slots
+            ],
+            "bindings": [
+                {
+                    "slot": b.slot,
+                    "guest_addr": b.guest_addr,
+                    "host_addr": b.host_addr,
+                    "access": b.access,
+                }
+                for b in candidate.memory.bindings
+            ],
+            "accesses": [
+                {
+                    "slot": a.slot,
+                    "kind": a.kind,
+                    "width": a.width,
+                }
+                for a in candidate.memory.accesses
+            ],
+            "alias": [
+                {
+                    "slots": list(a.slots),
+                    "relation": a.relation,
+                }
+                for a in candidate.memory.alias
+            ],
         },
         "preconditions": list(candidate.preconditions),
         "clobbers": {
