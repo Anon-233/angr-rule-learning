@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from angr_rule_learning.extraction.models import ExtractedInstruction, WindowPair
 from angr_rule_learning.extraction.liveness import family_for_register
+from angr_rule_learning.rules.memory import rewrite_memory_operands
 from angr_rule_learning.rules.registers import (
     RegisterClass,
     RegisterClassError,
@@ -86,12 +87,22 @@ class RuleGeneralizer:
             guest_arch = candidate.guest.arch
             host_arch = candidate.host.arch
             mapping = _build_placeholder_map(candidate, guest_arch, host_arch)
-            guest_lines = _generalize_instructions(
-                window.guest.instructions, mapping, guest_arch
+            guest_lines = _instruction_lines(window.guest.instructions)
+            host_lines = _instruction_lines(window.host.instructions)
+            guest_lines = rewrite_memory_operands(
+                window.guest.instructions,
+                guest_lines,
+                candidate.memory,
+                side="guest",
             )
-            host_lines = _generalize_instructions(
-                window.host.instructions, mapping, host_arch
+            host_lines = rewrite_memory_operands(
+                window.host.instructions,
+                host_lines,
+                candidate.memory,
+                side="host",
             )
+            guest_lines = _generalize_lines(guest_lines, mapping, guest_arch)
+            host_lines = _generalize_lines(host_lines, mapping, host_arch)
             guest_lines, host_lines = _annotate_dead_writes(
                 guest_lines,
                 host_lines,
@@ -532,3 +543,20 @@ def _annotate_dead_writes(
         _apply(guest_lines, window.guest.instructions),
         _apply(host_lines, window.host.instructions),
     )
+
+
+def _instruction_lines(
+    instructions: tuple[ExtractedInstruction, ...],
+) -> tuple[str, ...]:
+    return tuple(_instruction_text(inst) for inst in instructions)
+
+
+def _generalize_lines(
+    lines: tuple[str, ...],
+    mapping: dict[str, str],
+    arch: str,
+) -> tuple[str, ...]:
+    generalized = tuple(_generalize_line(line, mapping, arch) for line in lines)
+    if not generalized:
+        raise _RuleSkip("unsupported_rule_shape")
+    return generalized
