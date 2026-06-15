@@ -1,5 +1,8 @@
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
-from angr_rule_learning.extraction.liveness import LivenessIndex
+from angr_rule_learning.extraction.liveness import (
+    InstructionLiveness,
+    LivenessIndex,
+)
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -428,9 +431,6 @@ def test_surface_inferer_rejects_pre_index_writeback_addressing_surface() -> Non
     assert candidate is None
     assert diagnostics.skip_reasons.get("unsupported_memory_surface", 0) >= 1
     assert diagnostics.windows_emitted == 0
-
-
-from angr_rule_learning.extraction.liveness import InstructionLiveness
 
 
 def _empty_liveness(*instructions: ExtractedInstruction) -> LivenessIndex:
