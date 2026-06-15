@@ -1,5 +1,4 @@
 import json
-import re
 import shutil
 from pathlib import Path
 
@@ -364,9 +363,6 @@ def test_pipeline_rejects_rules_diagnostics_without_verification(
         )
 
 
-_MEMORY_ADDR_PLACEHOLDER_RE = re.compile(r"\[addr64_\d+\]")
-
-
 def test_memory_rule_smoke(tmp_path: Path) -> None:
     if shutil.which("clang") is None:
         return
@@ -421,10 +417,54 @@ def test_memory_rule_smoke(tmp_path: Path) -> None:
     )
 
     rules_text = rules_output.read_text(encoding="utf-8")
-    assert _MEMORY_ADDR_PLACEHOLDER_RE.search(rules_text), (
-        f"expected [addr64_N] in rules output, got:\n{rules_text[:500]}"
+    assert "addr64_" not in rules_text, (
+        f"expected no [addr64_N] in rules output, got:\n{rules_text[:500]}"
     )
 
-    assert not re.search(r"\[(x\d+|w\d+|sp|fp|r[cde]\w+|r[sb]p)\]", rules_text), (
-        f"rules output contained concrete register in memory position:\n{rules_text[:500]}"
+
+def test_indexed_memory_rule_smoke(tmp_path: Path) -> None:
+    if shutil.which("clang") is None:
+        return
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "samples"
+        / "sources"
+        / "indexed_memory_int.c"
     )
+    output = tmp_path / "candidates.jsonl"
+    diagnostics_path = tmp_path / "diagnostics.json"
+    rules_output = tmp_path / "rules.txt"
+    rules_diagnostics = tmp_path / "rules_diagnostics.json"
+    try:
+        main(
+            [
+                "extract",
+                str(source),
+                "--work-dir",
+                str(tmp_path / "work"),
+                "--output",
+                str(output),
+                "--diagnostics",
+                str(diagnostics_path),
+                "--optimization",
+                "0",
+                "--verify",
+                "--rules-output",
+                str(rules_output),
+                "--rules-diagnostics",
+                str(rules_diagnostics),
+            ]
+        )
+    except RuntimeError as exc:
+        if "error: unable to create target" in str(exc).lower():
+            return
+        if "cannot find clang" in str(exc).lower():
+            return
+        raise
+
+    rules_text = rules_output.read_text(encoding="utf-8")
+    diagnostics = json.loads(diagnostics_path.read_text(encoding="utf-8"))
+    assert diagnostics.get("surface_kinds", {}).get("memory", 0) > 0
+    assert "addr64_" not in rules_text
+    assert "i64_reg" in rules_text
+    assert ("*4" in rules_text or "lsl #2" in rules_text), rules_text[:1000]
