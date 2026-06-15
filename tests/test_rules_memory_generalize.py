@@ -46,11 +46,12 @@ def _pass(candidate_id: str) -> VerificationReport:
     )
 
 
-def test_generalizes_load_memory_address_placeholder() -> None:
+def test_generalizes_load_memory_registers_without_addr_placeholder() -> None:
     candidate = VerificationCandidate(
         candidate_id="mem-load",
         guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
         host=CodeFragment("x86-64", 0x2000, "01020304", 1),
+        input_registers=(("x1", "rcx"),),
         output_registers=(("w0", "eax"),),
         memory=MemorySpec(
             slots=(MemorySlot("mem0", 4),),
@@ -68,25 +69,26 @@ def test_generalizes_load_memory_address_placeholder() -> None:
     )
 
     assert rule is not None
-    assert rule.guest_lines == ("ldr i32_reg1, [addr64_1]",)
-    assert rule.host_lines == ("mov i32_reg1, dword ptr [addr64_1]",)
+    assert rule.guest_lines == ("ldr i32_reg1, [i64_reg2]",)
+    assert rule.host_lines == ("mov i32_reg1, dword ptr [i64_reg2]",)
 
 
-def test_generalizes_store_memory_address_placeholder() -> None:
+def test_generalizes_memory_displacement_with_shared_immediate() -> None:
     candidate = VerificationCandidate(
-        candidate_id="mem-store",
+        candidate_id="mem-load-disp",
         guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
         host=CodeFragment("x86-64", 0x2000, "01020304", 1),
-        input_registers=(("w0", "eax"),),
+        input_registers=(("x1", "rcx"),),
+        output_registers=(("w0", "eax"),),
         memory=MemorySpec(
             slots=(MemorySlot("mem0", 4),),
-            bindings=(MemoryBinding("mem0", "x1 + 4", "rcx + 4", "write"),),
-            accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+            bindings=(MemoryBinding("mem0", "x1 + 8", "rcx + 8", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
         ),
     )
     pair = _pair(
-        _inst("aarch64", 0x1000, "str", "w0, [x1, #4]"),
-        _inst("x86-64", 0x2000, "mov", "dword ptr [rcx + 4], eax"),
+        _inst("aarch64", 0x1000, "ldr", "w0, [x1, #8]"),
+        _inst("x86-64", 0x2000, "mov", "eax, dword ptr [rcx + 8]"),
     )
 
     rule = RuleGeneralizer(RuleDiagnostics()).generate(
@@ -94,5 +96,33 @@ def test_generalizes_store_memory_address_placeholder() -> None:
     )
 
     assert rule is not None
-    assert rule.guest_lines == ("str i32_reg1, [addr64_1]",)
-    assert rule.host_lines == ("mov dword ptr [addr64_1], i32_reg1",)
+    assert rule.guest_lines == ("ldr i32_reg1, [i64_reg2, #imm1]",)
+    assert rule.host_lines == ("mov i32_reg1, dword ptr [i64_reg2 + imm1]",)
+
+
+def test_generalizes_indexed_memory_keeps_scale_literals() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="mem-load-indexed",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "01020304", 1),
+        input_registers=(("x1", "rcx"), ("x2", "rdx")),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1 + x2 * 4", "rcx + rdx * 4", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    pair = _pair(
+        _inst("aarch64", 0x1000, "ldr", "w0, [x1, x2, lsl #2]"),
+        _inst("x86-64", 0x2000, "mov", "eax, dword ptr [rcx + rdx*4]"),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _pass(candidate.candidate_id)
+    )
+
+    assert rule is not None
+    assert rule.guest_lines == ("ldr i32_reg1, [i64_reg2, i64_reg3, lsl #2]",)
+    assert rule.host_lines == ("mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*4]",)
+    assert "addr64" not in "\n".join(rule.guest_lines + rule.host_lines)

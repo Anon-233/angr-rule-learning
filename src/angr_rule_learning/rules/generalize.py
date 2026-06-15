@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 
 from angr_rule_learning.extraction.models import ExtractedInstruction, WindowPair
 from angr_rule_learning.extraction.liveness import family_for_register
-from angr_rule_learning.rules.memory import rewrite_memory_operands
 from angr_rule_learning.rules.registers import (
     RegisterClass,
     RegisterClassError,
@@ -89,18 +88,6 @@ class RuleGeneralizer:
             mapping = _build_placeholder_map(candidate, guest_arch, host_arch)
             guest_lines = _instruction_lines(window.guest.instructions)
             host_lines = _instruction_lines(window.host.instructions)
-            guest_lines = rewrite_memory_operands(
-                window.guest.instructions,
-                guest_lines,
-                candidate.memory,
-                side="guest",
-            )
-            host_lines = rewrite_memory_operands(
-                window.host.instructions,
-                host_lines,
-                candidate.memory,
-                side="host",
-            )
             guest_lines = _generalize_lines(guest_lines, mapping, guest_arch)
             host_lines = _generalize_lines(host_lines, mapping, host_arch)
             guest_lines, host_lines = _annotate_dead_writes(
@@ -392,6 +379,16 @@ def _replace_labels_shared(
     )
 
 
+def _is_scale_immediate(line: str, match: re.Match[str], arch: str) -> bool:
+    arch = normalize_arch_name(arch)
+    before = line[: match.start()].lower()
+    if arch == "aarch64":
+        return before.rstrip().endswith("lsl")
+    if arch == "x86-64":
+        return before.rstrip().endswith("*")
+    return False
+
+
 def _replace_immediates_shared(
     guest_lines: tuple[str, ...],
     guest_arch: str,
@@ -408,6 +405,8 @@ def _replace_immediates_shared(
 
     for line in guest_lines:
         for m in guest_pattern.finditer(line):
+            if _is_scale_immediate(line, m, guest_arch_n):
+                continue
             c = _imm_canonical(m, guest_arch)
             if c in ("0", "00", "000"):
                 continue
@@ -416,6 +415,8 @@ def _replace_immediates_shared(
                 next_id += 1
     for line in host_lines:
         for m in host_pattern.finditer(line):
+            if _is_scale_immediate(line, m, host_arch_n):
+                continue
             c = _imm_canonical(m, host_arch)
             if c in ("0", "00", "000"):
                 continue
@@ -429,13 +430,19 @@ def _replace_immediates_shared(
         arch: str,
         prefix: str,
     ) -> tuple[str, ...]:
-        def _replacer(match: re.Match[str]) -> str:
-            c = _imm_canonical(match, arch)
-            if c in ("0", "00", "000"):
-                return match.group(0)
-            return f"{prefix}imm{canonical_to_id[c]}"
+        result: list[str] = []
+        for line in lines:
 
-        return tuple(pattern.sub(_replacer, line) for line in lines)
+            def _replacer(match: re.Match[str]) -> str:
+                if _is_scale_immediate(line, match, arch):
+                    return match.group(0)
+                c = _imm_canonical(match, arch)
+                if c in ("0", "00", "000"):
+                    return match.group(0)
+                return f"{prefix}imm{canonical_to_id[c]}"
+
+            result.append(pattern.sub(_replacer, line))
+        return tuple(result)
 
     return (
         _replace_side(guest_lines, guest_pattern, guest_arch_n, "#"),
