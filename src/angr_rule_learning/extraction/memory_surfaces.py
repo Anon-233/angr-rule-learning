@@ -77,8 +77,8 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
         bindings.append(
             MemoryBinding(
                 slot_name,
-                guest.address.binding_text(),
-                host.address.binding_text(),
+                guest.address.canonical(),
+                host.address.canonical(),
                 guest.kind,
             )
         )

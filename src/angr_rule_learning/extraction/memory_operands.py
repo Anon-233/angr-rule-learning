@@ -5,44 +5,43 @@ from dataclasses import dataclass
 from typing import Literal
 
 from angr_rule_learning.extraction.models import ExtractedInstruction
+from angr_rule_learning.verification.addressing import (
+    AddressExpr,
+    parse_address_binding,
+)
 
 
 MemoryKind = Literal["read", "write"]
 
 
 @dataclass(frozen=True)
-class MemoryAddress:
-    base: str
-    displacement: int = 0
-
-    def binding_text(self) -> str:
-        if self.displacement == 0:
-            return self.base
-        op = "+" if self.displacement > 0 else "-"
-        return f"{self.base} {op} {abs(self.displacement)}"
-
-
-@dataclass(frozen=True)
 class MemoryOperand:
     kind: MemoryKind
     width: int
-    address: MemoryAddress
+    address: AddressExpr
     text: str
     value_register: str
 
 
+_AARCH64_VALUE_RE = r"(?P<value>[wx]\d+|sp|wsp|fp|x29|x30|lr)"
+_AARCH64_BASE_RE = r"(?P<base>[a-z0-9]+)"
+_AARCH64_INDEX_RE = r"(?P<index>[x]\d+)"
+
 _AARCH64_MEM_RE = re.compile(
-    r"(?P<value>[wx]\d+|sp|wsp|fp|x29|x30|lr)\s*,\s*"
-    r"(?P<mem>\[(?P<base>[a-z0-9]+)"
-    r"(?:\s*,\s*#(?P<disp>[+-]?(?:0x[0-9a-fA-F]+|\d+)))?\])",
+    rf"^{_AARCH64_VALUE_RE}\s*,\s*"
+    rf"(?P<mem>\[{_AARCH64_BASE_RE}"
+    rf"(?:\s*,\s*#(?P<disp>[+-]?(?:0x[0-9a-fA-F]+|\d+)))?\])$",
     re.IGNORECASE,
 )
 
-_X86_MEM_RE = re.compile(
-    r"(?P<mem>\[(?P<base>[a-z][a-z0-9]*)"
-    r"(?:\s*(?P<sign>[+-])\s*(?P<disp>0x[0-9a-fA-F]+|\d+))?\])",
+_AARCH64_INDEX_MEM_RE = re.compile(
+    rf"^{_AARCH64_VALUE_RE}\s*,\s*"
+    rf"(?P<mem>\[{_AARCH64_BASE_RE}\s*,\s*{_AARCH64_INDEX_RE}"
+    rf"(?:\s*,\s*lsl\s*#(?P<shift>[0-3]))?\])$",
     re.IGNORECASE,
 )
+
+_X86_BRACKET_RE = re.compile(r"(?P<mem>\[[^\]]+\])", re.IGNORECASE)
 
 
 def extract_memory_operands(
@@ -61,25 +60,42 @@ def extract_memory_operands(
 def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if mnemonic not in {"ldr", "ldur", "str", "stur"}:
         return ()
-    match = _AARCH64_MEM_RE.search(op_str)
+    # Try displacement form first: [base, #disp] or [base]
+    match = _AARCH64_MEM_RE.match(op_str)
+    if match is not None:
+        value = match.group("value").lower()
+        width = _aarch64_register_width(value)
+        if width is None:
+            return ()
+        return (
+            MemoryOperand(
+                kind="read" if mnemonic in {"ldr", "ldur"} else "write",
+                width=width,
+                address=AddressExpr(
+                    base=match.group("base").lower(),
+                    displacement=_parse_displacement(match.group("disp"), "+"),
+                ),
+                text=match.group("mem"),
+                value_register=value,
+            ),
+        )
+    # Try indexed form: [base, index] or [base, index, lsl #shift]
+    match = _AARCH64_INDEX_MEM_RE.match(op_str)
     if match is None:
-        return ()
-    # Reject forms where the match does not consume the entire operand string.
-    # This excludes post-index (e.g. "w0, [x1], #4"), pre-index writeback
-    # (e.g. "w0, [x1, #4]!"), and register-offset addressing.
-    if match.start() != 0 or match.end() != len(op_str):
         return ()
     value = match.group("value").lower()
     width = _aarch64_register_width(value)
     if width is None:
         return ()
+    shift = int(match.group("shift") or "0", 10)
     return (
         MemoryOperand(
             kind="read" if mnemonic in {"ldr", "ldur"} else "write",
             width=width,
-            address=MemoryAddress(
+            address=AddressExpr(
                 base=match.group("base").lower(),
-                displacement=_parse_displacement(match.group("disp"), "+"),
+                index=match.group("index").lower(),
+                scale=1 << shift,
             ),
             text=match.group("mem"),
             value_register=value,
@@ -94,8 +110,8 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if len(parts) != 2:
         return ()
     left, right = parts
-    left_mem = _X86_MEM_RE.search(left)
-    right_mem = _X86_MEM_RE.search(right)
+    left_mem = _X86_BRACKET_RE.search(left)
+    right_mem = _X86_BRACKET_RE.search(right)
     if left_mem is not None and right_mem is not None:
         return ()
     if left_mem is None and right_mem is None:
@@ -105,12 +121,14 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
         width = _x86_width(left, value_register)
         if width is None:
             return ()
-        return (_x86_operand("write", width, left_mem, value_register),)
+        operand = _x86_operand("write", width, left_mem, value_register)
+        return (operand,) if operand is not None else ()
     value_register = left.strip().lower()
     width = _x86_width(op_str, value_register)
     if width is None:
         return ()
-    return (_x86_operand("read", width, right_mem, value_register),)
+    operand = _x86_operand("read", width, right_mem, value_register)
+    return (operand,) if operand is not None else ()
 
 
 def _x86_operand(
@@ -118,19 +136,32 @@ def _x86_operand(
     width: int,
     match: re.Match[str],
     value_register: str,
-) -> MemoryOperand:
+) -> MemoryOperand | None:
+    address = _x86_address_from_mem_text(match.group("mem"))
+    if address is None:
+        return None
     return MemoryOperand(
         kind=kind,
         width=width,
-        address=MemoryAddress(
-            base=match.group("base").lower(),
-            displacement=_parse_displacement(
-                match.group("disp"), match.group("sign") or "+"
-            ),
-        ),
+        address=address,
         text=match.group("mem"),
         value_register=value_register,
     )
+
+
+def _x86_address_from_mem_text(mem_text: str) -> AddressExpr | None:
+    inner = mem_text.strip()[1:-1].strip().lower()
+    if inner.startswith("rip"):
+        return None
+    if ":" in inner:
+        return None
+    normalized = re.sub(r"\s+", " ", inner)
+    normalized = normalized.replace("*", " * ")
+    normalized = re.sub(r"\s+", " ", normalized)
+    try:
+        return parse_address_binding(normalized)
+    except ValueError:
+        return None
 
 
 def _parse_displacement(text: str | None, sign: str) -> int:

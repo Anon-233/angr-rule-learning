@@ -47,7 +47,7 @@ def _replacement_by_operand_text(
         zip(operands, bindings, strict=True), start=1
     ):
         expected = binding.guest_addr if side == "guest" else binding.host_addr
-        if operand.address.binding_text() != expected:
+        if operand.address.canonical() != expected:
             return {}
         result[operand.text] = f"[addr64_{index}]"
     return result
