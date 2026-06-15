@@ -1,5 +1,3 @@
-import pytest
-
 from angr_rule_learning.verification.addressing import parse_address_binding
 from angr_rule_learning.verification.candidate import (
     AliasDeclaration,
