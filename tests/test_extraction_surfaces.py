@@ -475,3 +475,32 @@ def test_surface_inferer_emits_indexed_memory_address_inputs() -> None:
     assert candidate.output_registers == ()
     assert candidate.memory.bindings[0].guest_addr == "x1 + x2 * 4"
     assert candidate.memory.bindings[0].host_addr == "rcx + rdx * 4"
+
+
+def test_surface_inferer_rejects_segment_override_as_unsupported_memory() -> None:
+    """Segment override like fs:[rcx] must be unsupported_memory_surface,
+    not silently treated as no-memory or a valid memory candidate."""
+    guest = _mem_inst(
+        "aarch64",
+        0x1000,
+        ("x1",),
+        ("w0",),
+        mnemonic="ldr",
+        op_str="w0, [x1]",
+    )
+    host = _mem_inst(
+        "x86-64",
+        0x2000,
+        ("rcx",),
+        ("eax",),
+        mnemonic="mov",
+        op_str="eax, dword ptr fs:[rcx]",
+    )
+    pair = _mem_pair(guest, host)
+    diagnostics = MiningDiagnostics()
+
+    candidate = SurfaceInferer(diagnostics, LivenessIndex.empty()).infer(pair)
+
+    assert candidate is None
+    assert diagnostics.skip_reasons.get("unsupported_memory_surface", 0) >= 1
+    assert diagnostics.windows_emitted == 0

@@ -42,6 +42,9 @@ _AARCH64_INDEX_MEM_RE = re.compile(
 )
 
 _X86_BRACKET_RE = re.compile(r"(?P<mem>\[[^\]]+\])", re.IGNORECASE)
+_X86_SEGMENT_OVERRIDE_RE = re.compile(
+    r"(?:cs|ds|es|fs|gs|ss)\s*:\s*\[", re.IGNORECASE
+)
 
 
 def extract_memory_operands(
@@ -117,12 +120,16 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if left_mem is None and right_mem is None:
         return ()
     if left_mem is not None:
+        if _X86_SEGMENT_OVERRIDE_RE.search(left):
+            return ()
         value_register = right.strip().lower()
         width = _x86_width(left, value_register)
         if width is None:
             return ()
         operand = _x86_operand("write", width, left_mem, value_register)
         return (operand,) if operand is not None else ()
+    if _X86_SEGMENT_OVERRIDE_RE.search(right):
+        return ()
     value_register = left.strip().lower()
     width = _x86_width(op_str, value_register)
     if width is None:
