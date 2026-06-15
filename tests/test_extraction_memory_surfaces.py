@@ -45,8 +45,7 @@ def test_infers_equivalent_load_memory_spec() -> None:
     assert surface.spec.bindings[0].host_addr == "rcx"
     assert surface.spec.accesses[0].kind == "read"
     assert surface.spec.accesses[0].width == 4
-    assert surface.input_registers == ()
-    assert surface.address_registers == (("x1", "rcx"),)
+    assert surface.input_registers == (("x1", "rcx"),)
 
 
 def test_infers_store_value_register_inputs() -> None:
@@ -61,8 +60,7 @@ def test_infers_store_value_register_inputs() -> None:
     assert surface.spec.bindings[0].guest_addr == "x1 + 4"
     assert surface.spec.bindings[0].host_addr == "rcx + 4"
     assert surface.spec.accesses[0].kind == "write"
-    assert surface.input_registers == (("w0", "eax"),)
-    assert surface.address_registers == (("x1", "rcx"),)
+    assert surface.input_registers == (("x1", "rcx"), ("w0", "eax"))
 
 
 def test_rejects_memory_access_count_mismatch() -> None:
@@ -77,6 +75,36 @@ def test_rejects_memory_access_count_mismatch() -> None:
     )
 
     assert surface.skip_reason == "unsupported_memory_surface"
+
+
+def test_infers_indexed_load_address_register_inputs() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldr", "w0, [x1, x2, lsl #2]"),),
+            (_inst("x86-64", 0x2000, "mov", "eax, dword ptr [rcx + rdx*4]"),),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert surface.spec.bindings[0].guest_addr == "x1 + x2 * 4"
+    assert surface.spec.bindings[0].host_addr == "rcx + rdx * 4"
+    assert surface.input_registers == (("x1", "rcx"), ("x2", "rdx"))
+
+
+def test_infers_indexed_store_value_and_address_inputs() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "str", "w0, [x1, x2, lsl #2]"),),
+            (_inst("x86-64", 0x2000, "mov", "dword ptr [rcx + rdx*4], eax"),),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert surface.input_registers == (
+        ("x1", "rcx"),
+        ("x2", "rdx"),
+        ("w0", "eax"),
+    )
 
 
 def test_rejects_memory_kind_or_width_mismatch() -> None:

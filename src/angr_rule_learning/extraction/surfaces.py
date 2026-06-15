@@ -72,9 +72,6 @@ class SurfaceInferer:
             surface_kind = guest_surface.kind
 
         input_registers = tuple(zip(guest_inputs, host_inputs, strict=True))
-        input_registers = _remove_register_pairs(
-            input_registers, memory_surface.address_registers
-        )
         input_registers = _merge_register_pairs(
             input_registers, memory_surface.input_registers
         )
@@ -138,14 +135,6 @@ def _has_unsupported_control_flow(window: InstructionWindow) -> bool:
             if mnemonic in _UNSUPPORTED_CONTROL_FLOW[arch]:
                 return True
     return False
-
-
-def _remove_register_pairs(
-    pairs: tuple[tuple[str, str], ...],
-    removed: tuple[tuple[str, str], ...],
-) -> tuple[tuple[str, str], ...]:
-    removed_set = set(removed)
-    return tuple(pair for pair in pairs if pair not in removed_set)
 
 
 def _merge_register_pairs(

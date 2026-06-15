@@ -60,7 +60,6 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     bindings: list[MemoryBinding] = []
     accesses: list[MemoryAccessExpectation] = []
     input_registers: list[tuple[str, str]] = []
-    address_registers: list[tuple[str, str]] = []
 
     for index, (guest, host) in enumerate(
         zip(guest_operands, host_operands, strict=True)
@@ -83,14 +82,22 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
             )
         )
         accesses.append(MemoryAccessExpectation(slot_name, guest.kind, guest.width))
-        address_registers.append((guest.address.base, host.address.base))
+        guest_addr_regs = guest.address.registers()
+        host_addr_regs = host.address.registers()
+        if len(guest_addr_regs) != len(host_addr_regs):
+            return MemorySurface(
+                MemorySpec(),
+                skip_reason="unsupported_memory_surface",
+                guest_operands=guest_operands,
+                host_operands=host_operands,
+            )
+        input_registers.extend(zip(guest_addr_regs, host_addr_regs, strict=True))
         if guest.kind == "write":
             input_registers.append((guest.value_register, host.value_register))
 
     return MemorySurface(
         MemorySpec(tuple(slots), tuple(bindings), tuple(accesses), ()),
         input_registers=tuple(input_registers),
-        address_registers=tuple(address_registers),
         guest_operands=guest_operands,
         host_operands=host_operands,
     )

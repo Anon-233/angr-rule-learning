@@ -428,3 +428,50 @@ def test_surface_inferer_rejects_pre_index_writeback_addressing_surface() -> Non
     assert candidate is None
     assert diagnostics.skip_reasons.get("unsupported_memory_surface", 0) >= 1
     assert diagnostics.windows_emitted == 0
+
+
+from angr_rule_learning.extraction.liveness import InstructionLiveness
+
+
+def _empty_liveness(*instructions: ExtractedInstruction) -> LivenessIndex:
+    return LivenessIndex(
+        {
+            (inst.arch, inst.function, inst.address): InstructionLiveness(
+                live_in=frozenset(),
+                live_out=frozenset(),
+                reads=(),
+                writes=(),
+                successor_addresses=(),
+            )
+            for inst in instructions
+        }
+    )
+
+
+def test_surface_inferer_emits_indexed_memory_address_inputs() -> None:
+    guest = _mem_inst(
+        "aarch64",
+        0x1000,
+        ("x1", "x2"),
+        ("w0",),
+        mnemonic="ldr",
+        op_str="w0, [x1, x2, lsl #2]",
+    )
+    host = _mem_inst(
+        "x86-64",
+        0x2000,
+        ("rcx", "rdx"),
+        ("eax",),
+        mnemonic="mov",
+        op_str="eax, dword ptr [rcx + rdx*4]",
+    )
+    pair = _mem_pair(guest, host)
+    diagnostics = MiningDiagnostics()
+
+    candidate = SurfaceInferer(diagnostics, _empty_liveness(guest, host)).infer(pair)
+
+    assert candidate is not None
+    assert candidate.input_registers == (("x1", "rcx"), ("x2", "rdx"))
+    assert candidate.output_registers == ()
+    assert candidate.memory.bindings[0].guest_addr == "x1 + x2 * 4"
+    assert candidate.memory.bindings[0].host_addr == "rcx + rdx * 4"
