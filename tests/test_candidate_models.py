@@ -132,9 +132,7 @@ def test_memory_spec_rejects_alias_for_unknown_slot() -> None:
 def test_memory_binding_does_not_throw_on_unsupported_expression() -> None:
     """Unsupported address expressions must not fail at construction time
     so the verifier can report unsupported_address_expression."""
-    binding = MemoryBinding(
-        "mem0", "x1", "rcx + rdx * 4 + r8", "read"
-    )
+    binding = MemoryBinding("mem0", "x1", "rcx + rdx * 4 + r8", "read")
     assert binding.guest_addr == "x1"
     assert binding.host_addr == "rcx + rdx * 4 + r8"
 

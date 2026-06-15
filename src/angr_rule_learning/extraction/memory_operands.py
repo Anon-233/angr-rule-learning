@@ -42,9 +42,7 @@ _AARCH64_INDEX_MEM_RE = re.compile(
 )
 
 _X86_BRACKET_RE = re.compile(r"(?P<mem>\[[^\]]+\])", re.IGNORECASE)
-_X86_SEGMENT_OVERRIDE_RE = re.compile(
-    r"(?:cs|ds|es|fs|gs|ss)\s*:\s*\[", re.IGNORECASE
-)
+_X86_SEGMENT_OVERRIDE_RE = re.compile(r"(?:cs|ds|es|fs|gs|ss)\s*:\s*\[", re.IGNORECASE)
 
 
 def extract_memory_operands(

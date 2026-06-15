@@ -149,8 +149,5 @@ def test_rejects_x86_64_rip_relative_addressing() -> None:
 
 def test_rejects_x86_64_segment_override_addressing() -> None:
     assert (
-        extract_memory_operands(
-            _inst("x86-64", "mov", "eax, dword ptr fs:[rcx]")
-        )
-        == ()
+        extract_memory_operands(_inst("x86-64", "mov", "eax, dword ptr fs:[rcx]")) == ()
     )

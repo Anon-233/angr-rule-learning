@@ -269,11 +269,7 @@ def test_verifier_reports_unsupported_for_unparseable_address_expression() -> No
         output_registers=(("w0", "eax"),),
         memory=MemorySpec(
             slots=(MemorySlot("mem0", 4),),
-            bindings=(
-                MemoryBinding(
-                    "mem0", "x1", "rcx + rdx * 4 + r8", "read"
-                ),
-            ),
+            bindings=(MemoryBinding("mem0", "x1", "rcx + rdx * 4 + r8", "read"),),
             accesses=(MemoryAccessExpectation("mem0", "read", 4),),
         ),
     )

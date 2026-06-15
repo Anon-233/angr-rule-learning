@@ -81,9 +81,7 @@ def _initialize_memory_registers(
         _assign_index_witness(assigned, host_expr, host_to_guest)
 
         # Compute guest base register value from the guest expression.
-        guest_index_val = (
-            assigned.get(guest_expr.index, 0) if guest_expr.index else 0
-        )
+        guest_index_val = assigned.get(guest_expr.index, 0) if guest_expr.index else 0
         guest_base_val = guest_expr.solve_base_for_slot(base, guest_index_val)
         _assign_witness(assigned, guest_expr.base, guest_base_val)
         host_pair = guest_to_host.get(guest_expr.base)
@@ -94,26 +92,18 @@ def _initialize_memory_registers(
         # compute independently so the memory-event address check
         # can still verify the host-side effective address.
         if host_to_guest.get(host_expr.base) is None:
-            host_index_val = (
-                assigned.get(host_expr.index, 0) if host_expr.index else 0
-            )
+            host_index_val = assigned.get(host_expr.index, 0) if host_expr.index else 0
             host_base_val = host_expr.solve_base_for_slot(base, host_index_val)
             _assign_witness(assigned, host_expr.base, host_base_val)
 
     for register, value in assigned.items():
         if register in guest_state.arch.registers:
-            write_reg(
-                guest_state, register, claripy.BVV(value, guest_state.arch.bits)
-            )
+            write_reg(guest_state, register, claripy.BVV(value, guest_state.arch.bits))
         host_pair = guest_to_host.get(register)
         if host_pair is not None:
-            write_reg(
-                host_state, host_pair, claripy.BVV(value, host_state.arch.bits)
-            )
+            write_reg(host_state, host_pair, claripy.BVV(value, host_state.arch.bits))
         elif register in host_state.arch.registers:
-            write_reg(
-                host_state, register, claripy.BVV(value, host_state.arch.bits)
-            )
+            write_reg(host_state, register, claripy.BVV(value, host_state.arch.bits))
 
 
 def _assign_index_witness(
