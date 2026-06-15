@@ -49,27 +49,84 @@ def validate_alias_declarations(candidate: VerificationCandidate) -> None:
 _INDEX_WITNESS = 3
 
 
-def _address_register_values(expression: str, base: int) -> dict[str, int]:
-    expr = parse_address_binding(expression)
-    values: dict[str, int] = {}
-    index_value = 0
-    if expr.index is not None:
-        index_value = _INDEX_WITNESS
-        values[expr.index] = index_value
-    if expr.base is not None:
-        values[expr.base] = expr.solve_base_for_slot(base, index_value)
-    return values
+def _assign_witness(assigned: dict[str, int], register: str, value: int) -> None:
+    existing = assigned.get(register)
+    if existing is not None and existing != value:
+        raise ValueError("unsupported address expression: conflicting bindings")
+    assigned[register] = value
 
 
-def _merge_register_values(
-    current: dict[str, int],
-    updates: dict[str, int],
+def _initialize_memory_registers(
+    candidate: VerificationCandidate,
+    guest_state,
+    host_state,
+    bases: dict[str, int],
 ) -> None:
-    for register, value in updates.items():
-        existing = current.get(register)
-        if existing is not None and existing != value:
-            raise ValueError("unsupported address expression: conflicting bindings")
-        current[register] = value
+    guest_to_host: dict[str, str] = {}
+    host_to_guest: dict[str, str] = {}
+    for guest_reg, host_reg in candidate.input_registers:
+        guest_to_host[guest_reg] = host_reg
+        host_to_guest[host_reg] = guest_reg
+
+    assigned: dict[str, int] = {}
+
+    for binding in candidate.memory.bindings:
+        base = bases[binding.slot]
+        guest_expr = parse_address_binding(binding.guest_addr)
+        host_expr = parse_address_binding(binding.host_addr)
+
+        # Assign index register witnesses.
+        # Paired registers get the same non-zero witness value.
+        _assign_index_witness(assigned, guest_expr, guest_to_host)
+        _assign_index_witness(assigned, host_expr, host_to_guest)
+
+        # Compute guest base register value from the guest expression.
+        guest_index_val = (
+            assigned.get(guest_expr.index, 0) if guest_expr.index else 0
+        )
+        guest_base_val = guest_expr.solve_base_for_slot(base, guest_index_val)
+        _assign_witness(assigned, guest_expr.base, guest_base_val)
+        host_pair = guest_to_host.get(guest_expr.base)
+        if host_pair is not None:
+            _assign_witness(assigned, host_pair, guest_base_val)
+
+        # For a host base register NOT paired with a guest register,
+        # compute independently so the memory-event address check
+        # can still verify the host-side effective address.
+        if host_to_guest.get(host_expr.base) is None:
+            host_index_val = (
+                assigned.get(host_expr.index, 0) if host_expr.index else 0
+            )
+            host_base_val = host_expr.solve_base_for_slot(base, host_index_val)
+            _assign_witness(assigned, host_expr.base, host_base_val)
+
+    for register, value in assigned.items():
+        if register in guest_state.arch.registers:
+            write_reg(
+                guest_state, register, claripy.BVV(value, guest_state.arch.bits)
+            )
+        host_pair = guest_to_host.get(register)
+        if host_pair is not None:
+            write_reg(
+                host_state, host_pair, claripy.BVV(value, host_state.arch.bits)
+            )
+        elif register in host_state.arch.registers:
+            write_reg(
+                host_state, register, claripy.BVV(value, host_state.arch.bits)
+            )
+
+
+def _assign_index_witness(
+    assigned: dict[str, int],
+    expr,
+    pair_map: dict[str, str],
+) -> None:
+    if expr.index is None:
+        return
+    _assign_witness(assigned, expr.index, _INDEX_WITNESS)
+    pair = pair_map.get(expr.index)
+    if pair is not None:
+        _assign_witness(assigned, pair, _INDEX_WITNESS)
 
 
 class MemoryInitializer:
@@ -109,21 +166,7 @@ class MemoryInitializer:
                 base, content, endness=host_state.arch.memory_endness
             )
 
-        guest_values: dict[str, int] = {}
-        host_values: dict[str, int] = {}
-        for binding in candidate.memory.bindings:
-            base = bases[binding.slot]
-            _merge_register_values(
-                guest_values, _address_register_values(binding.guest_addr, base)
-            )
-            _merge_register_values(
-                host_values, _address_register_values(binding.host_addr, base)
-            )
-
-        for register, value in guest_values.items():
-            write_reg(guest_state, register, claripy.BVV(value, guest_state.arch.bits))
-        for register, value in host_values.items():
-            write_reg(host_state, register, claripy.BVV(value, host_state.arch.bits))
+        _initialize_memory_registers(candidate, guest_state, host_state, bases)
 
         return MemoryLayout(bases)
 

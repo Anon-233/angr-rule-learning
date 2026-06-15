@@ -215,3 +215,45 @@ def test_verifier_rejects_wrong_index_scale() -> None:
     assert any(
         check.reason == "host_memory_address_mismatch" for check in report.checks
     )
+
+
+def test_verifier_rejects_binding_scale_mismatch_under_shared_inputs() -> None:
+    """Binding says guest x1+x2*4 but host rcx+rdx*8 with paired inputs.
+
+    Under shared inputs (x1==rcx, x2==rdx) the effective addresses differ
+    because the scale factors differ.  The verifier must NOT independently
+    compute different base values for x1 and rcx to make both sides hit the
+    slot — that would silently pass a semantically wrong pairing.
+    """
+    candidate = VerificationCandidate(
+        candidate_id="indexed-binding-scale-mismatch",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_LDR_W0_X1_X2_LSL2, 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_EAX_RCX_RDX_SCALE8, 1),
+        input_registers=(("x1", "rcx"), ("x2", "rdx")),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(
+                MemoryBinding(
+                    "mem0",
+                    "x1 + x2 * 4",
+                    "rcx + rdx * 8",
+                    "read",
+                ),
+            ),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "fail"
+    assert any(
+        check.reason
+        in {
+            "guest_memory_address_mismatch",
+            "host_memory_address_mismatch",
+            "register_mismatch",
+        }
+        for check in report.checks
+    )
