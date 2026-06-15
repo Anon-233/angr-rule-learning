@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from angr_rule_learning.verification.addressing import parse_address_binding
+
 
 def normalize_register(reg: str) -> str:
     return reg.strip().lower()
@@ -68,17 +70,23 @@ class MemoryBinding:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "slot", self.slot.strip())
-        object.__setattr__(self, "guest_addr", self.guest_addr.strip().lower())
-        object.__setattr__(self, "host_addr", self.host_addr.strip().lower())
         object.__setattr__(self, "access", self.access.strip().lower())
         if not self.slot:
             raise ValueError("memory binding slot must not be empty")
-        if not self.guest_addr:
-            raise ValueError("guest memory address expression must not be empty")
-        if not self.host_addr:
-            raise ValueError("host memory address expression must not be empty")
         if self.access not in {"read", "write", "read_write"}:
             raise ValueError("unsupported memory binding access")
+
+        stripped = self.guest_addr.strip().lower()
+        if not stripped:
+            raise ValueError("guest memory address expression must not be empty")
+        guest_addr = parse_address_binding(stripped).canonical()
+        object.__setattr__(self, "guest_addr", guest_addr)
+
+        stripped = self.host_addr.strip().lower()
+        if not stripped:
+            raise ValueError("host memory address expression must not be empty")
+        host_addr = parse_address_binding(stripped).canonical()
+        object.__setattr__(self, "host_addr", host_addr)
 
 
 @dataclass(frozen=True)

@@ -147,6 +147,17 @@ def test_candidate_from_json_rejects_missing_nested_fragment_field() -> None:
         candidate_from_json(payload)
 
 
+def test_candidate_from_json_accepts_indexed_memory_binding() -> None:
+    payload = _payload()
+    payload["memory"]["bindings"][0]["guest_addr"] = "x1 + x2 * 4 + 8"
+    payload["memory"]["bindings"][0]["host_addr"] = "rcx + rdx * 4 + 8"
+
+    candidate = candidate_from_json(payload)
+
+    assert candidate.memory.bindings[0].guest_addr == "x1 + x2 * 4 + 8"
+    assert candidate.memory.bindings[0].host_addr == "rcx + rdx * 4 + 8"
+
+
 def test_candidate_from_json_rejects_missing_nested_memory_field() -> None:
     payload = _payload()
     del payload["memory"]["bindings"][0]["access"]

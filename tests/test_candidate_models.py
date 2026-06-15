@@ -184,6 +184,18 @@ def test_config_defaults_are_small_fragment_focused() -> None:
     assert config.emit_events is False
 
 
+def test_memory_binding_normalizes_indexed_addresses() -> None:
+    binding = MemoryBinding(
+        "mem0",
+        "X1  +  X2 * 4 + 8",
+        "RCX  +  RDX * 4 + 8",
+        "read",
+    )
+
+    assert binding.guest_addr == "x1 + x2 * 4 + 8"
+    assert binding.host_addr == "rcx + rdx * 4 + 8"
+
+
 def test_config_rejects_invalid_numeric_values() -> None:
     with pytest.raises(ValueError, match="max_successors must be positive"):
         VerificationConfig(max_successors=0)
