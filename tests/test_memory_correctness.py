@@ -17,14 +17,17 @@ from angr_rule_learning.verification.verifier import SemanticVerifier
 
 
 def test_parse_address_binding_supports_register_plus_minus_constant() -> None:
-    assert parse_address_binding("x1").register == "x1"
-    assert parse_address_binding("x1 + 4").offset == 4
-    assert parse_address_binding("rcx - 8").offset == -8
+    assert parse_address_binding("x1").base == "x1"
+    assert parse_address_binding("x1").displacement == 0
+    assert parse_address_binding("x1 + 4").displacement == 4
+    assert parse_address_binding("rcx - 8").displacement == -8
 
 
-def test_parse_address_binding_rejects_complex_expression() -> None:
-    with pytest.raises(ValueError, match="unsupported address expression"):
-        parse_address_binding("x1 + x2")
+def test_parse_address_binding_supports_register_index_addressing() -> None:
+    expr = parse_address_binding("x1 + x2")
+    assert expr.base == "x1"
+    assert expr.index == "x2"
+    assert expr.scale == 1
 
 
 def test_memory_initializer_binds_register_for_positive_offset() -> None:
