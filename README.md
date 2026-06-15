@@ -26,8 +26,9 @@ Implemented:
   `may_alias` unsupported reporting;
 - four-state diagnostics: `pass`, `fail`, `unsupported`, and `error`;
 - memory rule learning: structured memory operand extraction, memory surface
-  inference, and generalized memory rules with address placeholders
-  (`[addr64_N]`) for simple load/store/mov patterns;
+  inference, and generalized memory rules with native ISA syntax and typed
+  register placeholders for base+displacement and indexed (base+index*scale)
+  load/store/mov patterns;
 - compiler/debug-info based candidate extraction for one C source file;
 - verified rule generalization producing plain text rules with typed
   register and address placeholders.
@@ -39,7 +40,7 @@ Not implemented yet:
 - precondition solving;
 - branch target equivalence for direct or indirect branches;
 - generalized memory rules for complex addressing modes (push/pop,
-  ldp/stp, indexed addressing with scale), multi-slot memory surfaces,
+  ldp/stp, writeback, extension-indexed), multi-slot memory surfaces,
   and memory alias constraints.
 
 ## Quick Start

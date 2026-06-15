@@ -112,6 +112,21 @@ Supported address expressions are:
 - `reg`
 - `reg + const`
 - `reg - const`
+- `reg + index * scale`
+- `reg + index * scale + const`
+- `reg + index * scale - const`
+
+JSON fields remain string-based for compatibility, while the verifier
+parses these strings into the shared ``AddressExpr`` model internally.
+
+```json
+{
+  "slot": "mem0",
+  "guest_addr": "x1 + x2 * 4 + 8",
+  "host_addr": "rcx + rdx * 4 + 8",
+  "access": "read"
+}
+```
 
 `memory.accesses` declares expected memory events in order:
 

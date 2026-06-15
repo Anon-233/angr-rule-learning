@@ -48,41 +48,52 @@ immediates, offsets, scales, labels, and mnemonics literal.
 
 ## Memory Operand Generalization
 
-When a verified candidate has a ``MemorySpec`` with address bindings, the
-generalizer rewrites memory operand text with address placeholders:
+Memory rules keep each ISA's native memory operand syntax and replace only
+the register tokens and shared displacement immediates.  Each memory slot
+gets a ``MemoryBinding`` that pairs a guest address expression
+(e.g. ``x1 + x2 * 4`` or ``x1 + 8``) with a host address expression
+(e.g. ``rcx + rdx * 4`` or ``rcx + 8``).
 
-- ``[addr64_N]`` for 64-bit address slot `N` (all addresses are currently 64-bit).
-- Future width variants (e.g. ``[addr32_N]``) are reserved for 32-bit guests.
+Address base and index registers use the same typed register placeholders as
+the register surface:
 
-Each memory slot gets a ``MemoryBinding`` that pairs a guest address expression
-(e.g. ``x1`` or ``x1 + 4``) with a host address expression (e.g. ``rcx`` or
-``rcx + 4``).  The placeholder numbering follows the binding order.
+```text
+1.Guest:
+    ldr i32_reg1, [i64_reg2, #imm1]
+.Host:
+    mov i32_reg1, dword ptr [i64_reg2 + imm1]
 
-### Register vs Address Placeholders
+2.Guest:
+    ldr i32_reg1, [i64_reg2, i64_reg3, lsl #2]
+.Host:
+    mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*4]
+```
 
-Register placeholders (``i32_reg1``) and address placeholders (``[addr64_1]``)
-use independent numbering.  A register that appears only as an address base
-(e.g. ``x1`` in ``ldr w0, [x1]``) is replaced by an address placeholder, not a
-register placeholder — it is not part of the register input/output surface.
+Rules for the new design:
+
+- address base/index registers use normal typed register placeholders;
+- displacements shared by guest and host use the same ``immN``;
+- scale/shift literals remain literal in the current implementation;
+- ``[addr64_N]`` is no longer emitted for memory rules.
 
 ### Supported Memory Forms
 
-The memory parser currently supports:
-
-- AArch64: ``ldr``, ``ldur``, ``str``, ``stur`` with base-only ``[base]``
-  or base+displacement ``[base, #disp]``.
-- x86-64: ``mov`` with ``[reg]`` or ``[reg + disp]`` (32-bit and 64-bit).
+- AArch64: ``ldr``, ``ldur``, ``str``, ``stur`` with base-only ``[base]``,
+  base+displacement ``[base, #disp]``, register-offset ``[base, index]``,
+  and shifted index ``[base, index, lsl #shift]``.
+- x86-64: ``mov`` with ``[reg]``, ``[reg + disp]``, ``[base + index*scale]``,
+  and ``[base + index*scale + disp]`` (32-bit and 64-bit).
 
 ### Unsupported Memory Forms
 
 These are detected and reported as ``unsupported_memory_surface`` in
 diagnostics:
 
-- AArch64: ``ldp``, ``stp``, ``ldnp``, ``stnp``, register-offset addressing,
-  post/pre-index addressing.
-- x86-64: ``push``, ``pop``, indexed addressing with scale
-  (``[reg + reg*scale]``).
-- Both: any form not matching the supported patterns above.
+- AArch64: ``ldp``, ``stp``, ``ldnp``, ``stnp``, extension-index addressing
+  (``uxtw``/``sxtw``), post/pre-index addressing.
+- x86-64: ``push``, ``pop``, RIP-relative addressing, segment overrides,
+  no-base indexed addressing (``[index*scale + disp]``), memory-to-memory
+  operands, read-modify-write instructions.
 
 ``lea`` on x86-64 uses memory-like addressing syntax (e.g. ``lea rcx, [rdx+4]``)
 but performs no memory access.  It is not treated as a memory surface and is

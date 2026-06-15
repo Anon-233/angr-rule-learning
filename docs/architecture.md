@@ -111,13 +111,13 @@ single C source
   -> extraction.ExtractionPipeline
      -> WindowMiner (enumerate instruction windows)
      -> SurfaceInferer
-        -> memory_surfaces.infer_memory_surface (structured memory operand pairing)
+        -> memory_surfaces.infer_memory_surface (AddressExpr pairing)
         -> liveness.WindowSurfaceInferer (register/liveness surface)
      -> VerificationCandidate values + candidate JSONL
   -> verification.BatchVerifier
+     -> addressing.parse_address_binding (AddressExpr for memory bindings)
   -> VerificationReport values
   -> rules.RuleGeneralizer
-     -> rules.memory.rewrite_memory_operands (address placeholders)
      -> rules.registers (register classification + generalization)
   -> plain text rules + rule diagnostics
 ```
@@ -126,17 +126,21 @@ single C source
 
 The extractor explicitly distinguishes "no memory access" from "memory access
 exists but is unsupported."  Structured memory operand parsing
-(`memory_operands.extract_memory_operands`) handles a subset of load/store/mov
-forms.  The surface inferer checks for broader memory access patterns via
-`has_any_memory_access` and emits `unsupported_memory_surface` in diagnostics
-when memory access is present but cannot be modelled.  This prevents windows
-with unsupported memory forms (push/pop, ldp/stp, indexed addressing) from
-being silently treated as register-only candidates.
+(`memory_operands.extract_memory_operands`) parses supported AArch64 and x86-64
+memory addressing forms into a shared `AddressExpr` model.  The surface inferer
+checks for broader memory access patterns via `has_any_memory_access` and emits
+`unsupported_memory_surface` in diagnostics when memory access is present but
+cannot be modelled.  This prevents windows with unsupported memory forms
+(push/pop, ldp/stp, writeback, extension-indexed) from being silently treated
+as register-only candidates.
+
+Address base and index registers are included in candidate `input_registers`
+so rule generalization can emit typed register placeholders for them.
 
 Rule generation consumes `WindowPair + VerificationCandidate + VerificationReport`
 and produces text rules with typed register placeholders such as `i32_reg1`
-and memory address placeholders such as `[addr64_1]`.
-It does not reconstruct assembly from candidate JSONL.
+in each ISA's native assembly syntax.  Memory rules keep the original operand
+text and generalize only registers and shared displacement immediates.
 
 The CLI is intentionally outside the verifier core. Future pipeline code should
 construct `VerificationCandidate` values directly, call `SemanticVerifier` or
@@ -205,7 +209,7 @@ semantic surfaces behind focused modules:
 - indirect branch target expression equivalence;
 - richer memory alias constraints (may_alias, multi-slot memory surfaces);
 - richer extraction beyond single-source smoke inputs;
-- generalized memory rules for complex addressing (push/pop, ldp/stp, indexed);
+- generalized memory rules for complex addressing (push/pop, ldp/stp, writeback);
 - generalized branch-target rule output;
 - rule store and coverage reporting against an external rule table.
 
