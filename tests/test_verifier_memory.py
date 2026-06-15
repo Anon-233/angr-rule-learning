@@ -17,6 +17,9 @@ X86_64_MOV_EAX_RCX_PTR = "8b 01"  # mov eax, [rcx]
 X86_64_MOV_RAX_RCX_PTR = "48 8b 01"  # mov rax, [rcx]
 AARCH64_STR_W0_X1 = "20 00 00 b9"  # str w0, [x1]
 X86_64_MOV_RCX_PTR_EAX = "89 01"  # mov [rcx], eax
+AARCH64_LDR_W0_X1_X2_LSL2 = "207862b8"
+X86_64_MOV_EAX_RCX_RDX_SCALE4 = "8b0491"
+X86_64_MOV_EAX_RCX_RDX_SCALE8 = "8b04d1"
 
 
 def _load_candidate(*, host_hex: str) -> VerificationCandidate:
@@ -151,9 +154,10 @@ def test_verifier_accepts_equivalent_load_with_positive_offset() -> None:
     assert report.status == "pass"
 
 
-def test_verifier_reports_unsupported_index_scale_address_expression() -> None:
+def test_verifier_rejects_inconsistent_binding_vs_instruction() -> None:
+    """Binding claims host uses rcx+rdx*4 but instruction only uses [rcx]."""
     candidate = VerificationCandidate(
-        candidate_id="unsupported-index-scale",
+        candidate_id="inconsistent-binding",
         guest=CodeFragment("aarch64", 0x10000, AARCH64_LDR_W0_X1, 1),
         host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_EAX_RCX_PTR, 1),
         output_registers=(("w0", "eax"),),
@@ -166,5 +170,48 @@ def test_verifier_reports_unsupported_index_scale_address_expression() -> None:
 
     report = SemanticVerifier().verify(candidate)
 
-    assert report.status == "unsupported"
-    assert "unsupported_address_expression" in report.unsupported_features
+    assert report.status == "fail"
+    assert any(
+        check.reason == "host_memory_address_mismatch" for check in report.checks
+    )
+
+
+def test_verifier_accepts_equivalent_indexed_load() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="indexed-load32",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_LDR_W0_X1_X2_LSL2, 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_EAX_RCX_RDX_SCALE4, 1),
+        input_registers=(("x1", "rcx"), ("x2", "rdx")),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1 + x2 * 4", "rcx + rdx * 4", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass"
+
+
+def test_verifier_rejects_wrong_index_scale() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="indexed-load32-wrong-scale",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_LDR_W0_X1_X2_LSL2, 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_EAX_RCX_RDX_SCALE8, 1),
+        input_registers=(("x1", "rcx"), ("x2", "rdx")),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1 + x2 * 4", "rcx + rdx * 4", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "fail"
+    assert any(
+        check.reason == "host_memory_address_mismatch" for check in report.checks
+    )

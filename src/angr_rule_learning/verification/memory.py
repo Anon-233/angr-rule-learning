@@ -46,10 +46,30 @@ def validate_alias_declarations(candidate: VerificationCandidate) -> None:
         raise ValueError("invalid_alias_declaration")
 
 
-def _write_bound_address(state: angr.SimState, expression: str, base: int) -> None:
-    binding = parse_address_binding(expression)
-    register_value = base - binding.offset
-    write_reg(state, binding.register, claripy.BVV(register_value, state.arch.bits))
+_INDEX_WITNESS = 3
+
+
+def _address_register_values(expression: str, base: int) -> dict[str, int]:
+    expr = parse_address_binding(expression)
+    values: dict[str, int] = {}
+    index_value = 0
+    if expr.index is not None:
+        index_value = _INDEX_WITNESS
+        values[expr.index] = index_value
+    if expr.base is not None:
+        values[expr.base] = expr.solve_base_for_slot(base, index_value)
+    return values
+
+
+def _merge_register_values(
+    current: dict[str, int],
+    updates: dict[str, int],
+) -> None:
+    for register, value in updates.items():
+        existing = current.get(register)
+        if existing is not None and existing != value:
+            raise ValueError("unsupported address expression: conflicting bindings")
+        current[register] = value
 
 
 class MemoryInitializer:
@@ -89,10 +109,21 @@ class MemoryInitializer:
                 base, content, endness=host_state.arch.memory_endness
             )
 
+        guest_values: dict[str, int] = {}
+        host_values: dict[str, int] = {}
         for binding in candidate.memory.bindings:
             base = bases[binding.slot]
-            _write_bound_address(guest_state, binding.guest_addr, base)
-            _write_bound_address(host_state, binding.host_addr, base)
+            _merge_register_values(
+                guest_values, _address_register_values(binding.guest_addr, base)
+            )
+            _merge_register_values(
+                host_values, _address_register_values(binding.host_addr, base)
+            )
+
+        for register, value in guest_values.items():
+            write_reg(guest_state, register, claripy.BVV(value, guest_state.arch.bits))
+        for register, value in host_values.items():
+            write_reg(host_state, register, claripy.BVV(value, host_state.arch.bits))
 
         return MemoryLayout(bases)
 
