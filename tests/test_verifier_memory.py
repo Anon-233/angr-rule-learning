@@ -257,3 +257,28 @@ def test_verifier_rejects_binding_scale_mismatch_under_shared_inputs() -> None:
         }
         for check in report.checks
     )
+
+
+def test_verifier_reports_unsupported_for_unparseable_address_expression() -> None:
+    """Unsupported address expressions must reach the verifier and return
+    unsupported_address_expression, not throw at candidate construction."""
+    candidate = VerificationCandidate(
+        candidate_id="unparseable-expr",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_LDR_W0_X1, 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_EAX_RCX_PTR, 1),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(
+                MemoryBinding(
+                    "mem0", "x1", "rcx + rdx * 4 + r8", "read"
+                ),
+            ),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "unsupported"
+    assert "unsupported_address_expression" in report.unsupported_features

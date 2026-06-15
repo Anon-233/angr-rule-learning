@@ -5,6 +5,20 @@ from dataclasses import dataclass, field
 from angr_rule_learning.verification.addressing import parse_address_binding
 
 
+def _canonicalize_binding(expression: str) -> str:
+    """Canonicalize a supported address expression; keep unsupported forms.
+
+    Supported expressions are normalized through parse_address_binding so
+    whitespace and case are canonical.  Expressions the parser does not yet
+    support are left as lowercased strings so the verifier can report
+    ``unsupported_address_expression`` at the right stage.
+    """
+    try:
+        return parse_address_binding(expression).canonical()
+    except ValueError:
+        return expression
+
+
 def normalize_register(reg: str) -> str:
     return reg.strip().lower()
 
@@ -76,16 +90,16 @@ class MemoryBinding:
         if self.access not in {"read", "write", "read_write"}:
             raise ValueError("unsupported memory binding access")
 
-        stripped = self.guest_addr.strip().lower()
-        if not stripped:
+        guest_addr = self.guest_addr.strip().lower()
+        if not guest_addr:
             raise ValueError("guest memory address expression must not be empty")
-        guest_addr = parse_address_binding(stripped).canonical()
+        guest_addr = _canonicalize_binding(guest_addr)
         object.__setattr__(self, "guest_addr", guest_addr)
 
-        stripped = self.host_addr.strip().lower()
-        if not stripped:
+        host_addr = self.host_addr.strip().lower()
+        if not host_addr:
             raise ValueError("host memory address expression must not be empty")
-        host_addr = parse_address_binding(stripped).canonical()
+        host_addr = _canonicalize_binding(host_addr)
         object.__setattr__(self, "host_addr", host_addr)
 
 
