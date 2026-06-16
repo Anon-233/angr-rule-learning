@@ -17,6 +17,7 @@ from angr_rule_learning.rules.registers import (
     normalize_register_name,
     stack_pointer_placeholder,
 )
+from angr_rule_learning.verification.addressing import parse_address_binding
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
 
@@ -217,6 +218,24 @@ class RuleGeneralizer:
         return rule
 
 
+def _memory_binding_register_pairs(
+    candidate: VerificationCandidate,
+) -> tuple[tuple[str, str], ...]:
+    pairs: list[tuple[str, str]] = []
+    for binding in candidate.memory.bindings:
+        try:
+            guest_expr = parse_address_binding(binding.guest_addr)
+            host_expr = parse_address_binding(binding.host_addr)
+        except ValueError as exc:
+            raise _RuleSkip("unsupported_rule_shape") from exc
+        guest_regs = guest_expr.registers()
+        host_regs = host_expr.registers()
+        if len(guest_regs) != len(host_regs):
+            raise _RuleSkip("unsupported_rule_shape")
+        pairs.extend(zip(guest_regs, host_regs, strict=True))
+    return tuple(pairs)
+
+
 def _build_placeholder_map(
     candidate: VerificationCandidate,
     guest_arch: str,
@@ -224,7 +243,12 @@ def _build_placeholder_map(
 ) -> dict[str, str]:
     mapping: dict[str, str] = {}
     next_id = 1
-    for guest_reg, host_reg in candidate.output_registers + candidate.input_registers:
+    register_pairs = (
+        candidate.output_registers
+        + candidate.input_registers
+        + _memory_binding_register_pairs(candidate)
+    )
+    for guest_reg, host_reg in register_pairs:
         guest_reg = normalize_register_name(guest_reg)
         host_reg = normalize_register_name(host_reg)
 

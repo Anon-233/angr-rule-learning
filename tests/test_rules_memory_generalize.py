@@ -126,3 +126,35 @@ def test_generalizes_indexed_memory_keeps_scale_literals() -> None:
     assert rule.guest_lines == ("ldr i32_reg1, [i64_reg2, i64_reg3, lsl #2]",)
     assert rule.host_lines == ("mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*4]",)
     assert "addr64" not in "\n".join(rule.guest_lines + rule.host_lines)
+
+
+def test_generalizes_frame_relative_memory_registers_from_bindings() -> None:
+    window = _pair(
+        _inst("aarch64", 0x1000, "stur", "w0, [x29, #-4]"),
+        _inst("x86-64", 0x2000, "mov", "dword ptr [rbp - 4], eax"),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="frame-memory-store",
+        guest=CodeFragment("aarch64", 0x1000, "a8c31fb8", 1),
+        host=CodeFragment("x86-64", 0x2000, "8945fc", 1),
+        input_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x29 - 4", "rbp - 4", "write"),),
+            accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="frame-memory-store",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None
+    assert "fp64" in rule.guest_lines[0]
+    assert "fp64" in rule.host_lines[0]
+    assert "i32_reg1" in rule.guest_lines[0]
+    assert "i32_reg1" in rule.host_lines[0]
