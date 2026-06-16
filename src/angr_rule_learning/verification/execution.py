@@ -12,6 +12,11 @@ from angr_rule_learning.verification.candidate import CodeFragment
 logging.getLogger("angr.engines.unicorn").setLevel(logging.ERROR)
 logging.getLogger("angr.state_plugins.unicorn_engine").setLevel(logging.CRITICAL)
 
+_SYMBOLIC_FILL_OPTIONS = {
+    angr.options.SYMBOL_FILL_UNCONSTRAINED_MEMORY,
+    angr.options.SYMBOL_FILL_UNCONSTRAINED_REGISTERS,
+}
+
 
 @dataclass(frozen=True)
 class ExecutedFragment:
@@ -34,7 +39,10 @@ class FragmentExecutor:
             arch=angr_arch_name(fragment.arch),
             load_address=fragment.address,
         )
-        return project.factory.blank_state(addr=fragment.address)
+        return project.factory.blank_state(
+            addr=fragment.address,
+            add_options=_SYMBOLIC_FILL_OPTIONS,
+        )
 
     def execute(self, fragment: CodeFragment, state: angr.SimState) -> ExecutedFragment:
         result = self.successors(fragment, state)
