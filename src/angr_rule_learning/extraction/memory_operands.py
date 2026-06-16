@@ -20,7 +20,8 @@ class MemoryOperand:
     width: int
     address: AddressExpr
     text: str
-    value_register: str
+    value_register: str | None
+    value_immediate: str | None = None
 
 
 _AARCH64_VALUE_RE = r"(?P<value>[wx]\d+|sp|wsp|fp|x29|x30|lr)"
@@ -43,6 +44,19 @@ _AARCH64_INDEX_MEM_RE = re.compile(
 
 _X86_BRACKET_RE = re.compile(r"(?P<mem>\[[^\]]+\])", re.IGNORECASE)
 _X86_SEGMENT_OVERRIDE_RE = re.compile(r"(?:cs|ds|es|fs|gs|ss)\s*:\s*\[", re.IGNORECASE)
+
+_X86_REGISTER_TOKEN_RE = re.compile(
+    r"^(?:r(?:[0-9]+|[abcd]x|[sb]p|[sd]i)|e(?:[abcd]x|[sb]p|[sd]i)|"
+    r"(?:[abcd][lh])|(?:[abcd]x)|(?:[sb]p)|(?:[sd]i)|r(?:8|9|1[0-5])[bwd]?)$",
+    re.IGNORECASE,
+)
+
+
+def _x86_register_or_immediate(text: str) -> tuple[str | None, str | None]:
+    value = text.strip().lower()
+    if _X86_REGISTER_TOKEN_RE.match(value):
+        return value, None
+    return None, value
 
 
 def extract_memory_operands(
@@ -120,11 +134,17 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if left_mem is not None:
         if _X86_SEGMENT_OVERRIDE_RE.search(left):
             return ()
-        value_register = right.strip().lower()
-        width = _x86_width(left, value_register)
+        value_register, value_immediate = _x86_register_or_immediate(right)
+        width = _x86_width(left, value_register or "")
         if width is None:
             return ()
-        operand = _x86_operand("write", width, left_mem, value_register)
+        operand = _x86_operand(
+            "write",
+            width,
+            left_mem,
+            value_register,
+            value_immediate=value_immediate,
+        )
         return (operand,) if operand is not None else ()
     if _X86_SEGMENT_OVERRIDE_RE.search(right):
         return ()
@@ -140,7 +160,9 @@ def _x86_operand(
     kind: MemoryKind,
     width: int,
     match: re.Match[str],
-    value_register: str,
+    value_register: str | None,
+    *,
+    value_immediate: str | None = None,
 ) -> MemoryOperand | None:
     address = _x86_address_from_mem_text(match.group("mem"))
     if address is None:
@@ -151,6 +173,7 @@ def _x86_operand(
         address=address,
         text=match.group("mem"),
         value_register=value_register,
+        value_immediate=value_immediate,
     )
 
 

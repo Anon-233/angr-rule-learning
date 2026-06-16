@@ -422,6 +422,18 @@ def test_memory_surface_reports_store_value_internality_detail() -> None:
     assert surface.skip_detail == "store_value_internality_mismatch"
 
 
+def test_rejects_register_to_immediate_store_value_pairing() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "str", "w8, [x29, #-4]"),),
+            (_inst("x86-64", 0x2000, "mov", "dword ptr [rbp - 4], 3"),),
+        )
+    )
+
+    assert surface.skip_reason == "unsupported_memory_surface"
+    assert surface.skip_detail == "store_value_immediate_unsupported"
+
+
 def test_memory_surface_reports_store_producer_source_count_detail() -> None:
     surface = infer_memory_surface(
         _pair(

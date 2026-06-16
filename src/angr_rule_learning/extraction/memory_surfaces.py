@@ -125,6 +125,14 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
             )
         input_registers.extend(zip(guest_addr_regs, host_addr_regs, strict=True))
         if guest.kind == "write":
+            if guest.value_register is None or host.value_register is None:
+                return MemorySurface(
+                    MemorySpec(),
+                    skip_reason="unsupported_memory_surface",
+                    skip_detail="store_value_immediate_unsupported",
+                    guest_operands=guest_operands,
+                    host_operands=host_operands,
+                )
             guest_value_internal = _value_is_defined_before(pair.guest, guest_item)
             host_value_internal = _value_is_defined_before(pair.host, host_item)
             if guest_value_internal != host_value_internal:

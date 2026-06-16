@@ -151,3 +151,14 @@ def test_rejects_x86_64_segment_override_addressing() -> None:
     assert (
         extract_memory_operands(_inst("x86-64", "mov", "eax, dword ptr fs:[rcx]")) == ()
     )
+
+
+def test_x86_store_immediate_memory_operand_is_marked_non_register_value() -> None:
+    operands = extract_memory_operands(_inst("x86-64", "mov", "dword ptr [rbp - 4], 3"))
+
+    assert len(operands) == 1
+    assert operands[0].kind == "write"
+    assert operands[0].width == 4
+    assert operands[0].address == AddressExpr(base="rbp", displacement=-4)
+    assert operands[0].value_register is None
+    assert operands[0].value_immediate == "3"
