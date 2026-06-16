@@ -11,6 +11,7 @@ from angr_rule_learning.rules.registers import (
     RegisterClassError,
     UnsupportedRegisterClass,
     classify_register,
+    frame_pointer_placeholder,
     is_allowed_literal_register,
     known_register_tokens,
     normalize_register_name,
@@ -235,6 +236,23 @@ def _build_placeholder_map(
             guest_existing = mapping.get(guest_reg)
             host_existing = mapping.get(host_reg)
             existing = guest_existing or host_existing or guest_sp
+            if guest_existing not in (None, existing) or host_existing not in (
+                None,
+                existing,
+            ):
+                raise _RuleSkip("unsupported_rule_shape")
+            mapping[guest_reg] = existing
+            mapping[host_reg] = existing
+            continue
+
+        guest_fp = frame_pointer_placeholder(guest_arch, guest_reg)
+        host_fp = frame_pointer_placeholder(host_arch, host_reg)
+        if guest_fp is not None or host_fp is not None:
+            if guest_fp is None or host_fp is None or guest_fp != host_fp:
+                raise _RuleSkip("register_class_mismatch")
+            guest_existing = mapping.get(guest_reg)
+            host_existing = mapping.get(host_reg)
+            existing = guest_existing or host_existing or guest_fp
             if guest_existing not in (None, existing) or host_existing not in (
                 None,
                 existing,

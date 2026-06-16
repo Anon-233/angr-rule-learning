@@ -127,6 +127,21 @@ def stack_pointer_placeholder(arch: str, register: str) -> str | None:
     return f"sp{width}"
 
 
+_FRAME_POINTER_WIDTHS = {
+    "aarch64": {"x29": 64, "fp": 64},
+    "x86-64": {"rbp": 64, "ebp": 32, "bp": 16},
+}
+
+
+def frame_pointer_placeholder(arch: str, register: str) -> str | None:
+    canonical = canonical_arch_name(arch)
+    reg = normalize_register_name(register)
+    width = _FRAME_POINTER_WIDTHS.get(canonical, {}).get(reg)
+    if width is None:
+        return None
+    return f"fp{width}"
+
+
 def is_allowed_literal_register(arch: str, register: str) -> bool:
     canonical = canonical_arch_name(arch)
     return normalize_register_name(register) in _ALLOWED_LITERAL_REGISTERS.get(
