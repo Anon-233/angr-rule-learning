@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from statistics import mean
 
@@ -23,6 +23,9 @@ class MiningDiagnostics:
     windows_verified: int = 0
     windows_verified_pass: int = 0
     skip_reasons: Counter[str] = field(default_factory=Counter)
+    skip_details: defaultdict[str, Counter[str]] = field(
+        default_factory=lambda: defaultdict(Counter)
+    )
     surface_kinds: Counter[str] = field(default_factory=Counter)
     _guest_sizes: list[int] = field(default_factory=list)
     _host_sizes: list[int] = field(default_factory=list)
@@ -57,11 +60,13 @@ class MiningDiagnostics:
         if status == "pass":
             self.windows_verified_pass += 1
 
-    def record_window_skipped(self, reason: str) -> None:
+    def record_window_skipped(self, reason: str, detail: str | None = None) -> None:
         self.skip_reasons[reason] += 1
+        if detail is not None:
+            self.skip_details[reason][detail] += 1
 
     def to_json(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "functions": self.functions,
             "regions": self.regions,
             "regions_skipped": self.regions_skipped,
@@ -82,3 +87,10 @@ class MiningDiagnostics:
             "skip_reasons": dict(sorted(self.skip_reasons.items())),
             "surface_kinds": dict(sorted(self.surface_kinds.items())),
         }
+        if self.skip_details:
+            payload["skip_details"] = {
+                reason: dict(sorted(counter.items()))
+                for reason, counter in sorted(self.skip_details.items())
+                if counter
+            }
+        return payload
