@@ -37,7 +37,10 @@ class SurfaceInferer:
 
         memory_surface = infer_memory_surface(pair)
         if memory_surface.skip_reason is not None:
-            self._diagnostics.record_window_skipped(memory_surface.skip_reason)
+            self._diagnostics.record_window_skipped(
+                memory_surface.skip_reason,
+                detail=memory_surface.skip_detail,
+            )
             return None
 
         guest_surface = self._surface_inferer.infer(pair.guest)

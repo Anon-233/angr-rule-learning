@@ -87,6 +87,33 @@ def test_rejects_memory_access_count_mismatch() -> None:
     assert surface.skip_reason == "unsupported_memory_surface"
 
 
+def test_memory_surface_reports_one_sided_memory_detail() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldr", "w0, [x1]"),),
+            (_inst("x86-64", 0x2000, "mov", "eax, ecx"),),
+        )
+    )
+
+    assert surface.skip_reason == "unsupported_memory_surface"
+    assert surface.skip_detail == "one_sided_memory_access"
+
+
+def test_memory_surface_reports_access_count_detail() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldr", "w0, [x1]"),),
+            (
+                _inst("x86-64", 0x2000, "mov", "eax, dword ptr [rcx]"),
+                _inst("x86-64", 0x2004, "mov", "edx, dword ptr [rbx]"),
+            ),
+        )
+    )
+
+    assert surface.skip_reason == "unsupported_memory_surface"
+    assert surface.skip_detail == "memory_access_count_mismatch"
+
+
 def test_infers_indexed_load_address_register_inputs() -> None:
     surface = infer_memory_surface(
         _pair(
@@ -315,3 +342,125 @@ def test_rejects_memory_kind_or_width_mismatch() -> None:
 
     assert kind.skip_reason == "unsupported_memory_surface"
     assert width.skip_reason == "unsupported_memory_surface"
+
+
+def test_memory_surface_reports_kind_and_width_details() -> None:
+    kind = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldr", "w0, [x1]"),),
+            (_inst("x86-64", 0x2000, "mov", "dword ptr [rcx], eax"),),
+        )
+    )
+    width = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldr", "w0, [x1]"),),
+            (_inst("x86-64", 0x2000, "mov", "rax, qword ptr [rcx]"),),
+        )
+    )
+
+    assert kind.skip_detail == "memory_kind_mismatch"
+    assert width.skip_detail == "memory_width_mismatch"
+
+
+def test_memory_surface_reports_unparsed_access_detail() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldp", "x0, x1, [x2]"),),
+            (_inst("x86-64", 0x2000, "mov", "rax, qword ptr [rcx]"),),
+        )
+    )
+
+    assert surface.skip_reason == "unsupported_memory_surface"
+    assert surface.skip_detail == "unparsed_memory_access"
+
+
+def test_memory_surface_reports_address_register_count_detail() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldr", "w0, [x1, x2, lsl #2]"),),
+            (_inst("x86-64", 0x2000, "mov", "eax, dword ptr [rcx]"),),
+        )
+    )
+
+    assert surface.skip_reason == "unsupported_memory_surface"
+    assert surface.skip_detail == "memory_address_register_count_mismatch"
+
+
+def test_memory_surface_reports_store_value_internality_detail() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "mov",
+                    "w8, w1",
+                    reads=("w1",),
+                    writes=("w8",),
+                ),
+                _inst(
+                    "aarch64",
+                    0x1004,
+                    "str",
+                    "w8, [x9]",
+                    reads=("w8", "x9"),
+                ),
+            ),
+            (
+                _inst(
+                    "x86-64",
+                    0x2000,
+                    "mov",
+                    "dword ptr [rdx], eax",
+                    reads=("rdx", "eax"),
+                ),
+            ),
+        )
+    )
+
+    assert surface.skip_reason == "unsupported_memory_surface"
+    assert surface.skip_detail == "store_value_internality_mismatch"
+
+
+def test_memory_surface_reports_store_producer_source_count_detail() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "add",
+                    "w8, w1, w2",
+                    reads=("w1", "w2"),
+                    writes=("w8",),
+                ),
+                _inst(
+                    "aarch64",
+                    0x1004,
+                    "str",
+                    "w8, [x9]",
+                    reads=("w8", "x9"),
+                ),
+            ),
+            (
+                _inst(
+                    "x86-64",
+                    0x2000,
+                    "lea",
+                    "eax, [esi + 1]",
+                    reads=("esi",),
+                    writes=("eax",),
+                ),
+                _inst(
+                    "x86-64",
+                    0x2003,
+                    "mov",
+                    "dword ptr [rdx], eax",
+                    reads=("rdx", "eax"),
+                ),
+            ),
+        )
+    )
+
+    assert surface.skip_reason == "unsupported_memory_surface"
+    assert surface.skip_detail == "store_producer_source_count_mismatch"

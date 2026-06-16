@@ -504,3 +504,38 @@ def test_surface_inferer_rejects_segment_override_as_unsupported_memory() -> Non
     assert candidate is None
     assert diagnostics.skip_reasons.get("unsupported_memory_surface", 0) >= 1
     assert diagnostics.windows_emitted == 0
+
+
+def test_surface_inferer_records_memory_skip_detail() -> None:
+    diagnostics = MiningDiagnostics()
+    inferer = SurfaceInferer(diagnostics, LivenessIndex.empty())
+    pair = _multi_window_pair(
+        (
+            _mem_inst(
+                "aarch64",
+                0x1000,
+                ("x2",),
+                ("x0", "x1"),
+                mnemonic="ldp",
+                op_str="x0, x1, [x2]",
+            ),
+        ),
+        (
+            _mem_inst(
+                "x86-64",
+                0x2000,
+                ("rcx",),
+                ("rax",),
+                mnemonic="mov",
+                op_str="rax, qword ptr [rcx]",
+            ),
+        ),
+    )
+
+    assert inferer.infer(pair) is None
+    payload = diagnostics.to_json()
+
+    assert payload["skip_reasons"] == {"unsupported_memory_surface": 1}
+    assert payload["skip_details"] == {
+        "unsupported_memory_surface": {"unparsed_memory_access": 1}
+    }

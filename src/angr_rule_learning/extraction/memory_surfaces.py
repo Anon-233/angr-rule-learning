@@ -33,6 +33,7 @@ class MemorySurface:
     input_registers: tuple[tuple[str, str], ...] = ()
     address_registers: tuple[tuple[str, str], ...] = ()
     skip_reason: str | None = None
+    skip_detail: str | None = None
     guest_operands: tuple[MemoryOperand, ...] = ()
     host_operands: tuple[MemoryOperand, ...] = ()
 
@@ -53,6 +54,7 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
         return MemorySurface(
             MemorySpec(),
             skip_reason="unsupported_memory_surface",
+            skip_detail="unparsed_memory_access",
             guest_operands=guest_operands,
             host_operands=host_operands,
         )
@@ -60,11 +62,16 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     if not guest_operands and not host_operands:
         return MemorySurface(MemorySpec())
     if not guest_operands or not host_operands:
-        return MemorySurface(MemorySpec(), skip_reason="unsupported_memory_surface")
+        return MemorySurface(
+            MemorySpec(),
+            skip_reason="unsupported_memory_surface",
+            skip_detail="one_sided_memory_access",
+        )
     if len(guest_operands) != len(host_operands):
         return MemorySurface(
             MemorySpec(),
             skip_reason="unsupported_memory_surface",
+            skip_detail="memory_access_count_mismatch",
             guest_operands=guest_operands,
             host_operands=host_operands,
         )
@@ -79,10 +86,19 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     ):
         guest = guest_item.operand
         host = host_item.operand
-        if guest.kind != host.kind or guest.width != host.width:
+        if guest.kind != host.kind:
             return MemorySurface(
                 MemorySpec(),
                 skip_reason="unsupported_memory_surface",
+                skip_detail="memory_kind_mismatch",
+                guest_operands=guest_operands,
+                host_operands=host_operands,
+            )
+        if guest.width != host.width:
+            return MemorySurface(
+                MemorySpec(),
+                skip_reason="unsupported_memory_surface",
+                skip_detail="memory_width_mismatch",
                 guest_operands=guest_operands,
                 host_operands=host_operands,
             )
@@ -103,6 +119,7 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
             return MemorySurface(
                 MemorySpec(),
                 skip_reason="unsupported_memory_surface",
+                skip_detail="memory_address_register_count_mismatch",
                 guest_operands=guest_operands,
                 host_operands=host_operands,
             )
@@ -114,6 +131,7 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
                 return MemorySurface(
                     MemorySpec(),
                     skip_reason="unsupported_memory_surface",
+                    skip_detail="store_value_internality_mismatch",
                     guest_operands=guest_operands,
                     host_operands=host_operands,
                 )
@@ -124,6 +142,7 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
                     return MemorySurface(
                         MemorySpec(),
                         skip_reason="unsupported_memory_surface",
+                        skip_detail="store_producer_source_count_mismatch",
                         guest_operands=guest_operands,
                         host_operands=host_operands,
                     )
