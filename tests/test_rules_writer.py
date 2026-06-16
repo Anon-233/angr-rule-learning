@@ -1,7 +1,11 @@
 import json
 from pathlib import Path
 
-from angr_rule_learning.rules.generalize import GeneratedRule, RuleDiagnostics
+from angr_rule_learning.rules.generalize import (
+    GeneratedRule,
+    RuleDiagnostics,
+    RuleSkipDetail,
+)
 from angr_rule_learning.rules.writer import (
     format_rule,
     write_rule_diagnostics_json,
@@ -75,3 +79,59 @@ def test_write_rule_diagnostics_json(tmp_path: Path) -> None:
         "rules_skipped": 1,
         "skip_reasons": {"unmapped_register_surface": 1},
     }
+
+
+def test_write_rule_diagnostics_json_omits_details_by_default(tmp_path: Path) -> None:
+    diagnostics = RuleDiagnostics(collect_details=True)
+    diagnostics.record_considered()
+    detail = RuleSkipDetail(
+        candidate_id="c0",
+        reason="register_class_mismatch",
+        guest_lines=("mov x8, x0",),
+        host_lines=("mov eax, edi",),
+        input_registers=(("x0", "edi"),),
+        output_registers=(("x8", "eax"),),
+        memory_bindings=(),
+    )
+    diagnostics.record_skipped("register_class_mismatch", detail)
+    path = tmp_path / "rules_diagnostics.json"
+
+    write_rule_diagnostics_json(path, diagnostics, include_details=False)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert "skipped_rules" not in payload
+    assert payload["skip_reasons"] == {"register_class_mismatch": 1}
+
+
+def test_write_rule_diagnostics_json_writes_details_when_requested(
+    tmp_path: Path,
+) -> None:
+    diagnostics = RuleDiagnostics(collect_details=True)
+    diagnostics.record_considered()
+    detail = RuleSkipDetail(
+        candidate_id="c0",
+        reason="register_class_mismatch",
+        guest_lines=("mov x8, x0",),
+        host_lines=("mov eax, edi",),
+        input_registers=(("x0", "edi"),),
+        output_registers=(("x8", "eax"),),
+        memory_bindings=(),
+    )
+    diagnostics.record_skipped("register_class_mismatch", detail)
+    path = tmp_path / "rules_debug_diagnostics.json"
+
+    write_rule_diagnostics_json(path, diagnostics, include_details=True)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["skip_reasons"] == {"register_class_mismatch": 1}
+    assert payload["skipped_rules"] == [
+        {
+            "candidate_id": "c0",
+            "reason": "register_class_mismatch",
+            "guest_lines": ["mov x8, x0"],
+            "host_lines": ["mov eax, edi"],
+            "input_registers": [["x0", "edi"]],
+            "output_registers": [["x8", "eax"]],
+            "memory_bindings": [],
+        }
+    ]

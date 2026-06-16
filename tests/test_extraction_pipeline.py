@@ -422,6 +422,71 @@ def test_memory_rule_smoke(tmp_path: Path) -> None:
     )
 
 
+def test_pipeline_writes_debug_diagnostics_when_requested(tmp_path: Path) -> None:
+    """Focused test: debug diagnostics contain skipped_rules, aggregate don't."""
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+    candidates_output = tmp_path / "candidates.jsonl"
+    diagnostics_path = tmp_path / "diagnostics.json"
+    rules_diagnostics = tmp_path / "rules_diagnostics.json"
+    rules_debug = tmp_path / "rules_debug_diagnostics.json"
+    # Use an unsupported register to force a rule skip
+    region = AlignmentRegion(
+        region_id="add:sample.c:1:0",
+        function="add",
+        source_file="sample.c",
+        source_lines=(1,),
+        guest_instructions=(
+            _asm_inst(
+                "aarch64",
+                0x1000,
+                bytes.fromhex("2000020b"),
+                "add",
+                "w0, w0, w1",
+                ("w0", "w1"),
+                ("w0",),
+            ),
+        ),
+        host_instructions=(
+            _asm_inst(
+                "x86-64",
+                0x2000,
+                bytes.fromhex("01f0"),
+                "add",
+                "eax, esi",
+                ("eax", "esi"),
+                ("eax",),
+            ),
+        ),
+    )
+    pipeline = ExtractionPipeline(
+        build_driver=None,
+        object_extractor=None,
+        region_provider=lambda config, diagnostics: ExtractionData(
+            (region,), LivenessIndex.empty()
+        ),
+        verifier=_FakePassingVerifier(),
+    )
+
+    pipeline.run(
+        ExtractionConfig(source=source, work_dir=tmp_path / "work"),
+        candidates_output=candidates_output,
+        diagnostics_output=diagnostics_path,
+        verify=True,
+        rules_diagnostics_output=rules_diagnostics,
+        rules_debug_diagnostics_output=rules_debug,
+    )
+
+    # Aggregate diagnostics should not contain skipped_rules
+    agg = json.loads(rules_diagnostics.read_text(encoding="utf-8"))
+    assert "skipped_rules" not in agg
+
+    # Debug diagnostics should contain skipped_rules
+    debug = json.loads(rules_debug.read_text(encoding="utf-8"))
+    assert "skipped_rules" in debug
+    assert isinstance(debug["skipped_rules"], list)
+
+
 def test_indexed_memory_rule_smoke(tmp_path: Path) -> None:
     if shutil.which("clang") is None:
         return

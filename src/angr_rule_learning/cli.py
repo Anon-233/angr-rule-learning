@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> None:
     extract_parser.add_argument("--verify", action="store_true")
     extract_parser.add_argument("--rules-output", type=Path)
     extract_parser.add_argument("--rules-diagnostics", type=Path)
+    extract_parser.add_argument("--rules-debug-diagnostics", type=Path)
 
     args = parser.parse_args(argv)
     if args.command == "verify":
@@ -49,10 +50,13 @@ def main(argv: list[str] | None = None) -> None:
         write_summary_json(args.summary, verifier.summarize(reports))
     elif args.command == "extract":
         if (
-            args.rules_output is not None or args.rules_diagnostics is not None
+            args.rules_output is not None
+            or args.rules_diagnostics is not None
+            or args.rules_debug_diagnostics is not None
         ) and not args.verify:
             extract_parser.error(
-                "--rules-output and --rules-diagnostics require --verify"
+                "--rules-output, --rules-diagnostics, and --rules-debug-diagnostics"
+                " require --verify"
             )
         config = ExtractionConfig(
             source=args.source,
@@ -73,4 +77,5 @@ def main(argv: list[str] | None = None) -> None:
             verify=args.verify,
             rules_output=args.rules_output,
             rules_diagnostics_output=args.rules_diagnostics,
+            rules_debug_diagnostics_output=args.rules_debug_diagnostics,
         )

@@ -200,6 +200,29 @@ def test_extract_cli_rejects_rules_output_without_verify(tmp_path) -> None:
     assert excinfo.value.code == 2
 
 
+def test_extract_cli_rejects_rules_debug_diagnostics_without_verify(tmp_path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(
+            [
+                "extract",
+                str(source),
+                "--work-dir",
+                str(tmp_path / "work"),
+                "--output",
+                str(tmp_path / "candidates.jsonl"),
+                "--diagnostics",
+                str(tmp_path / "diagnostics.json"),
+                "--rules-debug-diagnostics",
+                str(tmp_path / "rules_debug_diagnostics.json"),
+            ]
+        )
+
+    assert excinfo.value.code == 2
+
+
 def test_extract_cli_rejects_rules_diagnostics_without_verify(tmp_path) -> None:
     source = tmp_path / "sample.c"
     source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")

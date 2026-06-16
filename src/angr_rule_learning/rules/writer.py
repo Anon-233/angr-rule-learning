@@ -21,9 +21,19 @@ def write_rules_text(path: Path, rules: Iterable[GeneratedRule]) -> None:
     path.write_text("".join(format_rule(rule) for rule in rules), encoding="utf-8")
 
 
-def write_rule_diagnostics_json(path: Path, diagnostics: RuleDiagnostics) -> None:
+def write_rule_diagnostics_json(
+    path: Path,
+    diagnostics: RuleDiagnostics,
+    *,
+    include_details: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(diagnostics.to_json(), indent=2, sort_keys=True) + "\n",
+        json.dumps(
+            diagnostics.to_json(include_details=include_details),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
         encoding="utf-8",
     )

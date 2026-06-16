@@ -78,15 +78,20 @@ class ExtractionPipeline:
         verify: bool = False,
         rules_output: Path | None = None,
         rules_diagnostics_output: Path | None = None,
+        rules_debug_diagnostics_output: Path | None = None,
     ) -> ExtractionResult:
         rule_generation_requested = (
-            rules_output is not None or rules_diagnostics_output is not None
+            rules_output is not None
+            or rules_diagnostics_output is not None
+            or rules_debug_diagnostics_output is not None
         )
         if rule_generation_requested and not verify:
             raise ValueError("rule output requires verify=True")
 
         diagnostics = MiningDiagnostics()
-        rule_diagnostics = RuleDiagnostics()
+        rule_diagnostics = RuleDiagnostics(
+            collect_details=rules_debug_diagnostics_output is not None
+        )
         rule_generalizer = RuleGeneralizer(rule_diagnostics)
         rules: list[GeneratedRule] = []
         data = self._regions(config, diagnostics)
@@ -132,7 +137,17 @@ class ExtractionPipeline:
         if rules_output is not None:
             write_rules_text(rules_output, rule_tuple)
         if rules_diagnostics_output is not None:
-            write_rule_diagnostics_json(rules_diagnostics_output, rule_diagnostics)
+            write_rule_diagnostics_json(
+                rules_diagnostics_output,
+                rule_diagnostics,
+                include_details=False,
+            )
+        if rules_debug_diagnostics_output is not None:
+            write_rule_diagnostics_json(
+                rules_debug_diagnostics_output,
+                rule_diagnostics,
+                include_details=True,
+            )
         write_candidates_jsonl(candidates_output, candidate_tuple)
         write_diagnostics_json(diagnostics_output, diagnostics)
         return ExtractionResult(

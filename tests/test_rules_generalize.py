@@ -258,6 +258,48 @@ def test_generalizer_allows_two_address_input_output_pair() -> None:
     assert diagnostics.rules_emitted == 1
 
 
+def test_rule_diagnostics_omits_details_by_default() -> None:
+    diagnostics = RuleDiagnostics()
+    pair = _window_pair(
+        (_inst("aarch64", 0x1000, "mov", "x8, x0"),),
+        (_inst("x86-64", 0x2000, "mov", "eax, edi"),),
+    )
+    candidate = _candidate(inputs=(("x0", "edi"),), outputs=(("x8", "eax"),))
+
+    rule = RuleGeneralizer(diagnostics).generate(1, pair, candidate, _passing_report())
+
+    assert rule is None
+    payload = diagnostics.to_json()
+    assert payload["skip_reasons"] == {"register_class_mismatch": 1}
+    assert "skipped_rules" not in payload
+
+
+def test_rule_diagnostics_records_detailed_skip_when_enabled() -> None:
+    diagnostics = RuleDiagnostics(collect_details=True)
+    pair = _window_pair(
+        (_inst("aarch64", 0x1000, "mov", "x8, x0"),),
+        (_inst("x86-64", 0x2000, "mov", "eax, edi"),),
+    )
+    candidate = _candidate(inputs=(("x0", "edi"),), outputs=(("x8", "eax"),))
+
+    rule = RuleGeneralizer(diagnostics).generate(1, pair, candidate, _passing_report())
+
+    assert rule is None
+    payload = diagnostics.to_json(include_details=True)
+    assert payload["skip_reasons"] == {"register_class_mismatch": 1}
+    assert payload["skipped_rules"] == [
+        {
+            "candidate_id": candidate.candidate_id,
+            "reason": "register_class_mismatch",
+            "guest_lines": ["mov x8, x0"],
+            "host_lines": ["mov eax, edi"],
+            "input_registers": [["x0", "edi"]],
+            "output_registers": [["x8", "eax"]],
+            "memory_bindings": [],
+        }
+    ]
+
+
 def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)

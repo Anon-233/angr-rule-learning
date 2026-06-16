@@ -30,11 +30,35 @@ class GeneratedRule:
     host_lines: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class RuleSkipDetail:
+    candidate_id: str
+    reason: str
+    guest_lines: tuple[str, ...]
+    host_lines: tuple[str, ...]
+    input_registers: tuple[tuple[str, str], ...]
+    output_registers: tuple[tuple[str, str], ...]
+    memory_bindings: tuple[dict[str, str], ...]
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "candidate_id": self.candidate_id,
+            "reason": self.reason,
+            "guest_lines": list(self.guest_lines),
+            "host_lines": list(self.host_lines),
+            "input_registers": [list(pair) for pair in self.input_registers],
+            "output_registers": [list(pair) for pair in self.output_registers],
+            "memory_bindings": list(self.memory_bindings),
+        }
+
+
 @dataclass
 class RuleDiagnostics:
+    collect_details: bool = False
     rules_considered: int = 0
     rules_emitted: int = 0
     skip_reasons: Counter[str] = field(default_factory=Counter)
+    skipped_rules: list[RuleSkipDetail] = field(default_factory=list)
 
     @property
     def rules_skipped(self) -> int:
@@ -46,22 +70,58 @@ class RuleDiagnostics:
     def record_emitted(self) -> None:
         self.rules_emitted += 1
 
-    def record_skipped(self, reason: str) -> None:
+    def record_skipped(
+        self,
+        reason: str,
+        detail: RuleSkipDetail | None = None,
+    ) -> None:
         self.skip_reasons.update((reason,))
+        if self.collect_details and detail is not None:
+            self.skipped_rules.append(detail)
 
-    def to_json(self) -> dict[str, object]:
-        return {
+    def to_json(self, *, include_details: bool = False) -> dict[str, object]:
+        payload: dict[str, object] = {
             "rules_considered": self.rules_considered,
             "rules_emitted": self.rules_emitted,
             "rules_skipped": self.rules_skipped,
             "skip_reasons": dict(sorted(self.skip_reasons.items())),
         }
+        if include_details:
+            payload["skipped_rules"] = [
+                detail.to_json() for detail in self.skipped_rules
+            ]
+        return payload
 
 
 class _RuleSkip(ValueError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def _build_skip_detail(
+    candidate: VerificationCandidate,
+    reason: str,
+    guest_lines: tuple[str, ...],
+    host_lines: tuple[str, ...],
+) -> RuleSkipDetail:
+    return RuleSkipDetail(
+        candidate_id=candidate.candidate_id,
+        reason=reason,
+        guest_lines=guest_lines,
+        host_lines=host_lines,
+        input_registers=candidate.input_registers,
+        output_registers=candidate.output_registers,
+        memory_bindings=tuple(
+            {
+                "slot": binding.slot,
+                "guest_addr": binding.guest_addr,
+                "host_addr": binding.host_addr,
+                "access": binding.access,
+            }
+            for binding in candidate.memory.bindings
+        ),
+    )
 
 
 class RuleGeneralizer:
@@ -81,15 +141,16 @@ class RuleGeneralizer:
         if report.status != "pass" or not report.equivalent:
             return None
 
+        guest_raw_lines = _instruction_lines(window.guest.instructions)
+        host_raw_lines = _instruction_lines(window.host.instructions)
+
         self.diagnostics.record_considered()
         try:
             guest_arch = candidate.guest.arch
             host_arch = candidate.host.arch
             mapping = _build_placeholder_map(candidate, guest_arch, host_arch)
-            guest_lines = _instruction_lines(window.guest.instructions)
-            host_lines = _instruction_lines(window.host.instructions)
-            guest_lines = _generalize_lines(guest_lines, mapping, guest_arch)
-            host_lines = _generalize_lines(host_lines, mapping, host_arch)
+            guest_lines = _generalize_lines(guest_raw_lines, mapping, guest_arch)
+            host_lines = _generalize_lines(host_raw_lines, mapping, host_arch)
             guest_lines, host_lines = _annotate_dead_writes(
                 guest_lines,
                 host_lines,
@@ -123,12 +184,18 @@ class RuleGeneralizer:
                 guest_lines, guest_arch, host_lines, host_arch
             )
         except _RuleSkip as exc:
-            self.diagnostics.record_skipped(exc.reason)
+            detail = _build_skip_detail(
+                candidate, exc.reason, guest_raw_lines, host_raw_lines
+            )
+            self.diagnostics.record_skipped(exc.reason, detail)
             return None
 
         key = (guest_lines, host_lines)
         if key in self._emitted_keys:
-            self.diagnostics.record_skipped("duplicate_rule")
+            detail = _build_skip_detail(
+                candidate, "duplicate_rule", guest_lines, host_lines
+            )
+            self.diagnostics.record_skipped("duplicate_rule", detail)
             return None
         self._emitted_keys.add(key)
 
