@@ -162,7 +162,7 @@ class SkipPatternAggregator:
                         "count": bucket.count,
                         "arch": key[0],
                         "mnemonic": key[1],
-                        "op_str": key[2],
+                        "pattern": key[2],
                         "examples": bucket.examples,
                     }
                     for key, bucket in sorted(
