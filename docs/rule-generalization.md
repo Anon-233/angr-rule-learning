@@ -113,3 +113,22 @@ rule:
 
 AArch64 `xzr` and `wzr` may remain literal because they represent architectural
 zero registers.
+
+## Detailed Rule Diagnostics
+
+`--rules-diagnostics` writes aggregate rule counts only. `--rules-debug-diagnostics`
+adds per-skipped-rule records and should be used for debugging or small samples,
+not default large-scale runs.
+
+## Semantic Register Coalescing
+
+The rule generator may coalesce host pre-state and post-state carrier registers
+when the same guest register family anchors both mappings. For example,
+`w0 -> rdi` as input and `w0 -> eax` as output may both become `i32_reg1`.
+The reverse host-only coalescing is intentionally not allowed.
+
+## Stack Pointer Placeholder
+
+Stack pointer registers use fixed placeholders such as `sp64` and `sp32`.
+They do not use `_regN` suffixes because they are architectural special
+registers, not arbitrary general-purpose rule variables.
