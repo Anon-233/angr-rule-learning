@@ -1,3 +1,5 @@
+from collections import Counter
+
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 
 
@@ -40,4 +42,13 @@ def test_omits_skip_details_when_no_detail_was_recorded() -> None:
     payload = diagnostics.to_json()
 
     assert payload["skip_reasons"] == {"no_verifiable_surface": 1}
+    assert "skip_details" not in payload
+
+
+def test_omits_skip_details_when_only_empty_detail_counters_exist() -> None:
+    diagnostics = MiningDiagnostics()
+    diagnostics.skip_details["unsupported_memory_surface"] = Counter()
+
+    payload = diagnostics.to_json()
+
     assert "skip_details" not in payload
