@@ -48,6 +48,18 @@ def validate_alias_declarations(candidate: VerificationCandidate) -> None:
 
 _INDEX_WITNESS = 3
 
+_AARCH64_FRAME_REGS = {"sp", "wsp", "x29", "fp"}
+_X86_64_FRAME_REGS = {"rsp", "esp", "sp", "rbp", "ebp", "bp"}
+
+
+def _is_frame_register_pair(guest_reg: str | None, host_reg: str | None) -> bool:
+    if guest_reg is None or host_reg is None:
+        return False
+    return (
+        guest_reg.lower() in _AARCH64_FRAME_REGS
+        and host_reg.lower() in _X86_64_FRAME_REGS
+    )
+
 
 def _assign_witness(assigned: dict[str, int], register: str, value: int) -> None:
     existing = assigned.get(register)
@@ -69,6 +81,7 @@ def _initialize_memory_registers(
         host_to_guest[host_reg] = guest_reg
 
     assigned: dict[str, int] = {}
+    frame_offsets: dict[tuple[str, str], int] = {}
 
     for binding in candidate.memory.bindings:
         base = bases[binding.slot]
@@ -80,8 +93,26 @@ def _initialize_memory_registers(
         _assign_index_witness(assigned, guest_expr, guest_to_host)
         _assign_index_witness(assigned, host_expr, host_to_guest)
 
-        # Compute guest base register value from the guest expression.
         guest_index_val = assigned.get(guest_expr.index, 0) if guest_expr.index else 0
+        host_index_val = assigned.get(host_expr.index, 0) if host_expr.index else 0
+
+        if _is_frame_register_pair(guest_expr.base, host_expr.base):
+            guest_base_val = guest_expr.solve_base_for_slot(base, guest_index_val)
+            host_base_val = host_expr.solve_base_for_slot(base, host_index_val)
+            offset = host_base_val - guest_base_val
+            key = (guest_expr.base, host_expr.base)
+            existing_offset = frame_offsets.get(key)
+            if existing_offset is not None and existing_offset != offset:
+                raise ValueError(
+                    "unsupported address expression: inconsistent frame layout"
+                )
+            frame_offsets[key] = offset
+            if guest_expr.base not in assigned:
+                _assign_witness(assigned, guest_expr.base, guest_base_val)
+                _assign_witness(assigned, host_expr.base, host_base_val)
+            continue
+
+        # Compute guest base register value from the guest expression.
         guest_base_val = guest_expr.solve_base_for_slot(base, guest_index_val)
         _assign_witness(assigned, guest_expr.base, guest_base_val)
         host_pair = guest_to_host.get(guest_expr.base)
@@ -92,7 +123,6 @@ def _initialize_memory_registers(
         # compute independently so the memory-event address check
         # can still verify the host-side effective address.
         if host_to_guest.get(host_expr.base) is None:
-            host_index_val = assigned.get(host_expr.index, 0) if host_expr.index else 0
             host_base_val = host_expr.solve_base_for_slot(base, host_index_val)
             _assign_witness(assigned, host_expr.base, host_base_val)
 

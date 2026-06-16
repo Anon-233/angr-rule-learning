@@ -476,3 +476,18 @@ def test_memory_surface_reports_store_producer_source_count_detail() -> None:
 
     assert surface.skip_reason == "unsupported_memory_surface"
     assert surface.skip_detail == "store_producer_source_count_mismatch"
+
+
+def test_frame_address_pairs_are_not_shared_input_registers() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "str", "w0, [sp, #12]"),),
+            (_inst("x86-64", 0x2000, "mov", "dword ptr [rbp - 4], eax"),),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert surface.spec.bindings[0].guest_addr == "sp + 12"
+    assert surface.spec.bindings[0].host_addr == "rbp - 4"
+    assert ("sp", "rbp") not in surface.input_registers
+    assert ("w0", "eax") in surface.input_registers

@@ -123,7 +123,10 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
                 guest_operands=guest_operands,
                 host_operands=host_operands,
             )
-        input_registers.extend(zip(guest_addr_regs, host_addr_regs, strict=True))
+        for guest_reg, host_reg in zip(guest_addr_regs, host_addr_regs, strict=True):
+            if _is_frame_address_pair(guest_reg, host_reg):
+                continue
+            input_registers.append((guest_reg, host_reg))
         if guest.kind == "write":
             if guest.value_register is None or host.value_register is None:
                 return MemorySurface(
@@ -260,6 +263,17 @@ def _collect_external_sources(
         else:
             external.append(read_reg)
     return external
+
+
+_AARCH64_FRAME_REGS = {"sp", "wsp", "x29", "fp"}
+_X86_64_FRAME_REGS = {"rsp", "esp", "sp", "rbp", "ebp", "bp"}
+
+
+def _is_frame_address_pair(guest_reg: str, host_reg: str) -> bool:
+    return (
+        guest_reg.lower() in _AARCH64_FRAME_REGS
+        and host_reg.lower() in _X86_64_FRAME_REGS
+    )
 
 
 def _has_unparsed_memory(
