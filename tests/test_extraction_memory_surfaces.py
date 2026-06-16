@@ -6,7 +6,15 @@ from angr_rule_learning.extraction.models import (
 )
 
 
-def _inst(arch: str, address: int, mnemonic: str, op_str: str) -> ExtractedInstruction:
+def _inst(
+    arch: str,
+    address: int,
+    mnemonic: str,
+    op_str: str,
+    *,
+    reads: tuple[str, ...] = (),
+    writes: tuple[str, ...] = (),
+) -> ExtractedInstruction:
     return ExtractedInstruction(
         arch=arch,
         address=address,
@@ -16,6 +24,8 @@ def _inst(arch: str, address: int, mnemonic: str, op_str: str) -> ExtractedInstr
         op_str=op_str,
         function="f",
         source=None,
+        read_registers=reads,
+        write_registers=writes,
     )
 
 
@@ -105,6 +115,54 @@ def test_infers_indexed_store_value_and_address_inputs() -> None:
         ("x2", "rdx"),
         ("w0", "eax"),
     )
+
+
+def test_does_not_treat_internally_defined_store_value_as_input() -> None:
+    """A store value produced by a prior instruction in the same window
+    must not be treated as an external input."""
+    surface = infer_memory_surface(
+        _pair(
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "add",
+                    "w8, w1, #1",
+                    reads=("w1",),
+                    writes=("w8",),
+                ),
+                _inst(
+                    "aarch64",
+                    0x1004,
+                    "str",
+                    "w8, [x9]",
+                    reads=("w8", "x9"),
+                    writes=(),
+                ),
+            ),
+            (
+                _inst(
+                    "x86-64",
+                    0x2000,
+                    "lea",
+                    "eax, [rsi + 1]",
+                    reads=("rsi",),
+                    writes=("eax",),
+                ),
+                _inst(
+                    "x86-64",
+                    0x2003,
+                    "mov",
+                    "dword ptr [rdi], eax",
+                    reads=("rdi", "eax"),
+                    writes=(),
+                ),
+            ),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert surface.input_registers == (("x9", "rdi"),)
 
 
 def test_rejects_memory_kind_or_width_mismatch() -> None:

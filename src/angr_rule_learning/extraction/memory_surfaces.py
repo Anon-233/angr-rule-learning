@@ -2,18 +2,29 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from angr_rule_learning.extraction.liveness import family_for_register
 from angr_rule_learning.extraction.memory_operands import (
     MemoryOperand,
     extract_memory_operands,
     has_any_memory_access,
 )
-from angr_rule_learning.extraction.models import InstructionWindow, WindowPair
+from angr_rule_learning.extraction.models import (
+    ExtractedInstruction,
+    InstructionWindow,
+    WindowPair,
+)
 from angr_rule_learning.verification.candidate import (
     MemoryAccessExpectation,
     MemoryBinding,
     MemorySlot,
     MemorySpec,
 )
+
+
+@dataclass(frozen=True)
+class _CollectedMemoryOperand:
+    instruction: ExtractedInstruction
+    operand: MemoryOperand
 
 
 @dataclass(frozen=True)
@@ -31,8 +42,10 @@ class MemorySurface:
 
 
 def infer_memory_surface(pair: WindowPair) -> MemorySurface:
-    guest_operands = _collect(pair.guest)
-    host_operands = _collect(pair.host)
+    guest_collected = _collect(pair.guest)
+    host_collected = _collect(pair.host)
+    guest_operands = tuple(item.operand for item in guest_collected)
+    host_operands = tuple(item.operand for item in host_collected)
 
     if _has_unparsed_memory(pair.guest, guest_operands) or _has_unparsed_memory(
         pair.host, host_operands
@@ -61,9 +74,11 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     accesses: list[MemoryAccessExpectation] = []
     input_registers: list[tuple[str, str]] = []
 
-    for index, (guest, host) in enumerate(
-        zip(guest_operands, host_operands, strict=True)
+    for index, (guest_item, host_item) in enumerate(
+        zip(guest_collected, host_collected, strict=True)
     ):
+        guest = guest_item.operand
+        host = host_item.operand
         if guest.kind != host.kind or guest.width != host.width:
             return MemorySurface(
                 MemorySpec(),
@@ -93,7 +108,17 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
             )
         input_registers.extend(zip(guest_addr_regs, host_addr_regs, strict=True))
         if guest.kind == "write":
-            input_registers.append((guest.value_register, host.value_register))
+            guest_value_internal = _value_is_defined_before(pair.guest, guest_item)
+            host_value_internal = _value_is_defined_before(pair.host, host_item)
+            if guest_value_internal != host_value_internal:
+                return MemorySurface(
+                    MemorySpec(),
+                    skip_reason="unsupported_memory_surface",
+                    guest_operands=guest_operands,
+                    host_operands=host_operands,
+                )
+            if not guest_value_internal:
+                input_registers.append((guest.value_register, host.value_register))
 
     return MemorySurface(
         MemorySpec(tuple(slots), tuple(bindings), tuple(accesses), ()),
@@ -103,11 +128,34 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     )
 
 
-def _collect(window: InstructionWindow) -> tuple[MemoryOperand, ...]:
-    operands: list[MemoryOperand] = []
+def _collect(window: InstructionWindow) -> tuple[_CollectedMemoryOperand, ...]:
+    operands: list[_CollectedMemoryOperand] = []
     for instruction in window.instructions:
-        operands.extend(extract_memory_operands(instruction))
+        operands.extend(
+            _CollectedMemoryOperand(instruction, operand)
+            for operand in extract_memory_operands(instruction)
+        )
     return tuple(operands)
+
+
+def _value_is_defined_before(
+    window: InstructionWindow,
+    target: _CollectedMemoryOperand,
+) -> bool:
+    value_family = family_for_register(
+        target.instruction.arch,
+        target.operand.value_register,
+    )
+    for instruction in window.instructions:
+        if instruction is target.instruction:
+            return False
+        written = {
+            family_for_register(instruction.arch, register)
+            for register in instruction.write_registers
+        }
+        if value_family in written:
+            return True
+    return False
 
 
 def _has_unparsed_memory(
