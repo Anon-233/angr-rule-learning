@@ -23,10 +23,11 @@ Positional arguments (all optional, defaults shown):
                   Default: 0
 
 Output files written to OUT_DIR:
-  candidates.jsonl         Extracted verification candidates.
-  diagnostics.json         Mining diagnostics (counts, skip reasons).
-  rules.txt                Generalized text rules.
-  rules_diagnostics.json   Rule generalization diagnostics.
+  candidates.jsonl              Extracted verification candidates.
+  diagnostics.json              Mining diagnostics (counts, skip reasons).
+  rules.txt                     Generalized text rules.
+  rules_diagnostics.json        Rule generalization diagnostics (aggregate).
+  rules_debug_diagnostics.json  Per-skipped-rule detailed diagnostics.
 
 Examples:
   # Use defaults
@@ -58,17 +59,19 @@ CANDIDATES="${OUT_DIR}/candidates.jsonl"
 DIAGNOSTICS="${OUT_DIR}/diagnostics.json"
 RULES="${OUT_DIR}/rules.txt"
 RULES_DIAGNOSTICS="${OUT_DIR}/rules_diagnostics.json"
+RULES_DEBUG_DIAGNOSTICS="${OUT_DIR}/rules_debug_diagnostics.json"
 
 # ── Pipeline ────────────────────────────────────────────────────
 echo "=== extraction pipeline (${SOURCE}) ==="
 uv run angr-rule-learning extract "${SOURCE}" \
-  --work-dir       "${WORK_DIR}" \
-  --output         "${CANDIDATES}" \
-  --diagnostics    "${DIAGNOSTICS}" \
-  --optimization   "${OPT}" \
+  --work-dir                "${WORK_DIR}" \
+  --output                  "${CANDIDATES}" \
+  --diagnostics             "${DIAGNOSTICS}" \
+  --optimization            "${OPT}" \
   --verify \
-  --rules-output   "${RULES}" \
-  --rules-diagnostics "${RULES_DIAGNOSTICS}"
+  --rules-output            "${RULES}" \
+  --rules-diagnostics       "${RULES_DIAGNOSTICS}" \
+  --rules-debug-diagnostics "${RULES_DEBUG_DIAGNOSTICS}"
 
 # ── Summaries ───────────────────────────────────────────────────
 echo ""
@@ -98,6 +101,20 @@ print(f'  considered: {rd[\"rules_considered\"]}')
 print(f'  emitted:    {rd[\"rules_emitted\"]}')
 print(f'  skipped:    {rd[\"rules_skipped\"]}')
 for reason, count in sorted(rd['skip_reasons'].items()):
+    print(f'    {reason}: {count}')
+"
+
+echo ""
+echo "=== rules debug diagnostics ==="
+python3 -c "
+import json
+rdd = json.load(open('${RULES_DEBUG_DIAGNOSTICS}'))
+print(f'  skipped_rules records: {len(rdd.get(\"skipped_rules\", []))}')
+reasons = {}
+for s in rdd.get('skipped_rules', []):
+    reasons.setdefault(s['reason'], 0)
+    reasons[s['reason']] += 1
+for reason, count in sorted(reasons.items()):
     print(f'    {reason}: {count}')
 "
 
