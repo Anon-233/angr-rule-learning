@@ -73,18 +73,18 @@ def extract_memory_operands(
 
 
 def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
-    if mnemonic not in {"ldr", "ldur", "str", "stur"}:
+    if mnemonic not in {"ldr", "ldur", "ldrsw", "str", "stur"}:
         return ()
     # Try displacement form first: [base, #disp] or [base]
     match = _AARCH64_MEM_RE.match(op_str)
     if match is not None:
         value = match.group("value").lower()
-        width = _aarch64_register_width(value)
+        width = 4 if mnemonic == "ldrsw" else _aarch64_register_width(value)
         if width is None:
             return ()
         return (
             MemoryOperand(
-                kind="read" if mnemonic in {"ldr", "ldur"} else "write",
+                kind="read" if mnemonic in {"ldr", "ldur", "ldrsw"} else "write",
                 width=width,
                 address=AddressExpr(
                     base=match.group("base").lower(),
@@ -99,13 +99,13 @@ def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if match is None:
         return ()
     value = match.group("value").lower()
-    width = _aarch64_register_width(value)
+    width = 4 if mnemonic == "ldrsw" else _aarch64_register_width(value)
     if width is None:
         return ()
     shift = int(match.group("shift") or "0", 10)
     return (
         MemoryOperand(
-            kind="read" if mnemonic in {"ldr", "ldur"} else "write",
+            kind="read" if mnemonic in {"ldr", "ldur", "ldrsw"} else "write",
             width=width,
             address=AddressExpr(
                 base=match.group("base").lower(),
@@ -119,7 +119,7 @@ def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
 
 
 def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
-    if mnemonic != "mov":
+    if mnemonic not in {"mov", "movsxd"}:
         return ()
     parts = [part.strip() for part in op_str.split(",", maxsplit=1)]
     if len(parts) != 2:
@@ -128,6 +128,8 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     left_mem = _X86_BRACKET_RE.search(left)
     right_mem = _X86_BRACKET_RE.search(right)
     if left_mem is not None and right_mem is not None:
+        return ()
+    if mnemonic == "movsxd" and left_mem is not None:
         return ()
     if left_mem is None and right_mem is None:
         return ()
@@ -149,7 +151,7 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if _X86_SEGMENT_OVERRIDE_RE.search(right):
         return ()
     value_register = left.strip().lower()
-    width = _x86_width(op_str, value_register)
+    width = 4 if mnemonic == "movsxd" else _x86_width(op_str, value_register)
     if width is None:
         return ()
     operand = _x86_operand("read", width, right_mem, value_register)
