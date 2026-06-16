@@ -117,7 +117,18 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
                     guest_operands=guest_operands,
                     host_operands=host_operands,
                 )
-            if not guest_value_internal:
+            if guest_value_internal:
+                guest_sources = _producer_external_sources(pair.guest, guest_item)
+                host_sources = _producer_external_sources(pair.host, host_item)
+                if len(guest_sources) != len(host_sources):
+                    return MemorySurface(
+                        MemorySpec(),
+                        skip_reason="unsupported_memory_surface",
+                        guest_operands=guest_operands,
+                        host_operands=host_operands,
+                    )
+                input_registers.extend(zip(guest_sources, host_sources, strict=True))
+            else:
                 input_registers.append((guest.value_register, host.value_register))
 
     return MemorySurface(
@@ -142,20 +153,54 @@ def _value_is_defined_before(
     window: InstructionWindow,
     target: _CollectedMemoryOperand,
 ) -> bool:
+    return _find_value_producer(window, target) is not None
+
+
+def _find_value_producer(
+    window: InstructionWindow,
+    target: _CollectedMemoryOperand,
+) -> ExtractedInstruction | None:
     value_family = family_for_register(
         target.instruction.arch,
         target.operand.value_register,
     )
     for instruction in window.instructions:
         if instruction is target.instruction:
-            return False
+            return None
         written = {
             family_for_register(instruction.arch, register)
             for register in instruction.write_registers
         }
         if value_family in written:
-            return True
-    return False
+            return instruction
+    return None
+
+
+def _producer_external_sources(
+    window: InstructionWindow,
+    target: _CollectedMemoryOperand,
+) -> list[str]:
+    """Return the read registers of the value producer that are externally
+    sourced (not defined by any prior instruction in the window)."""
+    producer = _find_value_producer(window, target)
+    if producer is None:
+        return []
+    external: list[str] = []
+    for read_reg in producer.read_registers:
+        family = family_for_register(producer.arch, read_reg)
+        defined_before = False
+        for instruction in window.instructions:
+            if instruction is producer:
+                break
+            if family in {
+                family_for_register(instruction.arch, reg)
+                for reg in instruction.write_registers
+            }:
+                defined_before = True
+                break
+        if not defined_before:
+            external.append(read_reg)
+    return external
 
 
 def _has_unparsed_memory(

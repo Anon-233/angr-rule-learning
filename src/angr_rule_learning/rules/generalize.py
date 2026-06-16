@@ -130,6 +130,18 @@ class RuleGeneralizer:
         self.diagnostics = diagnostics or RuleDiagnostics()
         self._emitted_keys: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
 
+    def _record_skip(
+        self,
+        candidate: VerificationCandidate,
+        reason: str,
+        guest_lines: tuple[str, ...],
+        host_lines: tuple[str, ...],
+    ) -> None:
+        detail = None
+        if self.diagnostics.collect_details:
+            detail = _build_skip_detail(candidate, reason, guest_lines, host_lines)
+        self.diagnostics.record_skipped(reason, detail)
+
     def generate(
         self,
         rule_id: int,
@@ -185,18 +197,12 @@ class RuleGeneralizer:
                 guest_lines, guest_arch, host_lines, host_arch
             )
         except _RuleSkip as exc:
-            detail = _build_skip_detail(
-                candidate, exc.reason, guest_raw_lines, host_raw_lines
-            )
-            self.diagnostics.record_skipped(exc.reason, detail)
+            self._record_skip(candidate, exc.reason, guest_raw_lines, host_raw_lines)
             return None
 
         key = (guest_lines, host_lines)
         if key in self._emitted_keys:
-            detail = _build_skip_detail(
-                candidate, "duplicate_rule", guest_lines, host_lines
-            )
-            self.diagnostics.record_skipped("duplicate_rule", detail)
+            self._record_skip(candidate, "duplicate_rule", guest_lines, host_lines)
             return None
         self._emitted_keys.add(key)
 

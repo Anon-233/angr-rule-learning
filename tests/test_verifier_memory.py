@@ -259,6 +259,64 @@ def test_verifier_rejects_binding_scale_mismatch_under_shared_inputs() -> None:
     )
 
 
+AARCH64_ADD_W8_W1_1_STR_W8_X9 = "28040011280100b9"
+X86_64_LEA_EAX_ESI_1_MOV_RDI_EAX = "8d46018907"
+
+
+def test_verifier_rejects_store_with_internally_defined_value_missing_producer_source() -> (
+    None
+):
+    """When a store value is internally defined but the producer's external
+    source registers are not included as inputs, the verifier must fail
+    because the source registers get independent symbolic values."""
+    candidate = VerificationCandidate(
+        candidate_id="missing-producer-source",
+        guest=CodeFragment("aarch64", 0x1000, AARCH64_ADD_W8_W1_1_STR_W8_X9, 2),
+        host=CodeFragment("x86-64", 0x2000, X86_64_LEA_EAX_ESI_1_MOV_RDI_EAX, 2),
+        input_registers=(("x9", "rdi"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x9", "rdi", "write"),),
+            accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "fail"
+    assert any(
+        check.reason
+        in {
+            "guest_memory_write_value_mismatch",
+            "host_memory_write_value_mismatch",
+            "memory_write_value_mismatch",
+        }
+        for check in report.checks
+    )
+
+
+def test_verifier_accepts_store_with_internally_defined_value_and_producer_source() -> (
+    None
+):
+    """When the producer's external source registers ARE included as inputs,
+    the verifier pairs them and both sides compute the same store value."""
+    candidate = VerificationCandidate(
+        candidate_id="with-producer-source",
+        guest=CodeFragment("aarch64", 0x1000, AARCH64_ADD_W8_W1_1_STR_W8_X9, 2),
+        host=CodeFragment("x86-64", 0x2000, X86_64_LEA_EAX_ESI_1_MOV_RDI_EAX, 2),
+        input_registers=(("x9", "rdi"), ("w1", "esi")),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x9", "rdi", "write"),),
+            accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass"
+
+
 def test_verifier_reports_unsupported_for_unparseable_address_expression() -> None:
     """Unsupported address expressions must reach the verifier and return
     unsupported_address_expression, not throw at candidate construction."""

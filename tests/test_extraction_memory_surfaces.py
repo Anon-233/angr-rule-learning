@@ -119,7 +119,8 @@ def test_infers_indexed_store_value_and_address_inputs() -> None:
 
 def test_does_not_treat_internally_defined_store_value_as_input() -> None:
     """A store value produced by a prior instruction in the same window
-    must not be treated as an external input."""
+    must not be treated as an external input; its producer's external
+    source registers must appear instead."""
     surface = infer_memory_surface(
         _pair(
             (
@@ -145,8 +146,8 @@ def test_does_not_treat_internally_defined_store_value_as_input() -> None:
                     "x86-64",
                     0x2000,
                     "lea",
-                    "eax, [rsi + 1]",
-                    reads=("rsi",),
+                    "eax, [esi + 1]",
+                    reads=("esi",),
                     writes=("eax",),
                 ),
                 _inst(
@@ -162,7 +163,8 @@ def test_does_not_treat_internally_defined_store_value_as_input() -> None:
     )
 
     assert surface.skip_reason is None
-    assert surface.input_registers == (("x9", "rdi"),)
+    # Address registers + producer source registers; NOT the value registers w8/eax
+    assert surface.input_registers == (("x9", "rdi"), ("w1", "esi"))
 
 
 def test_rejects_memory_kind_or_width_mismatch() -> None:
