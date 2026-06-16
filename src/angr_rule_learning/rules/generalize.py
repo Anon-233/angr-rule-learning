@@ -362,8 +362,12 @@ def _generalize_line(text: str, mapping: dict[str, str], arch: str) -> str:
     return rewritten
 
 
-_AARCH64_IMM_RE = re.compile(r"#(0x[0-9a-fA-F]+|-?\d+)")
-_X86_64_IMM_RE = re.compile(r"(?<![#\w])(0x[0-9a-fA-F]+|-?\d+)(?![A-Za-z0-9_])")
+_AARCH64_IMM_RE = re.compile(r"#(-?0x[0-9a-fA-F]+|-?\d+)")
+_X86_64_IMM_RE = re.compile(
+    r"-\s*(0x[0-9a-fA-F]+)"
+    r"|-\s*(\d+)"
+    r"|(?<![#\w])(0x[0-9a-fA-F]+|-?\d+)(?![A-Za-z0-9_])"
+)
 
 _AARCH64_BRANCH_MNEMONICS = frozenset(
     {"b", "bl", "blr", "cbz", "cbnz", "tbz", "tbnz", "ret"}
@@ -575,6 +579,12 @@ def _replace_immediates_shared(
                 c = _imm_canonical(match, arch)
                 if c in ("0", "00", "000"):
                     return match.group(0)
+                val = int(c)
+                if val < 0:
+                    if normalize_arch_name(arch) == "aarch64":
+                        return f"#-imm{canonical_to_id[c]}"
+                    else:
+                        return f"- imm{canonical_to_id[c]}"
                 return f"{prefix}imm{canonical_to_id[c]}"
 
             result.append(pattern.sub(_replacer, line))
@@ -588,8 +598,13 @@ def _replace_immediates_shared(
 
 def _imm_canonical(match: re.Match[str], arch: str) -> str:
     if normalize_arch_name(arch) == "aarch64":
-        return match.group(1).lower()
-    return match.group(0).lower()
+        raw = match.group(1).strip().lower()
+    else:
+        raw = match.group(0).strip().lower()
+    # Normalize "- 0xc" to "-0xc".
+    raw = re.sub(r"-\s+", "-", raw)
+    value = int(raw, 0)
+    return str(value)
 
 
 def _remaining_registers(text: str, arch: str) -> tuple[str, ...]:
