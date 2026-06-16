@@ -415,6 +415,12 @@ def test_memory_rule_smoke(tmp_path: Path) -> None:
     assert skip_reasons.get("unsupported_memory_surface", 0) > 0, (
         "expected unsupported_memory_surface skip reason"
     )
+    skip_details = diagnostics.get("skip_details", {})
+    assert "unsupported_memory_surface" in skip_details
+    assert (
+        sum(skip_details["unsupported_memory_surface"].values())
+        == skip_reasons["unsupported_memory_surface"]
+    )
 
     rules_text = rules_output.read_text(encoding="utf-8")
     assert "addr64_" not in rules_text, (

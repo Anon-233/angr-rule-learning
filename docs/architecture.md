@@ -137,6 +137,14 @@ as register-only candidates.
 Address base and index registers are included in candidate `input_registers`
 so rule generalization can emit typed register placeholders for them.
 
+Extraction diagnostics preserve coarse skip counters in `skip_reasons`. For
+broad categories that hide actionable causes, the pipeline also emits
+`skip_details`, keyed by the same coarse reason. For example,
+`unsupported_memory_surface` may contain `memory_access_count_mismatch`,
+`memory_width_mismatch`, or `unparsed_memory_access`; the sum of those detail
+counts should match the corresponding coarse reason when every skip path in
+that category reports a detail.
+
 Rule generation consumes `WindowPair + VerificationCandidate + VerificationReport`
 and produces text rules with typed register placeholders such as `i32_reg1`
 in each ISA's native assembly syntax.  Memory rules keep the original operand
