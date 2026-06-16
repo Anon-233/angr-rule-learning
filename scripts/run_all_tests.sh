@@ -28,6 +28,7 @@ Output files written to OUT_DIR:
   rules.txt                     Generalized text rules.
   rules_diagnostics.json        Rule generalization diagnostics (aggregate).
   rules_debug_diagnostics.json  Per-skipped-rule detailed diagnostics.
+  skip_patterns.json            Skip pattern analysis report.
 
 Examples:
   # Use defaults
@@ -60,6 +61,7 @@ DIAGNOSTICS="${OUT_DIR}/diagnostics.json"
 RULES="${OUT_DIR}/rules.txt"
 RULES_DIAGNOSTICS="${OUT_DIR}/rules_diagnostics.json"
 RULES_DEBUG_DIAGNOSTICS="${OUT_DIR}/rules_debug_diagnostics.json"
+SKIP_PATTERNS="${OUT_DIR}/skip_patterns.json"
 
 # ── Pipeline ────────────────────────────────────────────────────
 echo "=== extraction pipeline (${SOURCE}) ==="
@@ -72,6 +74,13 @@ uv run angr-rule-learning extract "${SOURCE}" \
   --rules-output            "${RULES}" \
   --rules-diagnostics       "${RULES_DIAGNOSTICS}" \
   --rules-debug-diagnostics "${RULES_DEBUG_DIAGNOSTICS}"
+
+echo ""
+echo "=== skip pattern analysis (${SOURCE}) ==="
+uv run angr-rule-learning diagnose-skips "${SOURCE}" \
+  --work-dir    "${WORK_DIR}-skips" \
+  --output      "${SKIP_PATTERNS}" \
+  --optimization "${OPT}"
 
 # ── Summaries ───────────────────────────────────────────────────
 echo ""
@@ -116,6 +125,24 @@ for s in rdd.get('skipped_rules', []):
     reasons[s['reason']] += 1
 for reason, count in sorted(reasons.items()):
     print(f'    {reason}: {count}')
+"
+
+echo ""
+echo "=== skip patterns ==="
+python3 -c "
+import json
+sp = json.load(open('${SKIP_PATTERNS}'))
+print(f'  selected_skips:  {sp[\"totals\"][\"selected_skips\"]}')
+for detail, payload in sorted(sp['details'].items()):
+    print(f'  {detail}: {payload[\"total\"]}')
+    if 'by_arch_mnemonic' in payload:
+        top = sorted(payload['by_arch_mnemonic'].items(), key=lambda x: -x[1])[:5]
+        for k, v in top:
+            print(f'    {k}: {v}')
+    if 'by_stage' in payload:
+        top_stage = sorted(payload['by_stage'].items(), key=lambda x: -x[1])[:3]
+        for k, v in top_stage:
+            print(f'    stage {k}: {v}')
 "
 
 echo ""
