@@ -1,3 +1,5 @@
+import pytest
+
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 from angr_rule_learning.extraction.liveness import (
     InstructionLiveness,
@@ -163,37 +165,43 @@ def test_surface_inferer_skips_aarch64_bl() -> None:
     assert reasons.get("unsupported_control_flow_surface", 0) >= 1
 
 
-def test_surface_inferer_records_x86_call_control_flow_detail() -> None:
+@pytest.mark.parametrize(
+    ("arch", "mnemonic", "expected_detail"),
+    (
+        ("aarch64", "b", "aarch64_unconditional_branch"),
+        ("aarch64", "bl", "aarch64_call"),
+        ("aarch64", "blr", "aarch64_call"),
+        ("aarch64", "br", "aarch64_indirect_branch"),
+        ("aarch64", "ret", "aarch64_return"),
+        ("x86-64", "jmp", "x86_64_unconditional_jump"),
+        ("x86-64", "call", "x86_64_call"),
+        ("x86-64", "ret", "x86_64_return"),
+    ),
+)
+def test_surface_inferer_records_control_flow_detail_mappings(
+    arch: str,
+    mnemonic: str,
+    expected_detail: str,
+) -> None:
     diagnostics = MiningDiagnostics()
     inferer = SurfaceInferer(diagnostics, LivenessIndex.empty())
-    pair = _pair(
-        _inst("aarch64", 0x1000, (), (), mnemonic="mov"),
-        _inst("x86-64", 0x2000, (), (), mnemonic="call"),
-    )
+    if arch == "aarch64":
+        pair = _pair(
+            _inst("aarch64", 0x1000, (), (), mnemonic=mnemonic),
+            _inst("x86-64", 0x2000, (), (), mnemonic="mov"),
+        )
+    else:
+        pair = _pair(
+            _inst("aarch64", 0x1000, (), (), mnemonic="mov"),
+            _inst("x86-64", 0x2000, (), (), mnemonic=mnemonic),
+        )
 
     assert inferer.infer(pair) is None
     payload = diagnostics.to_json()
 
     assert payload["skip_reasons"] == {"unsupported_control_flow_surface": 1}
     assert payload["skip_details"] == {
-        "unsupported_control_flow_surface": {"x86_64_call": 1}
-    }
-
-
-def test_surface_inferer_records_aarch64_return_control_flow_detail() -> None:
-    diagnostics = MiningDiagnostics()
-    inferer = SurfaceInferer(diagnostics, LivenessIndex.empty())
-    pair = _pair(
-        _inst("aarch64", 0x1000, (), (), mnemonic="ret"),
-        _inst("x86-64", 0x2000, (), (), mnemonic="mov"),
-    )
-
-    assert inferer.infer(pair) is None
-    payload = diagnostics.to_json()
-
-    assert payload["skip_reasons"] == {"unsupported_control_flow_surface": 1}
-    assert payload["skip_details"] == {
-        "unsupported_control_flow_surface": {"aarch64_return": 1}
+        "unsupported_control_flow_surface": {expected_detail: 1}
     }
 
 
