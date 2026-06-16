@@ -198,6 +198,8 @@ class RuleGeneralizer:
             guest_lines, host_lines = _replace_immediates_shared(
                 guest_lines, guest_arch, host_lines, host_arch
             )
+            if not _host_immediates_are_derivable(guest_lines, host_lines, candidate):
+                raise _RuleSkip("unpaired_host_immediate")
         except _RuleSkip as exc:
             self._record_skip(candidate, exc.reason, guest_raw_lines, host_raw_lines)
             return None
@@ -642,6 +644,45 @@ def _labels_are_consistent(
         if guest_labels != host_labels:
             return False
     return True
+
+
+_IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
+
+_AARCH64_FRAME_REGS = frozenset({"sp", "wsp", "x29", "fp"})
+_X86_64_FRAME_REGS = frozenset({"rsp", "esp", "sp", "rbp", "ebp", "bp"})
+
+
+def _has_frame_relative_binding(candidate: VerificationCandidate) -> bool:
+    for binding in candidate.memory.bindings:
+        try:
+            guest_expr = parse_address_binding(binding.guest_addr)
+            host_expr = parse_address_binding(binding.host_addr)
+        except ValueError:
+            continue
+        if (
+            guest_expr.base in _AARCH64_FRAME_REGS
+            and host_expr.base in _X86_64_FRAME_REGS
+        ):
+            return True
+    return False
+
+
+def _host_immediates_are_derivable(
+    guest_lines: tuple[str, ...],
+    host_lines: tuple[str, ...],
+    candidate: VerificationCandidate,
+) -> bool:
+    if not candidate.memory.bindings:
+        return True
+    if not _has_frame_relative_binding(candidate):
+        return True
+    guest_imms = {
+        m.group(1) for line in guest_lines for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    host_imms = {
+        m.group(1) for line in host_lines for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    return host_imms <= guest_imms
 
 
 def _annotate_dead_writes(
