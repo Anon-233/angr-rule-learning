@@ -1,14 +1,22 @@
+from pathlib import Path
+
 from angr_rule_learning.analysis.skip_patterns import (
     SkipPatternAggregator,
+    SkipPatternAnalyzer,
     instruction_text,
     normalize_instruction_text,
 )
+from angr_rule_learning.extraction.config import ExtractionConfig, WindowLimits
+from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
+from angr_rule_learning.extraction.liveness import LivenessIndex
 from angr_rule_learning.extraction.models import (
+    AlignmentRegion,
     ExtractedInstruction,
     InstructionWindow,
     SourceLocation,
     WindowPair,
 )
+from angr_rule_learning.extraction.pipeline import ExtractionData
 
 
 def _inst(
@@ -41,6 +49,9 @@ def test_normalize_instruction_text_replaces_numbers_and_spacing() -> None:
     assert text == "mov dword ptr [rbp - IMM], IMM"
 
 
+# ── Helpers shared by aggregator and analyzer tests ──────────────────
+
+
 def _window(
     region_id: str,
     side: str,
@@ -62,6 +73,9 @@ def _pair(
         guest=_window(region_id, "guest", guest),
         host=_window(region_id, "host", host),
     )
+
+
+# ── Aggregator tests ─────────────────────────────────────────────────
 
 
 def test_aggregator_records_unparsed_instruction_pattern() -> None:
@@ -102,3 +116,42 @@ def test_aggregator_records_one_sided_window_pair_pattern() -> None:
     assert top["host_memory_count"] == 0
     assert top["guest_pattern"] == "str w0, [sp, #IMM]"
     assert top["host_pattern"] == "mov eax, edi"
+
+
+# ── Analyzer tests ───────────────────────────────────────────────────
+
+
+def test_analyzer_reports_selected_skip_details_from_regions(tmp_path: Path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int f(int *p) { return *p; }\n", encoding="utf-8")
+    region = AlignmentRegion(
+        region_id="sample:sample.c:7:0",
+        function="sample",
+        source_file="sample.c",
+        source_lines=(7,),
+        guest_instructions=(
+            _inst("aarch64", "ldp", "x0, x1, [x2]", address=0x1000),
+            _inst("aarch64", "str", "w0, [sp, #12]", address=0x1004),
+        ),
+        host_instructions=(_inst("x86-64", "mov", "eax, edi", address=0x2000),),
+    )
+
+    def provider(
+        config: ExtractionConfig,
+        diagnostics: MiningDiagnostics,
+    ) -> ExtractionData:
+        diagnostics.record_region()
+        return ExtractionData((region,), LivenessIndex.empty())
+
+    analyzer = SkipPatternAnalyzer(region_provider=provider)
+    report = analyzer.analyze(
+        ExtractionConfig(
+            source=source,
+            work_dir=tmp_path / "work",
+            window_limits=WindowLimits(guest_max=1, host_max=1),
+        )
+    )
+
+    assert report["totals"]["windows_enumerated"] > 0
+    assert report["details"]["unparsed_memory_access"]["total"] >= 1
+    assert report["details"]["one_sided_memory_access"]["total"] >= 1

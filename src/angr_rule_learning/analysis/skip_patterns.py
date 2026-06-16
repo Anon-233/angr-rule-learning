@@ -2,18 +2,32 @@ from __future__ import annotations
 
 import re
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from angr_rule_learning.extraction.align import AlignmentRegionBuilder
+from angr_rule_learning.extraction.blocks import BasicBlockBuilder
+from angr_rule_learning.extraction.build import BuildArtifacts, ClangBuildDriver
+from angr_rule_learning.extraction.config import ExtractionConfig
+from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
+from angr_rule_learning.extraction.liveness import LivenessAnalyzer
 from angr_rule_learning.extraction.memory_operands import has_any_memory_access
+from angr_rule_learning.extraction.memory_surfaces import infer_memory_surface
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
     WindowPair,
 )
+from angr_rule_learning.extraction.object import ObjectExtractor
+from angr_rule_learning.extraction.pipeline import ExtractionData
+from angr_rule_learning.extraction.surfaces import SurfaceInferer
+from angr_rule_learning.extraction.windows import WindowMiner
 
 _HEX_RE = re.compile(r"(?<![A-Za-z0-9_])-?0x[0-9a-fA-F]+")
 _DEC_RE = re.compile(r"(?<![A-Za-z0-9_])-?\d+(?![A-Za-z0-9_])")
+
+RegionProvider = Callable[[ExtractionConfig, MiningDiagnostics], ExtractionData]
 
 
 def instruction_text(instruction: ExtractedInstruction) -> str:
@@ -30,9 +44,6 @@ def normalize_instruction_text(text: str) -> str:
     normalized = _DEC_RE.sub("IMM", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized
-
-
-# ── Skip pattern aggregation ──────────────────────────────────────────
 
 
 def _source_span(window: InstructionWindow) -> str:
@@ -170,3 +181,96 @@ class SkipPatternAggregator:
                 ]
             details[detail] = item
         return {"details": details}
+
+
+class SkipPatternAnalyzer:
+    def __init__(
+        self,
+        *,
+        build_driver: ClangBuildDriver | None = None,
+        object_extractor: ObjectExtractor | None = None,
+        region_provider: RegionProvider | None = None,
+    ) -> None:
+        self._build_driver = build_driver or ClangBuildDriver()
+        self._object_extractor = object_extractor or ObjectExtractor()
+        self._region_provider = region_provider
+
+    def analyze(self, config: ExtractionConfig) -> dict[str, Any]:
+        diagnostics = MiningDiagnostics()
+        data = self._regions(config, diagnostics)
+        miner = WindowMiner(config.window_limits, diagnostics)
+        inferer = SurfaceInferer(diagnostics, data.liveness)
+        aggregator = SkipPatternAggregator()
+
+        for region in data.regions:
+            windows = miner.enumerate_region(region)
+            for window in windows:
+                memory_surface = infer_memory_surface(window)
+                if memory_surface.skip_detail in {
+                    "unparsed_memory_access",
+                    "one_sided_memory_access",
+                }:
+                    aggregator.record(memory_surface.skip_detail, window)
+                # Preserve diagnostics counts by using the production inferer.
+                inferer.infer(window)
+
+        payload = aggregator.to_json()
+        payload.update(
+            {
+                "source": str(config.source),
+                "optimization": config.compile_options.optimization,
+                "window_limits": {
+                    "guest_max": config.window_limits.guest_max,
+                    "host_max": config.window_limits.host_max,
+                },
+                "totals": {
+                    "windows_enumerated": diagnostics.windows_enumerated,
+                    "selected_skips": sum(
+                        detail.get("total", 0)
+                        for detail in payload.get("details", {}).values()
+                    ),
+                },
+                "skip_reasons": diagnostics.to_json().get("skip_reasons", {}),
+                "skip_details": diagnostics.to_json().get("skip_details", {}),
+            }
+        )
+        return payload
+
+    def _regions(
+        self,
+        config: ExtractionConfig,
+        diagnostics: MiningDiagnostics,
+    ) -> ExtractionData:
+        if self._region_provider is not None:
+            return self._region_provider(config, diagnostics)
+        artifacts = self._build_driver.build(config)
+        return self._extract_regions(artifacts, config, diagnostics)
+
+    def _extract_regions(
+        self,
+        artifacts: BuildArtifacts,
+        config: ExtractionConfig,
+        diagnostics: MiningDiagnostics,
+    ) -> ExtractionData:
+        guest_functions = self._object_extractor.extract(
+            artifacts.guest_object, config.guest_arch
+        )
+        host_functions = self._object_extractor.extract(
+            artifacts.host_object, config.host_arch
+        )
+        block_builder = BasicBlockBuilder()
+        guest_blocks = tuple(
+            block
+            for function in guest_functions
+            for block in block_builder.build(function)
+        )
+        host_blocks = tuple(
+            block
+            for function in host_functions
+            for block in block_builder.build(function)
+        )
+        for _function in guest_functions:
+            diagnostics.record_function()
+        regions = AlignmentRegionBuilder(diagnostics).build(guest_blocks, host_blocks)
+        liveness = LivenessAnalyzer().analyze(guest_functions + host_functions)
+        return ExtractionData(regions, liveness)
