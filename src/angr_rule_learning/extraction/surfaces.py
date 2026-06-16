@@ -29,10 +29,14 @@ class SurfaceInferer:
         self._surface_inferer = WindowSurfaceInferer(liveness)
 
     def infer(self, pair: WindowPair) -> VerificationCandidate | None:
-        if _has_unsupported_control_flow(pair.guest) or _has_unsupported_control_flow(
-            pair.host
-        ):
-            self._diagnostics.record_window_skipped("unsupported_control_flow_surface")
+        control_flow_detail = _unsupported_control_flow_detail(pair.guest)
+        if control_flow_detail is None:
+            control_flow_detail = _unsupported_control_flow_detail(pair.host)
+        if control_flow_detail is not None:
+            self._diagnostics.record_window_skipped(
+                "unsupported_control_flow_surface",
+                detail=control_flow_detail,
+            )
             return None
 
         memory_surface = infer_memory_surface(pair)
@@ -124,20 +128,27 @@ def _candidate_id(pair: WindowPair) -> str:
     )
 
 
-_UNSUPPORTED_CONTROL_FLOW = {
-    "aarch64": frozenset(("b", "bl", "br", "blr", "ret")),
-    "x86-64": frozenset(("jmp", "ret", "call")),
-}
-
-
-def _has_unsupported_control_flow(window: InstructionWindow) -> bool:
+def _unsupported_control_flow_detail(window: InstructionWindow) -> str | None:
     for inst in window.instructions:
         mnemonic = inst.mnemonic.lower()
         arch = inst.arch
-        if arch in _UNSUPPORTED_CONTROL_FLOW:
-            if mnemonic in _UNSUPPORTED_CONTROL_FLOW[arch]:
-                return True
-    return False
+        if arch == "aarch64":
+            if mnemonic == "b":
+                return "aarch64_unconditional_branch"
+            if mnemonic in {"bl", "blr"}:
+                return "aarch64_call"
+            if mnemonic == "br":
+                return "aarch64_indirect_branch"
+            if mnemonic == "ret":
+                return "aarch64_return"
+        if arch == "x86-64":
+            if mnemonic == "jmp":
+                return "x86_64_unconditional_jump"
+            if mnemonic == "call":
+                return "x86_64_call"
+            if mnemonic == "ret":
+                return "x86_64_return"
+    return None
 
 
 def _merge_register_pairs(

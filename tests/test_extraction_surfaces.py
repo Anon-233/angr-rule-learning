@@ -163,6 +163,40 @@ def test_surface_inferer_skips_aarch64_bl() -> None:
     assert reasons.get("unsupported_control_flow_surface", 0) >= 1
 
 
+def test_surface_inferer_records_x86_call_control_flow_detail() -> None:
+    diagnostics = MiningDiagnostics()
+    inferer = SurfaceInferer(diagnostics, LivenessIndex.empty())
+    pair = _pair(
+        _inst("aarch64", 0x1000, (), (), mnemonic="mov"),
+        _inst("x86-64", 0x2000, (), (), mnemonic="call"),
+    )
+
+    assert inferer.infer(pair) is None
+    payload = diagnostics.to_json()
+
+    assert payload["skip_reasons"] == {"unsupported_control_flow_surface": 1}
+    assert payload["skip_details"] == {
+        "unsupported_control_flow_surface": {"x86_64_call": 1}
+    }
+
+
+def test_surface_inferer_records_aarch64_return_control_flow_detail() -> None:
+    diagnostics = MiningDiagnostics()
+    inferer = SurfaceInferer(diagnostics, LivenessIndex.empty())
+    pair = _pair(
+        _inst("aarch64", 0x1000, (), (), mnemonic="ret"),
+        _inst("x86-64", 0x2000, (), (), mnemonic="mov"),
+    )
+
+    assert inferer.infer(pair) is None
+    payload = diagnostics.to_json()
+
+    assert payload["skip_reasons"] == {"unsupported_control_flow_surface": 1}
+    assert payload["skip_details"] == {
+        "unsupported_control_flow_surface": {"aarch64_return": 1}
+    }
+
+
 def test_surface_inferer_skips_flag_register_surface() -> None:
     pair = _pair(
         _inst("aarch64", 0x1000, ("x1", "x2"), ("x0", "nzcv"), mnemonic="subs"),
