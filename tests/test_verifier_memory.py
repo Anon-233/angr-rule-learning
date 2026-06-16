@@ -399,6 +399,30 @@ def test_verifier_accepts_consistent_two_slot_frame_relative_stores() -> None:
     assert report.status == "pass"
 
 
+def test_verifier_accepts_distinct_two_slot_frame_relative_stores() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="frame-two-distinct-store32",
+        guest=CodeFragment("aarch64", 0x10000, "e00f00b9e10b00b9", 2),
+        host=CodeFragment("x86-64", 0x8048000, "897dfc8975f8", 2),
+        input_registers=(("w0", "edi"), ("w1", "esi")),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4), MemorySlot("mem1", 4)),
+            bindings=(
+                MemoryBinding("mem0", "sp + 12", "rbp - 4", "write"),
+                MemoryBinding("mem1", "sp + 8", "rbp - 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 4),
+                MemoryAccessExpectation("mem1", "write", 4),
+            ),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass"
+
+
 def test_verifier_rejects_inconsistent_frame_relative_layout() -> None:
     candidate = VerificationCandidate(
         candidate_id="frame-inconsistent-store32",
