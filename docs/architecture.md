@@ -151,6 +151,30 @@ broad categories that hide actionable causes, the pipeline also emits
 counts should match the corresponding coarse reason when every skip path in
 that category reports a detail.
 
+Frame-relative stack memory is treated specially. When AArch64 stack/frame
+registers (`sp`, `x29`, `fp`) align with x86-64 stack/frame registers (`rsp`,
+`rbp` and narrower aliases), extraction does not model the base registers as
+equal input values. Instead, memory bindings carry the effective address
+expressions and the verifier assigns frame base witnesses that make consistent
+slots alias across ISAs. This preserves normal equality semantics for ordinary
+address registers while allowing common `sp + offset` versus `rbp - offset`
+stack-slot rules to verify.
+
+Store-immediate surfaces are rejected at extraction time. Until the verifier
+supports explicit immediate value bindings, a store pair where either side
+uses an immediate value (e.g. `mov dword ptr [rbp-4], 3`) returns
+``store_value_immediate_unsupported`` rather than emitting a bogus register
+input.
+
+Sign-extension memory loads (`ldrsw` for AArch64, `movsxd` for x86-64) are
+parsed as 32-bit memory reads. The verifier compares output register
+expressions after execution, so the memory surface only needs the read address
+and width; the sign extension is checked via the output register relation.
+
+Still unsupported memory forms include full prologue/epilogue modelling
+(`push/pop` versus `stp/ldp`) and x86 read-modify-write arithmetic memory
+operands. These remain separate planned extensions.
+
 Rule generation consumes `WindowPair + VerificationCandidate + VerificationReport`
 and produces text rules with typed register placeholders such as `i32_reg1`
 in each ISA's native assembly syntax.  Memory rules keep the original operand
