@@ -30,9 +30,27 @@ def test_normalizes_project_arch_names_for_archinfo() -> None:
     assert classify_register("aarch64", "X8") == RegisterClass("i", 64)
 
 
-def test_stack_and_frame_registers_are_literals() -> None:
-    for reg in ("sp", "wsp", "fp", "rsp", "esp", "rbp", "ebp", "bp"):
-        arch = "aarch64" if reg in ("sp", "wsp", "fp") else "x86-64"
+def test_stack_pointer_placeholder_names() -> None:
+    from angr_rule_learning.rules.registers import stack_pointer_placeholder
+
+    assert stack_pointer_placeholder("aarch64", "sp") == "sp64"
+    assert stack_pointer_placeholder("aarch64", "wsp") == "sp32"
+    assert stack_pointer_placeholder("x86-64", "rsp") == "sp64"
+    assert stack_pointer_placeholder("x86-64", "esp") == "sp32"
+    assert stack_pointer_placeholder("x86-64", "rbp") is None
+
+
+def test_frame_registers_remain_literals() -> None:
+    for reg in ("fp", "rbp", "ebp", "bp"):
+        arch = "aarch64" if reg == "fp" else "x86-64"
+        assert is_allowed_literal_register(arch, reg)
+        with pytest.raises(RegisterClassError):
+            classify_register(arch, reg)
+
+
+def test_stack_pointer_is_allowed_literal() -> None:
+    for reg in ("sp", "wsp", "rsp", "esp"):
+        arch = "aarch64" if reg in ("sp", "wsp") else "x86-64"
         assert is_allowed_literal_register(arch, reg)
         with pytest.raises(RegisterClassError):
             classify_register(arch, reg)

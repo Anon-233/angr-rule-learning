@@ -14,6 +14,7 @@ from angr_rule_learning.rules.registers import (
     is_allowed_literal_register,
     known_register_tokens,
     normalize_register_name,
+    stack_pointer_placeholder,
 )
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
@@ -219,6 +220,24 @@ def _build_placeholder_map(
     for guest_reg, host_reg in candidate.output_registers + candidate.input_registers:
         guest_reg = normalize_register_name(guest_reg)
         host_reg = normalize_register_name(host_reg)
+
+        guest_sp = stack_pointer_placeholder(guest_arch, guest_reg)
+        host_sp = stack_pointer_placeholder(host_arch, host_reg)
+        if guest_sp is not None or host_sp is not None:
+            if guest_sp is None or host_sp is None or guest_sp != host_sp:
+                raise _RuleSkip("register_class_mismatch")
+            guest_existing = mapping.get(guest_reg)
+            host_existing = mapping.get(host_reg)
+            existing = guest_existing or host_existing or guest_sp
+            if guest_existing not in (None, existing) or host_existing not in (
+                None,
+                existing,
+            ):
+                raise _RuleSkip("unsupported_rule_shape")
+            mapping[guest_reg] = existing
+            mapping[host_reg] = existing
+            continue
+
         guest_class = _classify_for_rule(guest_arch, guest_reg)
         host_class = _classify_for_rule(host_arch, host_reg)
         if guest_class != host_class:

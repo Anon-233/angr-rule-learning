@@ -340,6 +340,28 @@ def test_generalizer_does_not_coalesce_by_host_carrier_alone() -> None:
     assert diagnostics.skip_reasons["unsupported_rule_shape"] == 1
 
 
+def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
+    pair = _window_pair(
+        (_inst("aarch64", 0x1000, "sub", "sp, sp, #16"),),
+        (_inst("x86-64", 0x2000, "sub", "rsp, 16"),),
+    )
+    candidate = _candidate(
+        inputs=(("sp", "rsp"),),
+        outputs=(("sp", "rsp"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1,
+        pair,
+        candidate,
+        _passing_report(candidate.candidate_id),
+    )
+
+    assert rule is not None
+    assert rule.guest_lines == ("sub sp64, sp64, #imm1",)
+    assert rule.host_lines == ("sub sp64, imm1",)
+
+
 def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)

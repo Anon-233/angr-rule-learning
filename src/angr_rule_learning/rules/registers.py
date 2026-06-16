@@ -112,6 +112,21 @@ def _archinfo_id(arch: str) -> str:
     return _ARCHINFO_IDS.get(canonical_arch_name(arch), arch.strip().lower())
 
 
+_STACK_POINTER_WIDTHS = {
+    "aarch64": {"sp": 64, "wsp": 32},
+    "x86-64": {"rsp": 64, "esp": 32, "sp": 16},
+}
+
+
+def stack_pointer_placeholder(arch: str, register: str) -> str | None:
+    canonical = canonical_arch_name(arch)
+    reg = normalize_register_name(register)
+    width = _STACK_POINTER_WIDTHS.get(canonical, {}).get(reg)
+    if width is None:
+        return None
+    return f"sp{width}"
+
+
 def is_allowed_literal_register(arch: str, register: str) -> bool:
     canonical = canonical_arch_name(arch)
     return normalize_register_name(register) in _ALLOWED_LITERAL_REGISTERS.get(
