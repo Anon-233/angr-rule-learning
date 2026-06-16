@@ -155,3 +155,81 @@ def test_analyzer_reports_selected_skip_details_from_regions(tmp_path: Path) -> 
     assert report["totals"]["windows_enumerated"] > 0
     assert report["details"]["unparsed_memory_access"]["total"] >= 1
     assert report["details"]["one_sided_memory_access"]["total"] >= 1
+
+
+# ── Regression: control-flow priority ─────────────────────────────────
+
+
+def test_analyzer_respects_production_control_flow_priority(
+    tmp_path: Path,
+) -> None:
+    """A 2x1 window whose guest contains 'ret' must be classified as
+    unsupported_control_flow_surface by the production SurfaceInferer,
+    not as one_sided_memory_access by the analyzer."""
+    source = tmp_path / "sample.c"
+    source.write_text("int f(int *p) { return *p; }\n", encoding="utf-8")
+    region = AlignmentRegion(
+        region_id="sample:sample.c:7:0",
+        function="sample",
+        source_file="sample.c",
+        source_lines=(7,),
+        guest_instructions=(
+            _inst("aarch64", "ldr", "w0, [x1]", address=0x1000),
+            _inst("aarch64", "ret", "", address=0x1004),
+        ),
+        host_instructions=(_inst("x86-64", "mov", "eax, edi", address=0x2000),),
+    )
+
+    def provider(
+        config: ExtractionConfig,
+        diagnostics: MiningDiagnostics,
+    ) -> ExtractionData:
+        diagnostics.record_region()
+        return ExtractionData((region,), LivenessIndex.empty())
+
+    analyzer = SkipPatternAnalyzer(region_provider=provider)
+    report = analyzer.analyze(
+        ExtractionConfig(
+            source=source,
+            work_dir=tmp_path / "work",
+            window_limits=WindowLimits(guest_max=2, host_max=1),
+        )
+    )
+
+    # The 2x1 window with ret should NOT appear in one_sided_memory_access.
+    osm_total = report["details"].get("one_sided_memory_access", {}).get("total", 0)
+    # The production skip_details for unsupported_memory_surface should not
+    # include one_sided_memory_access from the 2x1 ret window.
+    sd = report.get("skip_details", {}).get("unsupported_memory_surface", {})
+    osm_detail = sd.get("one_sided_memory_access", 0)
+    # The 1x1 window (without ret) may still contribute, so we only check
+    # that the analyzer's one_sided total doesn't exceed the production count.
+    assert osm_total <= osm_detail, (
+        f"analyzer one_sided total {osm_total} exceeded"
+        f" production skip_detail {osm_detail}"
+    )
+
+
+# ── Regression: unparsed excludes parsed instructions ─────────────────
+
+
+def test_unparsed_only_counts_truly_unparseable_instructions() -> None:
+    """Supported instructions like 'mov eax, dword ptr [rcx]' must not
+    appear in unparsed_memory_access patterns."""
+    pair = _pair(
+        (_inst("aarch64", "ldp", "x0, x1, [x2]"),),
+        (_inst("x86-64", "mov", "eax, dword ptr [rcx]"),),
+    )
+
+    aggregator = SkipPatternAggregator(max_examples=2)
+    aggregator.record("unparsed_memory_access", pair)
+    payload = aggregator.to_json()
+
+    detail = payload["details"]["unparsed_memory_access"]
+    assert detail["total"] == 1
+
+    am = detail["by_arch_mnemonic"]
+    assert "aarch64:ldp" in am
+    assert "x86-64:mov" not in am, (
+        f"supported x86-64 mov must not appear in unparsed patterns, got {am}"
+    )

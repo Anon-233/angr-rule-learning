@@ -80,6 +80,8 @@ src/angr_rule_learning/
     diagnostics.py
     emit.py
     pipeline.py
+  analysis/
+    skip_patterns.py
   rules/
     registers.py
     memory.py
@@ -101,8 +103,12 @@ The package boundaries are:
   and orchestrates the source-to-candidate pipeline.
 - `rules`: classifies registers, generalizes verified extraction windows into
   typed placeholder rules, and writes plain text rule output with diagnostics.
-- `cli.py`: provides a thin command-line wrapper over `BatchVerifier` and
-  `ExtractionPipeline`.
+- `analysis`: read-only diagnostics/observability tools.  Reuses extraction
+  components to aggregate skip patterns but never participates in candidate
+  extraction, verification, or rule generation decisions.  Exposed via the
+  `diagnose-skips` CLI subcommand.
+- `cli.py`: provides a thin command-line wrapper over `BatchVerifier`,
+  `ExtractionPipeline`, and `SkipPatternAnalyzer`.
 
 ## Data Flow
 

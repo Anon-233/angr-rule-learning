@@ -12,8 +12,10 @@ from angr_rule_learning.extraction.build import BuildArtifacts, ClangBuildDriver
 from angr_rule_learning.extraction.config import ExtractionConfig
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 from angr_rule_learning.extraction.liveness import LivenessAnalyzer
-from angr_rule_learning.extraction.memory_operands import has_any_memory_access
-from angr_rule_learning.extraction.memory_surfaces import infer_memory_surface
+from angr_rule_learning.extraction.memory_operands import (
+    extract_memory_operands,
+    has_any_memory_access,
+)
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -120,6 +122,11 @@ class SkipPatternAggregator:
             for inst in window.instructions:
                 if not has_any_memory_access(inst):
                     continue
+                # Only count instructions that cannot be parsed by the
+                # production operand extractor.  Instructions that ARE
+                # parseable belong to the supported surface, not here.
+                if extract_memory_operands(inst):
+                    continue
                 pattern = normalize_instruction_text(instruction_text(inst))
                 key = (inst.arch, inst.mnemonic.strip().lower(), pattern)
                 self._by_arch_mnemonic[detail][f"{key[0]}:{key[1]}"] += 1
@@ -202,17 +209,23 @@ class SkipPatternAnalyzer:
         inferer = SurfaceInferer(diagnostics, data.liveness)
         aggregator = SkipPatternAggregator()
 
+        _SELECTED_DETAILS = {"unparsed_memory_access", "one_sided_memory_access"}
+
         for region in data.regions:
             windows = miner.enumerate_region(region)
             for window in windows:
-                memory_surface = infer_memory_surface(window)
-                if memory_surface.skip_detail in {
-                    "unparsed_memory_access",
-                    "one_sided_memory_access",
-                }:
-                    aggregator.record(memory_surface.skip_detail, window)
-                # Preserve diagnostics counts by using the production inferer.
+                before = dict(
+                    diagnostics.skip_details.get(
+                        "unsupported_memory_surface", Counter()
+                    )
+                )
                 inferer.infer(window)
+                after = diagnostics.skip_details.get(
+                    "unsupported_memory_surface", Counter()
+                )
+                for detail in _SELECTED_DETAILS:
+                    if after.get(detail, 0) > before.get(detail, 0):
+                        aggregator.record(detail, window)
 
         payload = aggregator.to_json()
         payload.update(
