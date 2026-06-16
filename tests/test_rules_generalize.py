@@ -300,6 +300,46 @@ def test_rule_diagnostics_records_detailed_skip_when_enabled() -> None:
     ]
 
 
+def test_generalizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> None:
+    pair = _window_pair(
+        (_inst("aarch64", 0x1000, "add", "w0, w1, w0"),),
+        (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "edi"), ("w1", "esi")),
+        outputs=(("w0", "eax"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, pair, candidate, _passing_report())
+
+    assert rule is not None
+    assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg1",)
+    assert rule.host_lines == ("lea i32_reg1, [i32_reg1 + i32_reg2]",)
+
+
+def test_generalizer_does_not_coalesce_by_host_carrier_alone() -> None:
+    diagnostics = RuleDiagnostics()
+    pair = _window_pair(
+        (_inst("aarch64", 0x1000, "add", "w8, w0, w8"),),
+        (_inst("x86-64", 0x2000, "add", "eax, ecx"),),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w8", "ecx")),
+        outputs=(("w8", "eax"),),
+    )
+
+    rule = RuleGeneralizer(diagnostics).generate(
+        1,
+        pair,
+        candidate,
+        _passing_report(candidate.candidate_id),
+    )
+
+    assert rule is None
+    assert diagnostics.skip_reasons["unsupported_rule_shape"] == 1
+
+
 def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)
