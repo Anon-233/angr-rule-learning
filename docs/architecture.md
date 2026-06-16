@@ -207,6 +207,16 @@ Every verification report has one of four top-level statuses:
 loss. `error` indicates a verifier bug, environment issue, or uncategorized
 failure that should be investigated.
 
+### Skip Pattern Analysis
+
+The `diagnose-skips` CLI is a read-only observability tool for large skip
+categories. It reuses extraction alignment and window enumeration, classifies
+selected memory skip details, and writes pattern reports for
+`unparsed_memory_access` and `one_sided_memory_access`. These reports are used
+to decide whether the next improvement should extend memory operand parsing,
+refine window pairing, or add a stack/frame abstraction. The analyzer must not
+change candidate emission, verification, or rule generation behavior.
+
 ## Extension Points
 
 Near-term extensions should preserve the existing verifier API and add new
