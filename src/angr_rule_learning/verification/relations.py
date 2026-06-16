@@ -9,6 +9,11 @@ from angr_rule_learning.smt.solver import align_widths
 from angr_rule_learning.verification.report import CheckResult
 
 
+def _add_constraints(solver: claripy.Solver, constraints: tuple[object, ...]) -> None:
+    for constraint in constraints:
+        solver.add(constraint)
+
+
 class RelationChecker:
     def __init__(
         self,
@@ -34,7 +39,7 @@ class RelationChecker:
         difference = guest_expr != host_expr
         solver = claripy.Solver()
         if self._constraints:
-            solver.add(*self._constraints)
+            _add_constraints(solver, self._constraints)
         if not solver.satisfiable(extra_constraints=(difference,)):
             return CheckResult(kind, "pass", guest, host, metadata=metadata or {})
         return CheckResult(
@@ -50,7 +55,7 @@ class RelationChecker:
     def _counterexample(self, extra_constraint: object) -> dict[str, int]:
         solver = claripy.Solver()
         if self._constraints:
-            solver.add(*self._constraints)
+            _add_constraints(solver, self._constraints)
         return {
             name: solver.eval(symbol, 1, extra_constraints=(extra_constraint,))[0]
             for name, symbol in self._symbols.items()

@@ -54,3 +54,46 @@ def test_relation_checker_aligns_widths() -> None:
     )
 
     assert result.status == "pass"
+
+
+def test_relation_checker_accepts_multiple_constraints() -> None:
+    x = claripy.BVS("x", 32)
+    y = claripy.BVS("y", 32)
+    checker = RelationChecker(
+        symbols={"x": x, "y": y},
+        constraints=(x == 3, y == 4),
+    )
+
+    result = checker.check_equal(
+        kind="register",
+        guest="x_plus_y",
+        host="seven",
+        guest_expr=x + y,
+        host_expr=claripy.BVV(7, 32),
+        mismatch_reason="register_mismatch",
+    )
+
+    assert result.status == "pass"
+
+
+def test_relation_checker_counterexample_with_multiple_constraints() -> None:
+    x = claripy.BVS("x", 32)
+    y = claripy.BVS("y", 32)
+    checker = RelationChecker(
+        symbols={"x": x, "y": y},
+        constraints=(x == 3, y == 4),
+    )
+
+    result = checker.check_equal(
+        kind="register",
+        guest="x_plus_y",
+        host="eight",
+        guest_expr=x + y,
+        host_expr=claripy.BVV(8, 32),
+        mismatch_reason="register_mismatch",
+    )
+
+    assert result.status == "fail"
+    assert result.reason == "register_mismatch"
+    assert result.counterexample["x"] == 3
+    assert result.counterexample["y"] == 4

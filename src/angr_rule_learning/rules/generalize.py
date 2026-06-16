@@ -11,11 +11,13 @@ from angr_rule_learning.rules.registers import (
     RegisterClassError,
     UnsupportedRegisterClass,
     classify_register,
+    frame_pointer_placeholder,
     is_allowed_literal_register,
     known_register_tokens,
     normalize_register_name,
     stack_pointer_placeholder,
 )
+from angr_rule_learning.verification.addressing import parse_address_binding
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
 
@@ -196,6 +198,8 @@ class RuleGeneralizer:
             guest_lines, host_lines = _replace_immediates_shared(
                 guest_lines, guest_arch, host_lines, host_arch
             )
+            if not _host_immediates_are_derivable(guest_lines, host_lines, candidate):
+                raise _RuleSkip("unpaired_host_immediate")
         except _RuleSkip as exc:
             self._record_skip(candidate, exc.reason, guest_raw_lines, host_raw_lines)
             return None
@@ -216,6 +220,24 @@ class RuleGeneralizer:
         return rule
 
 
+def _memory_binding_register_pairs(
+    candidate: VerificationCandidate,
+) -> tuple[tuple[str, str], ...]:
+    pairs: list[tuple[str, str]] = []
+    for binding in candidate.memory.bindings:
+        try:
+            guest_expr = parse_address_binding(binding.guest_addr)
+            host_expr = parse_address_binding(binding.host_addr)
+        except ValueError as exc:
+            raise _RuleSkip("unsupported_rule_shape") from exc
+        guest_regs = guest_expr.registers()
+        host_regs = host_expr.registers()
+        if len(guest_regs) != len(host_regs):
+            raise _RuleSkip("unsupported_rule_shape")
+        pairs.extend(zip(guest_regs, host_regs, strict=True))
+    return tuple(pairs)
+
+
 def _build_placeholder_map(
     candidate: VerificationCandidate,
     guest_arch: str,
@@ -223,7 +245,12 @@ def _build_placeholder_map(
 ) -> dict[str, str]:
     mapping: dict[str, str] = {}
     next_id = 1
-    for guest_reg, host_reg in candidate.output_registers + candidate.input_registers:
+    register_pairs = (
+        candidate.output_registers
+        + candidate.input_registers
+        + _memory_binding_register_pairs(candidate)
+    )
+    for guest_reg, host_reg in register_pairs:
         guest_reg = normalize_register_name(guest_reg)
         host_reg = normalize_register_name(host_reg)
 
@@ -235,6 +262,23 @@ def _build_placeholder_map(
             guest_existing = mapping.get(guest_reg)
             host_existing = mapping.get(host_reg)
             existing = guest_existing or host_existing or guest_sp
+            if guest_existing not in (None, existing) or host_existing not in (
+                None,
+                existing,
+            ):
+                raise _RuleSkip("unsupported_rule_shape")
+            mapping[guest_reg] = existing
+            mapping[host_reg] = existing
+            continue
+
+        guest_fp = frame_pointer_placeholder(guest_arch, guest_reg)
+        host_fp = frame_pointer_placeholder(host_arch, host_reg)
+        if guest_fp is not None or host_fp is not None:
+            if guest_fp is None or host_fp is None or guest_fp != host_fp:
+                raise _RuleSkip("register_class_mismatch")
+            guest_existing = mapping.get(guest_reg)
+            host_existing = mapping.get(host_reg)
+            existing = guest_existing or host_existing or guest_fp
             if guest_existing not in (None, existing) or host_existing not in (
                 None,
                 existing,
@@ -320,8 +364,12 @@ def _generalize_line(text: str, mapping: dict[str, str], arch: str) -> str:
     return rewritten
 
 
-_AARCH64_IMM_RE = re.compile(r"#(0x[0-9a-fA-F]+|-?\d+)")
-_X86_64_IMM_RE = re.compile(r"(?<![#\w])(0x[0-9a-fA-F]+|-?\d+)(?![A-Za-z0-9_])")
+_AARCH64_IMM_RE = re.compile(r"#(-?0x[0-9a-fA-F]+|-?\d+)")
+_X86_64_IMM_RE = re.compile(
+    r"-\s*(0x[0-9a-fA-F]+)"
+    r"|-\s*(\d+)"
+    r"|(?<![#\w])(0x[0-9a-fA-F]+|-?\d+)(?![A-Za-z0-9_])"
+)
 
 _AARCH64_BRANCH_MNEMONICS = frozenset(
     {"b", "bl", "blr", "cbz", "cbnz", "tbz", "tbnz", "ret"}
@@ -533,6 +581,12 @@ def _replace_immediates_shared(
                 c = _imm_canonical(match, arch)
                 if c in ("0", "00", "000"):
                     return match.group(0)
+                val = int(c)
+                if val < 0:
+                    if normalize_arch_name(arch) == "aarch64":
+                        return f"#-imm{canonical_to_id[c]}"
+                    else:
+                        return f"- imm{canonical_to_id[c]}"
                 return f"{prefix}imm{canonical_to_id[c]}"
 
             result.append(pattern.sub(_replacer, line))
@@ -546,8 +600,13 @@ def _replace_immediates_shared(
 
 def _imm_canonical(match: re.Match[str], arch: str) -> str:
     if normalize_arch_name(arch) == "aarch64":
-        return match.group(1).lower()
-    return match.group(0).lower()
+        raw = match.group(1).strip().lower()
+    else:
+        raw = match.group(0).strip().lower()
+    # Normalize "- 0xc" to "-0xc".
+    raw = re.sub(r"-\s+", "-", raw)
+    value = int(raw, 0)
+    return str(value)
 
 
 def _remaining_registers(text: str, arch: str) -> tuple[str, ...]:
@@ -585,6 +644,45 @@ def _labels_are_consistent(
         if guest_labels != host_labels:
             return False
     return True
+
+
+_IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
+
+_AARCH64_FRAME_REGS = frozenset({"sp", "wsp", "x29", "fp"})
+_X86_64_FRAME_REGS = frozenset({"rsp", "esp", "sp", "rbp", "ebp", "bp"})
+
+
+def _has_frame_relative_binding(candidate: VerificationCandidate) -> bool:
+    for binding in candidate.memory.bindings:
+        try:
+            guest_expr = parse_address_binding(binding.guest_addr)
+            host_expr = parse_address_binding(binding.host_addr)
+        except ValueError:
+            continue
+        if (
+            guest_expr.base in _AARCH64_FRAME_REGS
+            and host_expr.base in _X86_64_FRAME_REGS
+        ):
+            return True
+    return False
+
+
+def _host_immediates_are_derivable(
+    guest_lines: tuple[str, ...],
+    host_lines: tuple[str, ...],
+    candidate: VerificationCandidate,
+) -> bool:
+    if not candidate.memory.bindings:
+        return True
+    if not _has_frame_relative_binding(candidate):
+        return True
+    guest_imms = {
+        m.group(1) for line in guest_lines for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    host_imms = {
+        m.group(1) for line in host_lines for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    return host_imms <= guest_imms
 
 
 def _annotate_dead_writes(

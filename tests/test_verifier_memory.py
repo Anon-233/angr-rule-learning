@@ -336,3 +336,113 @@ def test_verifier_reports_unsupported_for_unparseable_address_expression() -> No
 
     assert report.status == "unsupported"
     assert "unsupported_address_expression" in report.unsupported_features
+
+
+AARCH64_STR_W0_SP12 = "e00f00b9"  # str w0, [sp, #12]
+X86_64_MOV_RBP_MINUS4_EDI = "897dfc"  # mov [rbp-4], edi
+AARCH64_STR_W0_SP12_STR_W1_SP8 = "e00f00b9e10b00b9"  # str w0,[sp,#12]; str w1,[sp,#8]
+X86_64_MOV_RBP_MINUS4_EDI_MOV_RBP_MINUS8_ESI = "897dfc8975f8"
+AARCH64_STR_W0_SP12_TWICE = "e00f00b9e00f00b9"
+X86_64_MOV_RBP_MINUS4_EDI_TWICE = "897dfc897dfc"
+
+
+def test_verifier_accepts_frame_relative_store_with_different_base_offsets() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="frame-store32",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_STR_W0_SP12, 1),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_RBP_MINUS4_EDI, 1),
+        input_registers=(("w0", "edi"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "sp + 12", "rbp - 4", "write"),),
+            accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass"
+
+
+def test_verifier_accepts_consistent_two_slot_frame_relative_stores() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="frame-two-store32",
+        guest=CodeFragment(
+            "aarch64",
+            0x10000,
+            AARCH64_STR_W0_SP12_TWICE,
+            2,
+        ),
+        host=CodeFragment(
+            "x86-64",
+            0x8048000,
+            X86_64_MOV_RBP_MINUS4_EDI_TWICE,
+            2,
+        ),
+        input_registers=(("w0", "edi"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4), MemorySlot("mem1", 4)),
+            bindings=(
+                MemoryBinding("mem0", "sp + 12", "rbp - 4", "write"),
+                MemoryBinding("mem1", "sp + 12", "rbp - 4", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 4),
+                MemoryAccessExpectation("mem1", "write", 4),
+            ),
+            alias=(AliasDeclaration(("mem0", "mem1"), "must_alias"),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass"
+
+
+def test_verifier_accepts_distinct_two_slot_frame_relative_stores() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="frame-two-distinct-store32",
+        guest=CodeFragment("aarch64", 0x10000, "e00f00b9e10b00b9", 2),
+        host=CodeFragment("x86-64", 0x8048000, "897dfc8975f8", 2),
+        input_registers=(("w0", "edi"), ("w1", "esi")),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4), MemorySlot("mem1", 4)),
+            bindings=(
+                MemoryBinding("mem0", "sp + 12", "rbp - 4", "write"),
+                MemoryBinding("mem1", "sp + 8", "rbp - 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 4),
+                MemoryAccessExpectation("mem1", "write", 4),
+            ),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass"
+
+
+def test_verifier_rejects_inconsistent_frame_relative_layout() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="frame-inconsistent-store32",
+        guest=CodeFragment("aarch64", 0x10000, AARCH64_STR_W0_SP12_TWICE, 2),
+        host=CodeFragment("x86-64", 0x8048000, X86_64_MOV_RBP_MINUS4_EDI_TWICE, 2),
+        input_registers=(("w0", "edi"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4), MemorySlot("mem1", 4)),
+            bindings=(
+                MemoryBinding("mem0", "sp + 12", "rbp - 4", "write"),
+                MemoryBinding("mem1", "sp + 12", "rbp - 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 4),
+                MemoryAccessExpectation("mem1", "write", 4),
+            ),
+            alias=(AliasDeclaration(("mem0", "mem1"), "must_alias"),),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status in {"fail", "unsupported"}

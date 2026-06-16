@@ -85,3 +85,14 @@ def test_known_register_tokens_include_subregisters_and_literals() -> None:
 
 def test_register_class_placeholder_prefix() -> None:
     assert RegisterClass("i", 32).placeholder_prefix == "i32"
+
+
+def test_frame_pointer_placeholder_names() -> None:
+    from angr_rule_learning.rules.registers import frame_pointer_placeholder
+
+    assert frame_pointer_placeholder("aarch64", "x29") == "fp64"
+    assert frame_pointer_placeholder("aarch64", "fp") == "fp64"
+    assert frame_pointer_placeholder("x86-64", "rbp") == "fp64"
+    assert frame_pointer_placeholder("x86-64", "ebp") == "fp32"
+    assert frame_pointer_placeholder("x86-64", "bp") == "fp16"
+    assert frame_pointer_placeholder("x86-64", "rax") is None

@@ -126,3 +126,135 @@ def test_generalizes_indexed_memory_keeps_scale_literals() -> None:
     assert rule.guest_lines == ("ldr i32_reg1, [i64_reg2, i64_reg3, lsl #2]",)
     assert rule.host_lines == ("mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*4]",)
     assert "addr64" not in "\n".join(rule.guest_lines + rule.host_lines)
+
+
+def test_generalizes_frame_relative_memory_registers_from_bindings() -> None:
+    window = _pair(
+        _inst("aarch64", 0x1000, "stur", "w0, [x29, #-4]"),
+        _inst("x86-64", 0x2000, "mov", "dword ptr [rbp - 4], eax"),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="frame-memory-store",
+        guest=CodeFragment("aarch64", 0x1000, "a8c31fb8", 1),
+        host=CodeFragment("x86-64", 0x2000, "8945fc", 1),
+        input_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x29 - 4", "rbp - 4", "write"),),
+            accesses=(MemoryAccessExpectation("mem0", "write", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="frame-memory-store",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None
+    assert rule.guest_lines == ("stur i32_reg1, [fp64, #-imm1]",)
+    assert rule.host_lines == ("mov dword ptr [fp64 - imm1], i32_reg1",)
+
+
+def test_negative_hex_immediate_shares_same_placeholder_and_leaves_no_residue() -> None:
+    window = _pair(
+        _inst("aarch64", 0x1000, "ldur", "w0, [x29, #-0xc]"),
+        _inst("x86-64", 0x2000, "mov", "eax, dword ptr [rbp - 0xc]"),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="frame-hex-load",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "05060708", 1),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x29 - 12", "rbp - 12", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="frame-hex-load",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None
+    guest_line = rule.guest_lines[0]
+    host_line = rule.host_lines[0]
+    # No "xc" residue from malformed hex match.
+    assert "xc" not in guest_line
+    assert "xc" not in host_line
+    # Guest has negative sign preserved.
+    assert "#-imm" in guest_line
+    # Both sides share the same immediate placeholder for the displacement.
+    assert "imm1" in guest_line
+    assert "imm1" in host_line
+    assert "fp64" in guest_line
+    assert "fp64" in host_line
+
+
+def test_skips_frame_rule_with_mismatched_displacement_immediates() -> None:
+    window = _pair(
+        _inst("aarch64", 0x1000, "ldur", "w0, [x29, #-4]"),
+        _inst("x86-64", 0x2000, "mov", "esi, dword ptr [rbp - 8]"),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="frame-mismatch-disp",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "05060708", 1),
+        output_registers=(("w0", "esi"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x29 - 4", "rbp - 8", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="frame-mismatch-disp",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics(collect_details=True)
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unpaired_host_immediate", 0) >= 1
+
+
+def test_still_generalizes_frame_rule_with_shared_displacement_immediate() -> None:
+    window = _pair(
+        _inst("aarch64", 0x1000, "ldur", "w0, [x29, #-4]"),
+        _inst("x86-64", 0x2000, "mov", "eax, dword ptr [rbp - 4]"),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="frame-shared-disp",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "05060708", 1),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x29 - 4", "rbp - 4", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="frame-shared-disp",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None
+    guest_line = rule.guest_lines[0]
+    host_line = rule.host_lines[0]
+    assert "imm1" in guest_line
+    assert "imm1" in host_line
+    assert "#-imm" in guest_line
