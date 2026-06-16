@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
+from angr_rule_learning.analysis.skip_patterns import SkipPatternAnalyzer
 from angr_rule_learning.extraction.config import (
     CompileOptions,
     ExtractionConfig,
@@ -41,6 +43,18 @@ def main(argv: list[str] | None = None) -> None:
     extract_parser.add_argument("--rules-diagnostics", type=Path)
     extract_parser.add_argument("--rules-debug-diagnostics", type=Path)
 
+    diagnose_parser = subparsers.add_parser(
+        "diagnose-skips",
+        help="analyze selected extraction skip patterns for one C source",
+    )
+    diagnose_parser.add_argument("source", type=Path)
+    diagnose_parser.add_argument("--work-dir", required=True, type=Path)
+    diagnose_parser.add_argument("--output", required=True, type=Path)
+    diagnose_parser.add_argument("--clang", default="clang")
+    diagnose_parser.add_argument("--optimization", default="0")
+    diagnose_parser.add_argument("--guest-max-window", type=int, default=2)
+    diagnose_parser.add_argument("--host-max-window", type=int, default=3)
+
     args = parser.parse_args(argv)
     if args.command == "verify":
         candidates = list(read_candidates(args.input))
@@ -78,4 +92,23 @@ def main(argv: list[str] | None = None) -> None:
             rules_output=args.rules_output,
             rules_diagnostics_output=args.rules_diagnostics,
             rules_debug_diagnostics_output=args.rules_debug_diagnostics,
+        )
+    elif args.command == "diagnose-skips":
+        config = ExtractionConfig(
+            source=args.source,
+            work_dir=args.work_dir,
+            compile_options=CompileOptions(
+                clang=args.clang,
+                optimization=args.optimization,
+            ),
+            window_limits=WindowLimits(
+                guest_max=args.guest_max_window,
+                host_max=args.host_max_window,
+            ),
+        )
+        payload = SkipPatternAnalyzer().analyze(config)
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
         )
