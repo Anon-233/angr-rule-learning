@@ -167,6 +167,138 @@ def test_does_not_treat_internally_defined_store_value_as_input() -> None:
     assert surface.input_registers == (("x9", "rdi"), ("w1", "esi"))
 
 
+def test_uses_most_recent_producer_when_value_register_rewritten() -> None:
+    """When the store value register is written multiple times,
+    the most recent writer before the store must be the producer,
+    not an earlier write whose value has been overwritten."""
+    surface = infer_memory_surface(
+        _pair(
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "mov",
+                    "w8, w0",
+                    reads=("w0",),
+                    writes=("w8",),
+                ),
+                _inst(
+                    "aarch64",
+                    0x1004,
+                    "add",
+                    "w8, w1, #1",
+                    reads=("w1",),
+                    writes=("w8",),
+                ),
+                _inst(
+                    "aarch64",
+                    0x1008,
+                    "str",
+                    "w8, [x9]",
+                    reads=("w8", "x9"),
+                    writes=(),
+                ),
+            ),
+            (
+                _inst(
+                    "x86-64",
+                    0x2000,
+                    "mov",
+                    "eax, edi",
+                    reads=("edi",),
+                    writes=("eax",),
+                ),
+                _inst(
+                    "x86-64",
+                    0x2003,
+                    "lea",
+                    "eax, [esi + 1]",
+                    reads=("esi",),
+                    writes=("eax",),
+                ),
+                _inst(
+                    "x86-64",
+                    0x2006,
+                    "mov",
+                    "dword ptr [rdx], eax",
+                    reads=("rdx", "eax"),
+                    writes=(),
+                ),
+            ),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert surface.input_registers == (("x9", "rdx"), ("w1", "esi"))
+
+
+def test_chained_producer_collects_ultimate_external_sources() -> None:
+    """When a producer's read register is itself internally defined,
+    the chain must be traced back to collect the ultimate external sources."""
+    surface = infer_memory_surface(
+        _pair(
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "mov",
+                    "w2, w0",
+                    reads=("w0",),
+                    writes=("w2",),
+                ),
+                _inst(
+                    "aarch64",
+                    0x1004,
+                    "add",
+                    "w8, w2, #1",
+                    reads=("w2",),
+                    writes=("w8",),
+                ),
+                _inst(
+                    "aarch64",
+                    0x1008,
+                    "str",
+                    "w8, [x9]",
+                    reads=("w8", "x9"),
+                    writes=(),
+                ),
+            ),
+            (
+                _inst(
+                    "x86-64",
+                    0x2000,
+                    "mov",
+                    "esi, edi",
+                    reads=("edi",),
+                    writes=("esi",),
+                ),
+                _inst(
+                    "x86-64",
+                    0x2003,
+                    "lea",
+                    "eax, [esi + 1]",
+                    reads=("esi",),
+                    writes=("eax",),
+                ),
+                _inst(
+                    "x86-64",
+                    0x2006,
+                    "mov",
+                    "dword ptr [rdx], eax",
+                    reads=("rdx", "eax"),
+                    writes=(),
+                ),
+            ),
+        )
+    )
+
+    assert surface.skip_reason is None
+    # w2 is defined by mov w2, w0 (reads w0 external)
+    # esi is defined by mov esi, edi (reads edi external)
+    # Ultimate external sources: w0 and edi
+    assert surface.input_registers == (("x9", "rdx"), ("w0", "edi"))
+
+
 def test_rejects_memory_kind_or_width_mismatch() -> None:
     kind = infer_memory_surface(
         _pair(

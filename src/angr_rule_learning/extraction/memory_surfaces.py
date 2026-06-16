@@ -164,14 +164,28 @@ def _find_value_producer(
         target.instruction.arch,
         target.operand.value_register,
     )
-    for instruction in window.instructions:
-        if instruction is target.instruction:
-            return None
+    return _find_most_recent_writer(window, value_family, target.instruction)
+
+
+def _find_most_recent_writer(
+    window: InstructionWindow,
+    reg_family: str,
+    before: ExtractedInstruction,
+) -> ExtractedInstruction | None:
+    """Return the instruction that most recently wrote to *reg_family*,
+    scanning backward from (but not including) *before*."""
+    found = False
+    for instruction in reversed(window.instructions):
+        if instruction is before:
+            found = True
+            continue
+        if not found:
+            continue
         written = {
             family_for_register(instruction.arch, register)
             for register in instruction.write_registers
         }
-        if value_family in written:
+        if reg_family in written:
             return instruction
     return None
 
@@ -180,25 +194,43 @@ def _producer_external_sources(
     window: InstructionWindow,
     target: _CollectedMemoryOperand,
 ) -> list[str]:
-    """Return the read registers of the value producer that are externally
-    sourced (not defined by any prior instruction in the window)."""
+    """Return the ultimate external read registers feeding the store value,
+    tracing through a chain of internally-defined value producers.
+
+    Returns an empty list if the value has no producer.  Callers must pair
+    guest and host source lists; if lengths differ the call site returns
+    ``unsupported_memory_surface``.
+    """
     producer = _find_value_producer(window, target)
     if producer is None:
         return []
+
+    # Guard recursion depth for safety (arbitrary but prevents bugs from
+    # hanging in a pathological cycle — cycles shouldn't happen in
+    # straight-line code but this is a belt-and-suspenders check).
+    return _collect_external_sources(window, producer, depth=0, max_depth=8)
+
+
+def _collect_external_sources(
+    window: InstructionWindow,
+    producer: ExtractedInstruction,
+    *,
+    depth: int,
+    max_depth: int,
+) -> list[str]:
+    if depth > max_depth:
+        return []  # safety valve
+
     external: list[str] = []
     for read_reg in producer.read_registers:
         family = family_for_register(producer.arch, read_reg)
-        defined_before = False
-        for instruction in window.instructions:
-            if instruction is producer:
-                break
-            if family in {
-                family_for_register(instruction.arch, reg)
-                for reg in instruction.write_registers
-            }:
-                defined_before = True
-                break
-        if not defined_before:
+        inner = _find_most_recent_writer(window, family, producer)
+        if inner is not None:
+            inner_sources = _collect_external_sources(
+                window, inner, depth=depth + 1, max_depth=max_depth
+            )
+            external.extend(inner_sources)
+        else:
             external.append(read_reg)
     return external
 
