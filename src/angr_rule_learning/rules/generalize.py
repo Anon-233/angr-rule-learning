@@ -256,8 +256,10 @@ def _build_placeholder_map(
 
         guest_sp = stack_pointer_placeholder(guest_arch, guest_reg)
         host_sp = stack_pointer_placeholder(host_arch, host_reg)
-        if guest_sp is not None or host_sp is not None:
-            if guest_sp is None or host_sp is None or guest_sp != host_sp:
+
+        # Both sides are stack pointers with matching width.
+        if guest_sp is not None and host_sp is not None:
+            if guest_sp != host_sp:
                 raise _RuleSkip("register_class_mismatch")
             guest_existing = mapping.get(guest_reg)
             host_existing = mapping.get(host_reg)
@@ -271,8 +273,43 @@ def _build_placeholder_map(
             mapping[host_reg] = existing
             continue
 
+        # If only one side is a stack pointer, check frame-pointer routing.
         guest_fp = frame_pointer_placeholder(guest_arch, guest_reg)
         host_fp = frame_pointer_placeholder(host_arch, host_reg)
+
+        if guest_sp is not None:
+            # Guest is SP; host must be a matching frame pointer.
+            if host_fp is None:
+                raise _RuleSkip("register_class_mismatch")
+            placeholder = host_fp
+            guest_existing = mapping.get(guest_reg)
+            host_existing = mapping.get(host_reg)
+            existing = guest_existing or host_existing or placeholder
+            if guest_existing not in (None, existing) or host_existing not in (
+                None,
+                existing,
+            ):
+                raise _RuleSkip("unsupported_rule_shape")
+            mapping[guest_reg] = existing
+            mapping[host_reg] = existing
+            continue
+        elif host_sp is not None:
+            # Host is SP; guest must be a matching frame pointer.
+            if guest_fp is None:
+                raise _RuleSkip("register_class_mismatch")
+            placeholder = guest_fp
+            guest_existing = mapping.get(guest_reg)
+            host_existing = mapping.get(host_reg)
+            existing = guest_existing or host_existing or placeholder
+            if guest_existing not in (None, existing) or host_existing not in (
+                None,
+                existing,
+            ):
+                raise _RuleSkip("unsupported_rule_shape")
+            mapping[guest_reg] = existing
+            mapping[host_reg] = existing
+            continue
+
         if guest_fp is not None or host_fp is not None:
             if guest_fp is None or host_fp is None or guest_fp != host_fp:
                 raise _RuleSkip("register_class_mismatch")
