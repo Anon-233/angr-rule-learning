@@ -23,7 +23,7 @@ from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
 
 if TYPE_CHECKING:
-    from angr_rule_learning.rules.ast import Rule as AstRule
+    from angr_rule_learning.rules.ast import Instruction, Operand, Rule as AstRule
 
 
 _TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)(?![A-Za-z0-9_])")
@@ -134,14 +134,14 @@ class _RuleSkip(ValueError):
 def _build_skip_detail(
     candidate: VerificationCandidate,
     reason: str,
-    guest_lines: tuple[str, ...],
-    host_lines: tuple[str, ...],
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
 ) -> RuleSkipDetail:
     return RuleSkipDetail(
         candidate_id=candidate.candidate_id,
         reason=reason,
-        guest_lines=guest_lines,
-        host_lines=host_lines,
+        guest_lines=tuple(i.to_text() for i in guest_insts),
+        host_lines=tuple(i.to_text() for i in host_insts),
         input_registers=candidate.input_registers,
         output_registers=candidate.output_registers,
         memory_bindings=tuple(
@@ -159,18 +159,20 @@ def _build_skip_detail(
 class RuleGeneralizer:
     def __init__(self, diagnostics: RuleDiagnostics | None = None) -> None:
         self.diagnostics = diagnostics or RuleDiagnostics()
-        self._emitted_keys: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        self._emitted_keys: list[
+            tuple[tuple[Instruction, ...], tuple[Instruction, ...]]
+        ] = []
 
     def _record_skip(
         self,
         candidate: VerificationCandidate,
         reason: str,
-        guest_lines: tuple[str, ...],
-        host_lines: tuple[str, ...],
+        guest_insts: tuple[Instruction, ...],
+        host_insts: tuple[Instruction, ...],
     ) -> None:
         detail = None
         if self.diagnostics.collect_details:
-            detail = _build_skip_detail(candidate, reason, guest_lines, host_lines)
+            detail = _build_skip_detail(candidate, reason, guest_insts, host_insts)
         self.diagnostics.record_skipped(reason, detail)
 
     def generate(
@@ -185,8 +187,8 @@ class RuleGeneralizer:
         if report.status != "pass" or not report.equivalent:
             return None
 
-        guest_raw_lines = _instruction_lines(window.guest.instructions)
-        host_raw_lines = _instruction_lines(window.host.instructions)
+        guest_raw_insts = _instructions_to_ast(window.guest.instructions)
+        host_raw_insts = _instructions_to_ast(window.host.instructions)
 
         self.diagnostics.record_considered()
         try:
@@ -197,29 +199,34 @@ class RuleGeneralizer:
             )
             internal_temps = _identify_internal_temps(window, candidate)
             mapping.update(internal_temps)
-            guest_lines = _generalize_lines_with_roles(
-                guest_raw_lines,
+            guest_insts = _instructions_to_ast(window.guest.instructions)
+            host_insts = _instructions_to_ast(window.host.instructions)
+            guest_insts = _generalize_instructions_with_roles(
+                guest_insts,
                 window.guest.instructions,
                 mapping,
                 role_split,
                 guest_arch,
             )
-            host_lines = _generalize_lines_with_roles(
-                host_raw_lines,
+            host_insts = _generalize_instructions_with_roles(
+                host_insts,
                 window.host.instructions,
                 mapping,
                 role_split,
                 host_arch,
             )
-            guest_lines, host_lines = _annotate_dead_writes(
-                guest_lines,
-                host_lines,
+            # Annotate dead writes via MetaOp on AST, then convert to text
+            guest_insts, host_insts = _annotate_dead_writes(
+                guest_insts,
+                host_insts,
                 candidate,
                 window,
                 mapping,
                 guest_arch,
                 host_arch,
             )
+            guest_lines = tuple(i.to_text() for i in guest_insts)
+            host_lines = tuple(i.to_text() for i in host_insts)
             region_guest = (
                 region.guest_instructions
                 if region is not None
@@ -238,28 +245,51 @@ class RuleGeneralizer:
                 region_guest,
                 region_host,
             )
-            if not _labels_are_consistent(guest_lines, host_lines):
-                raise _RuleSkip("mismatched_branch_targets")
+            _check_label_consistency(guest_lines, host_lines)
             guest_lines, host_lines = _replace_immediates_shared(
                 guest_lines, guest_arch, host_lines, host_arch
             )
             if not _host_immediates_are_derivable(guest_lines, host_lines, candidate):
                 raise _RuleSkip("unpaired_host_immediate")
         except _RuleSkip as exc:
-            self._record_skip(candidate, exc.reason, guest_raw_lines, host_raw_lines)
+            self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
             return None
 
-        key = (guest_lines, host_lines)
-        if key in self._emitted_keys:
-            self._record_skip(candidate, "duplicate_rule", guest_lines, host_lines)
-            return None
-        self._emitted_keys.add(key)
+        # Parse final text to AST for structural comparison and rule building
+        from angr_rule_learning.rules.ast import (
+            Instruction as AstInstruction,
+            Rule as AstRule,
+            _insts_equal,
+        )
 
-        rule = GeneratedRule.from_text_lines(
+        guest_final_insts = tuple(
+            AstInstruction.from_text(line) for line in guest_lines
+        )
+        host_final_insts = tuple(AstInstruction.from_text(line) for line in host_lines)
+
+        # AST structural dedup
+        for existing_guest, existing_host in self._emitted_keys:
+            if _insts_equal(existing_guest, guest_final_insts) and _insts_equal(
+                existing_host, host_final_insts
+            ):
+                self._record_skip(
+                    candidate,
+                    "duplicate_rule",
+                    guest_final_insts,
+                    host_final_insts,
+                )
+                return None
+        self._emitted_keys.append((guest_final_insts, host_final_insts))
+
+        rule = GeneratedRule(
             rule_id=rule_id,
             candidate_id=candidate.candidate_id,
-            guest_lines=guest_lines,
-            host_lines=host_lines,
+            rule=AstRule(
+                rule_id=rule_id,
+                candidate_id=candidate.candidate_id,
+                guest=guest_final_insts,
+                host=host_final_insts,
+            ),
         )
         self.diagnostics.record_emitted()
         return rule
@@ -456,40 +486,12 @@ def _classify_for_rule(arch: str, register: str) -> RegisterClass:
         raise _RuleSkip("unknown_register_class") from exc
 
 
-def _generalize_instructions(
-    instructions: tuple[ExtractedInstruction, ...],
-    mapping: dict[str, str],
-    arch: str,
-) -> tuple[str, ...]:
-    texts = tuple(_instruction_text(inst) for inst in instructions)
-    reg_lines = tuple(_generalize_line(text, mapping, arch) for text in texts)
-    if not reg_lines:
-        raise _RuleSkip("unsupported_rule_shape")
-    return reg_lines
-
-
 def _instruction_text(instruction: ExtractedInstruction) -> str:
     op_str = instruction.op_str.strip()
     mnemonic = instruction.mnemonic.strip()
     if op_str:
         return f"{mnemonic} {op_str}"
     return mnemonic
-
-
-def _generalize_line(text: str, mapping: dict[str, str], arch: str) -> str:
-    rewritten = text
-    for register, replacement in sorted(
-        mapping.items(), key=lambda item: len(item[0]), reverse=True
-    ):
-        rewritten = re.sub(
-            rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
-            replacement,
-            rewritten,
-            flags=re.IGNORECASE,
-        )
-    if _remaining_registers(rewritten, arch):
-        raise _RuleSkip("unmapped_register_surface")
-    return rewritten
 
 
 _AARCH64_IMM_RE = re.compile(r"#(-?0x[0-9a-fA-F]+|-?\d+)")
@@ -523,6 +525,87 @@ def normalize_arch_name(arch: str) -> str:
     if normalized == "arm64":
         return "aarch64"
     return normalized
+
+
+def _is_branch_instruction(inst: Instruction, arch: str) -> bool:
+    """Check if an Instruction is a branch (b, bl, cbz, tbz, jmp, call, je, ...)."""
+    mnemonic = inst.mnemonic.strip().lower()
+    arch_n = normalize_arch_name(arch)
+    if arch_n == "aarch64":
+        if mnemonic in _AARCH64_BRANCH_MNEMONICS:
+            return True
+        return mnemonic.startswith("b.")
+    if arch_n == "x86-64":
+        if mnemonic in _X86_64_BRANCH_MNEMONICS:
+            return True
+        return mnemonic.startswith("j") and mnemonic != "jmp"
+    return False
+
+
+def _find_hex_operand(inst: Instruction, arch: str) -> tuple[int, str] | None:
+    """Find the first operand containing a hex branch target. Returns (index, hex_string) or None."""
+    from angr_rule_learning.rules.ast import LitOp
+
+    arch_n = normalize_arch_name(arch)
+    hex_pattern = (
+        r"#?(0x[0-9a-fA-F]+)" if arch_n == "aarch64" else r"\b(0x[0-9a-fA-F]+)\b"
+    )
+    for i, op in enumerate(inst.operands):
+        if isinstance(op, LitOp):
+            m = re.search(hex_pattern, op.value)
+            if m:
+                return i, m.group(1)
+    return None
+
+
+def _replace_labels_ast(
+    insts: tuple[Instruction, ...],
+    arch: str,
+    label_ids: list[int],
+) -> tuple[Instruction, ...]:
+    """Replace hex branch targets in AST instructions with LabelOp placeholders."""
+    from angr_rule_learning.rules.ast import LabelOp
+
+    result: list[Instruction] = []
+    idx = 0
+    is_aarch64 = normalize_arch_name(arch) == "aarch64"
+    for inst in insts:
+        if not _is_branch_instruction(inst, arch):
+            result.append(inst)
+            continue
+        hex_info = _find_hex_operand(inst, arch)
+        if hex_info is not None and idx < len(label_ids):
+            op_idx, _hex_val = hex_info
+            new_ops = list(inst.operands)
+            new_ops[op_idx] = LabelOp(id=label_ids[idx], aarch64_hash=is_aarch64)
+            inst = Instruction(
+                mnemonic=inst.mnemonic, operands=tuple(new_ops), meta=inst.meta
+            )
+            idx += 1
+        result.append(inst)
+    return tuple(result)
+
+
+def _labels_are_consistent_ast(
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
+) -> bool:
+    """Check that guest and host use the same set of label IDs."""
+    from angr_rule_learning.rules.ast import LabelOp
+
+    def _collect(insts: tuple[Instruction, ...]) -> set[str]:
+        return {
+            str(op.id)
+            for inst in insts
+            for op in inst.operands
+            if isinstance(op, LabelOp)
+        }
+
+    guest_labels = _collect(guest_insts)
+    host_labels = _collect(host_insts)
+    if guest_labels or host_labels:
+        return guest_labels == host_labels
+    return True
 
 
 def _is_branch_line(line: str, arch: str) -> bool:
@@ -878,17 +961,6 @@ def _imm_canonical(match: re.Match[str], arch: str) -> str:
     return str(value)
 
 
-def _remaining_registers(text: str, arch: str) -> tuple[str, ...]:
-    known = known_register_tokens(arch)
-    remaining = []
-    for token in _TOKEN_RE.findall(text.lower()):
-        if is_allowed_literal_register(arch, token):
-            continue
-        if token in known:
-            remaining.append(token)
-    return tuple(remaining)
-
-
 def _placeholder_clash(
     mapping: dict[str, str], register: str, placeholder: str
 ) -> bool:
@@ -915,6 +987,24 @@ def _labels_are_consistent(
     return True
 
 
+def _check_label_consistency(
+    guest_lines: tuple[str, ...],
+    host_lines: tuple[str, ...],
+) -> None:
+    """Check label consistency, preferring AST-based comparison."""
+    from angr_rule_learning.rules.ast import Instruction as AstInstruction
+
+    try:
+        guest_insts = tuple(AstInstruction.from_text(line) for line in guest_lines)
+        host_insts = tuple(AstInstruction.from_text(line) for line in host_lines)
+        if not _labels_are_consistent_ast(guest_insts, host_insts):
+            raise _RuleSkip("mismatched_branch_targets")
+    except Exception:
+        # Fall back to text-based check
+        if not _labels_are_consistent(guest_lines, host_lines):
+            raise _RuleSkip("mismatched_branch_targets")
+
+
 _IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 
 _AARCH64_FRAME_REGS = frozenset({"sp", "wsp", "x29", "fp"})
@@ -936,6 +1026,25 @@ def _has_frame_relative_binding(candidate: VerificationCandidate) -> bool:
     return False
 
 
+def _collect_immediates_ast(insts: tuple[Instruction, ...]) -> set[str]:
+    """Collect immN IDs from AST instructions.
+
+    Checks both typed ImmOp operands and LitOp/RegTextOp values that may
+    contain embedded ``immN`` placeholders (e.g. ``dword ptr [fp64 - imm2]``).
+    """
+    from angr_rule_learning.rules.ast import ImmOp, LitOp, RegTextOp
+
+    ids: set[str] = set()
+    for inst in insts:
+        for op in inst.operands:
+            if isinstance(op, ImmOp) and op.id != 0:
+                ids.add(str(op.id))
+            elif isinstance(op, (LitOp, RegTextOp)):
+                for m in _IMM_PLACEHOLDER_RE.finditer(op.to_text()):
+                    ids.add(m.group(1))
+    return ids
+
+
 def _host_immediates_are_derivable(
     guest_lines: tuple[str, ...],
     host_lines: tuple[str, ...],
@@ -945,12 +1054,13 @@ def _host_immediates_are_derivable(
         return True
     if not _has_frame_relative_binding(candidate):
         return True
-    guest_imms = {
-        m.group(1) for line in guest_lines for m in _IMM_PLACEHOLDER_RE.finditer(line)
-    }
-    host_imms = {
-        m.group(1) for line in host_lines for m in _IMM_PLACEHOLDER_RE.finditer(line)
-    }
+    # Use AST-based collection for reliability
+    from angr_rule_learning.rules.ast import Instruction as AstInstruction
+
+    guest_insts = tuple(AstInstruction.from_text(line) for line in guest_lines)
+    host_insts = tuple(AstInstruction.from_text(line) for line in host_lines)
+    guest_imms = _collect_immediates_ast(guest_insts)
+    host_imms = _collect_immediates_ast(host_insts)
     return host_imms <= guest_imms
 
 
@@ -994,14 +1104,14 @@ def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
 
 
 def _annotate_dead_writes(
-    guest_lines: tuple[str, ...],
-    host_lines: tuple[str, ...],
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
     candidate: VerificationCandidate,
     window: WindowPair,
     mapping: dict[str, str],
     guest_arch: str,
     host_arch: str,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[Instruction, ...], tuple[Instruction, ...]]:
     output_regs = {reg for pair in candidate.output_registers for reg in pair}
     cc_families = {"nzcv", "rflags"}
 
@@ -1026,69 +1136,131 @@ def _annotate_dead_writes(
                     last_read[reg] = idx
         return first_write, last_read
 
+    def _text_to_regop(placeholder: str) -> Operand:
+        from angr_rule_learning.rules.ast import RegOp, TmpOp
+
+        m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
+        if m:
+            bits = int(m.group(1)[1:])
+            return RegOp(prefix=m.group(1), bits=bits, id=int(m.group(2)))
+        m = re.fullmatch(r"(sp|fp)(\d+)", placeholder)
+        if m:
+            return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
+        m = re.fullmatch(r"tmp(\d+)", placeholder)
+        if m:
+            return TmpOp(id=int(m.group(1)))
+        raise ValueError(f"unknown placeholder format: {placeholder!r}")
+
     def _apply(
-        lines: tuple[str, ...],
+        insts: tuple[Instruction, ...],
         instructions: tuple[ExtractedInstruction, ...],
-    ) -> tuple[str, ...]:
+    ) -> tuple[Instruction, ...]:
+        from angr_rule_learning.rules.ast import Instruction as AstInstruction, MetaOp
+
         first_write, last_read = _dead_write_info(instructions)
         if not first_write:
-            return lines
-        result: list[str] = []
-        save_regs = [
-            mapping.get(r, r)
+            return insts
+        save_reg_ops = tuple(
+            _text_to_regop(mapping.get(r, r))
             for r, idx in sorted(first_write.items(), key=lambda x: x[1])
-        ]
-        result.append(f"save {', '.join(save_regs)}")
-        for idx, line in enumerate(lines):
-            result.append(line)
-            restore_now = [
-                mapping.get(r, r)
+        )
+        result: list[Instruction] = []
+        first_inst = AstInstruction(
+            mnemonic=insts[0].mnemonic,
+            operands=insts[0].operands,
+            meta=(MetaOp(kind="save", regs=save_reg_ops),),
+        )
+        result.append(first_inst)
+        for idx, inst in enumerate(insts[1:], start=1):
+            restore_now = tuple(
+                _text_to_regop(mapping.get(r, r))
                 for r, last_idx in last_read.items()
                 if last_idx == idx
-            ]
+            )
             if restore_now:
-                result.append(f"restore {', '.join(restore_now)}")
+                inst = AstInstruction(
+                    mnemonic=inst.mnemonic,
+                    operands=inst.operands,
+                    meta=inst.meta + (MetaOp(kind="restore", regs=restore_now),),
+                )
+            result.append(inst)
         return tuple(result)
 
     return (
-        _apply(guest_lines, window.guest.instructions),
-        _apply(host_lines, window.host.instructions),
+        _apply(guest_insts, window.guest.instructions),
+        _apply(host_insts, window.host.instructions),
     )
 
 
-def _instruction_lines(
+def _instructions_to_ast(
     instructions: tuple[ExtractedInstruction, ...],
-) -> tuple[str, ...]:
-    return tuple(_instruction_text(inst) for inst in instructions)
+) -> tuple[Instruction, ...]:
+    from angr_rule_learning.rules.ast import Instruction as AstInstruction
+
+    return tuple(
+        AstInstruction.from_text(_instruction_text(inst)) for inst in instructions
+    )
 
 
-def _generalize_lines(
-    lines: tuple[str, ...],
-    mapping: dict[str, str],
-    arch: str,
-) -> tuple[str, ...]:
-    generalized = tuple(_generalize_line(line, mapping, arch) for line in lines)
-    if not generalized:
-        raise _RuleSkip("unsupported_rule_shape")
-    return generalized
+def _parse_placeholder(placeholder: str):
+    """Parse a placeholder string into its AST operand type.
+
+    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp, and ``tmp1`` → TmpOp.
+    """
+    from angr_rule_learning.rules.ast import RegOp, TmpOp
+
+    m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
+    if m:
+        bits = int(m.group(1)[1:])
+        return RegOp(prefix=m.group(1), bits=bits, id=int(m.group(2)))
+    m = re.fullmatch(r"(sp|fp)(\d+)", placeholder)
+    if m:
+        return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
+    m = re.fullmatch(r"tmp(\d+)", placeholder)
+    if m:
+        return TmpOp(id=int(m.group(1)))
+    raise ValueError(f"unknown placeholder format: {placeholder!r}")
 
 
-def _generalize_lines_with_roles(
-    lines: tuple[str, ...],
-    instructions: tuple[ExtractedInstruction, ...],
+def _generalize_instructions_with_roles(
+    insts: tuple[Instruction, ...],
+    extracted: tuple[ExtractedInstruction, ...],
     mapping: dict[str, str],
     role_split: dict[str, tuple[str, str]],
     arch: str,
-) -> tuple[str, ...]:
-    result: list[str] = []
-    for line, inst in zip(lines, instructions, strict=True):
-        rewritten = line
-        for reg in sorted(role_split, key=lambda r: len(r), reverse=True):
-            out_ph, in_ph = role_split[reg]
-            is_written = bool(inst.write_registers and reg in inst.write_registers)
-            is_read = bool(inst.read_registers and reg in inst.read_registers)
+) -> tuple[Instruction, ...]:
+    """Replace physical register operands in AST instructions with typed placeholders.
+
+    Applies text-level regex replacement within LitOp/RegTextOp operand values,
+    so that registers embedded in compound operands (``[rcx]``, ``[edi + esi]``)
+    are correctly replaced.  Where an entire operand becomes a single register
+    placeholder, the operand is replaced with a typed AST node (RegOp or TmpOp).
+
+    Step 1: Handle role-split registers.
+    Step 2: Replace remaining physical registers via *mapping*.
+    Step 3: Validate no physical registers remain.
+    """
+    from angr_rule_learning.rules.ast import (
+        Instruction as AstInstruction,
+        LitOp,
+        RegTextOp,
+    )
+
+    result: list[AstInstruction] = []
+
+    for inst, ext in zip(insts, extracted, strict=True):
+        # Work on a text copy so we can detect whether an operand became
+        # a pure placeholder after all replacements are applied.
+        inst_text = inst.to_text()
+        rewritten = inst_text
+
+        # Step 1: Handle role-split registers first (text-level).
+        for register in sorted(role_split, key=lambda r: len(r), reverse=True):
+            out_ph, in_ph = role_split[register]
+            is_written = bool(ext.write_registers and register in ext.write_registers)
+            is_read = bool(ext.read_registers and register in ext.read_registers)
+
             if is_written and is_read:
-                # First occurrence is the write (dest) operand.
                 occurrence = [0]
 
                 def _repl(match: re.Match[str]) -> str:
@@ -1096,27 +1268,26 @@ def _generalize_lines_with_roles(
                     return out_ph if occurrence[0] == 1 else in_ph
 
                 rewritten = re.sub(
-                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
                     _repl,
                     rewritten,
                     flags=re.IGNORECASE,
                 )
             elif is_written:
                 rewritten = re.sub(
-                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
                     out_ph,
                     rewritten,
                     flags=re.IGNORECASE,
                 )
             elif is_read:
                 rewritten = re.sub(
-                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
                     in_ph,
                     rewritten,
                     flags=re.IGNORECASE,
                 )
             else:
-                # No role info available — treat first occurrence as write.
                 occurrence = [0]
 
                 def _repl_noinfo(match: re.Match[str]) -> str:
@@ -1124,19 +1295,66 @@ def _generalize_lines_with_roles(
                     return out_ph if occurrence[0] == 1 else in_ph
 
                 rewritten = re.sub(
-                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
                     _repl_noinfo,
                     rewritten,
                     flags=re.IGNORECASE,
                 )
-        # Apply remaining (non-split) placeholders.
-        rewritten = _generalize_line(rewritten, mapping, arch)
-        if _remaining_registers(rewritten, arch):
-            raise _RuleSkip("unmapped_register_surface")
-        result.append(rewritten)
-    if not result:
-        raise _RuleSkip("unsupported_rule_shape")
+
+        # Step 2: Handle regular mapping (text-level).
+        for register in sorted(mapping, key=lambda r: len(r), reverse=True):
+            placeholder = mapping[register]
+            rewritten = re.sub(
+                rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
+                placeholder,
+                rewritten,
+                flags=re.IGNORECASE,
+            )
+
+        # Re-parse the rewritten text into an Instruction, then upgrade
+        # any LitOp/RegTextOp that is now a pure placeholder into its
+        # typed AST node.
+        parsed = AstInstruction.from_text(rewritten)
+        new_operands: list = []
+        for op in parsed.operands:
+            if isinstance(op, (LitOp, RegTextOp)):
+                text = op.to_text()
+                try:
+                    new_operands.append(_parse_placeholder(text))
+                except ValueError:
+                    new_operands.append(op)
+            else:
+                new_operands.append(op)
+
+        result.append(
+            AstInstruction(mnemonic=parsed.mnemonic, operands=tuple(new_operands))
+        )
+
+    # Step 3: Validate.
+    _validate_no_remaining_registers(tuple(result), arch)
+
     return tuple(result)
+
+
+def _validate_no_remaining_registers(
+    insts: tuple[Instruction, ...],
+    arch: str,
+) -> None:
+    from angr_rule_learning.rules.ast import LitOp, RegTextOp
+
+    known = known_register_tokens(arch)
+    for inst in insts:
+        for op in inst.operands:
+            if isinstance(op, (LitOp, RegTextOp)):
+                text = normalize_register_name(op.to_text())
+                if text in known and not is_allowed_literal_register(arch, text):
+                    raise _RuleSkip("unmapped_register_surface")
+
+
+def _instruction_lines(
+    instructions: tuple[ExtractedInstruction, ...],
+) -> tuple[str, ...]:
+    return tuple(_instruction_text(inst) for inst in instructions)
 
 
 def _identify_internal_temps(

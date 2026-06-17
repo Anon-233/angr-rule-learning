@@ -119,9 +119,14 @@ class Instruction:
 
     def to_text(self) -> str:
         if not self.operands:
-            return self.mnemonic
-        ops = ", ".join(op.to_text() for op in self.operands)
-        return f"{self.mnemonic} {ops}"
+            line = self.mnemonic
+        else:
+            ops = ", ".join(op.to_text() for op in self.operands)
+            line = f"{self.mnemonic} {ops}"
+        if self.meta:
+            meta_lines = [m.to_text() for m in self.meta]
+            return "\n".join([*meta_lines, line])
+        return line
 
     @classmethod
     def from_text(cls, line: str) -> "Instruction":
@@ -226,14 +231,12 @@ class Rule:
     def to_text(self) -> str:
         lines = [f"{self.rule_id}.Guest:"]
         for inst in self.guest:
-            for meta in inst.meta:
-                lines.append(f"\t{meta.to_text()}")
-            lines.append(f"\t{inst.to_text()}")
+            for line in inst.to_text().split("\n"):
+                lines.append(f"\t{line}")
         lines.append(".Host:")
         for inst in self.host:
-            for meta in inst.meta:
-                lines.append(f"\t{meta.to_text()}")
-            lines.append(f"\t{inst.to_text()}")
+            for line in inst.to_text().split("\n"):
+                lines.append(f"\t{line}")
         lines.append("")  # trailing blank separator
         return "\n".join(lines) + "\n"
 

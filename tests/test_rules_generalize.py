@@ -4,11 +4,22 @@ from angr_rule_learning.extraction.models import (
     SourceLocation,
     WindowPair,
 )
-from angr_rule_learning.rules.ast import ImmOp
+from angr_rule_learning.rules.ast import (
+    ImmOp,
+    Instruction,
+    LitOp,
+    MetaOp,
+    RegOp,
+    RegTextOp,
+)
 from angr_rule_learning.rules.generalize import (
     GeneratedRule,
     RuleDiagnostics,
     RuleGeneralizer,
+    _RuleSkip,
+    _generalize_instructions_with_roles,
+    _instructions_to_ast,
+    _validate_no_remaining_registers,
     consolidate_rules,
 )
 from angr_rule_learning.verification.candidate import (
@@ -30,6 +41,8 @@ def _inst(
     mnemonic: str,
     op_str: str,
     code_hex: str = "01020304",
+    write_registers: tuple[str, ...] = (),
+    read_registers: tuple[str, ...] = (),
 ) -> ExtractedInstruction:
     code = bytes.fromhex(code_hex)
     return ExtractedInstruction(
@@ -41,6 +54,8 @@ def _inst(
         op_str=op_str,
         function="sample",
         source=SourceLocation("sample.c", 1),
+        write_registers=write_registers,
+        read_registers=read_registers,
     )
 
 
@@ -552,3 +567,87 @@ def test_consolidate_removes_literal_rule_subsumed_by_param_rule() -> None:
     result = consolidate_rules([literal_rule, param_rule])
 
     assert result == [param_rule]
+
+
+def test_instructions_to_ast_produces_correct_operands() -> None:
+    inst = _inst("aarch64", 0x1000, "ldr", "w0, [x1]")
+    result = _instructions_to_ast((inst,))
+
+    assert len(result) == 1
+    parsed = result[0]
+    assert isinstance(parsed, Instruction)
+    assert parsed.mnemonic == "ldr"
+    assert len(parsed.operands) == 2
+    assert isinstance(parsed.operands[0], LitOp)
+    assert parsed.operands[0].value == "w0"
+    assert isinstance(parsed.operands[1], LitOp)
+    assert parsed.operands[1].value == "[x1]"
+
+
+def test_validate_remaining_registers_raises() -> None:
+    inst = Instruction(mnemonic="mov", operands=(RegTextOp("x0"), RegTextOp("x1")))
+    try:
+        _validate_no_remaining_registers((inst,), "aarch64")
+    except _RuleSkip as exc:
+        assert exc.reason == "unmapped_register_surface"
+    else:
+        raise AssertionError("Expected _RuleSkip was not raised")
+
+
+def test_generalize_ast_replaces_registers() -> None:
+    """AST generalization replaces LitOp operands with RegOp placeholders."""
+    inst = Instruction(mnemonic="add", operands=(LitOp("w8"), LitOp("w0"), LitOp("w1")))
+    mapping = {"w8": "i32_reg1", "w0": "i32_reg2", "w1": "i32_reg3"}
+    extracted = (_inst("aarch64", 0x1000, "add", "w8, w0, w1"),)
+    result = _generalize_instructions_with_roles(
+        (inst,), extracted, mapping, {}, "aarch64"
+    )
+    assert len(result) == 1
+    ops = result[0].operands
+    assert ops == (RegOp("i32", 32, 1), RegOp("i32", 32, 2), RegOp("i32", 32, 3))
+
+
+def test_generalize_ast_role_split() -> None:
+    """AST generalization applies role_split so write/read of same reg get
+    different placeholders."""
+    inst = Instruction(mnemonic="sub", operands=(LitOp("w0"), LitOp("w0"), LitOp("w1")))
+    mapping = {"w1": "i32_reg2"}
+    role_split = {"w0": ("i32_reg1", "i32_reg3")}
+    extracted = (
+        _inst(
+            "aarch64",
+            0x1000,
+            "sub",
+            "w0, w0, w1",
+            write_registers=("w0",),
+            read_registers=("w0", "w1"),
+        ),
+    )
+    result = _generalize_instructions_with_roles(
+        (inst,), extracted, mapping, role_split, "aarch64"
+    )
+    assert len(result) == 1
+    ops = result[0].operands
+    assert ops == (RegOp("i32", 32, 1), RegOp("i32", 32, 3), RegOp("i32", 32, 2))
+
+
+def test_dead_write_produces_meta_ops() -> None:
+    inst = Instruction("mov", (RegOp("i32", 32, 1), RegOp("i32", 32, 2)))
+    inst_with_save = Instruction(
+        "mov",
+        inst.operands,
+        meta=(MetaOp(kind="save", regs=(RegOp("i32", 32, 1),)),),
+    )
+    assert inst_with_save.meta[0].kind == "save"
+    assert inst_with_save.meta[0].regs == (RegOp("i32", 32, 1),)
+    assert "save i32_reg1" in inst_with_save.to_text()
+
+
+def test_is_branch_instruction():
+    from angr_rule_learning.rules.generalize import _is_branch_instruction
+
+    assert _is_branch_instruction(
+        Instruction("tbz", (LitOp("w0"), LitOp("#0"), LitOp("#0x1234"))), "aarch64"
+    )
+    assert _is_branch_instruction(Instruction("je", (LitOp("0x1234"),)), "x86-64")
+    assert not _is_branch_instruction(Instruction("add", (LitOp("w0"),)), "aarch64")
