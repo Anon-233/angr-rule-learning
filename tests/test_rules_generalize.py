@@ -529,13 +529,13 @@ def test_derives_tbz_mask_from_bit_position_shift() -> None:
 
 
 def test_consolidate_removes_literal_rule_subsumed_by_param_rule() -> None:
-    literal_rule = GeneratedRule(
+    literal_rule = GeneratedRule.from_text_lines(
         rule_id=1,
         candidate_id="a",
         guest_lines=("tbz i32_reg1, #0, #label1",),
         host_lines=("and i32_reg1, ${(1 << 0)}", "cmp i32_reg1, 0", "je label1"),
     )
-    param_rule = GeneratedRule(
+    param_rule = GeneratedRule.from_text_lines(
         rule_id=2,
         candidate_id="b",
         guest_lines=("tbz i32_reg1, #imm1, #label1",),

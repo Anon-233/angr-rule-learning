@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from angr_rule_learning.extraction.models import ExtractedInstruction, WindowPair
 from angr_rule_learning.extraction.liveness import family_for_register
@@ -21,6 +22,9 @@ from angr_rule_learning.verification.addressing import parse_address_binding
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
 
+if TYPE_CHECKING:
+    from angr_rule_learning.rules.ast import Rule as AstRule
+
 
 _TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)(?![A-Za-z0-9_])")
 
@@ -31,8 +35,31 @@ _RESERVED_LITERALS = frozenset({"0", "00", "000"})
 class GeneratedRule:
     rule_id: int
     candidate_id: str
-    guest_lines: tuple[str, ...]
-    host_lines: tuple[str, ...]
+    rule: AstRule
+
+    @property
+    def guest_lines(self) -> tuple[str, ...]:
+        return tuple(inst.to_text() for inst in self.rule.guest)
+
+    @property
+    def host_lines(self) -> tuple[str, ...]:
+        return tuple(inst.to_text() for inst in self.rule.host)
+
+    @classmethod
+    def from_text_lines(
+        cls,
+        rule_id: int,
+        candidate_id: str,
+        guest_lines: tuple[str, ...],
+        host_lines: tuple[str, ...],
+    ) -> "GeneratedRule":
+        from angr_rule_learning.rules.ast import Rule
+
+        return cls(
+            rule_id=rule_id,
+            candidate_id=candidate_id,
+            rule=Rule.from_generated(rule_id, candidate_id, guest_lines, host_lines),
+        )
 
 
 @dataclass(frozen=True)
@@ -228,7 +255,7 @@ class RuleGeneralizer:
             return None
         self._emitted_keys.add(key)
 
-        rule = GeneratedRule(
+        rule = GeneratedRule.from_text_lines(
             rule_id=rule_id,
             candidate_id=candidate.candidate_id,
             guest_lines=guest_lines,
@@ -941,30 +968,23 @@ def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
         return rules
 
     from angr_rule_learning.rules.ast import (
-        Rule as AstRule,
         collect_imm_ids,
         substitute_imm,
         structurally_equal,
     )
 
-    ast_rules = [
-        AstRule.from_generated(r.rule_id, r.candidate_id, r.guest_lines, r.host_lines)
-        for r in rules
-    ]
-
     subsumed_ids: set[int] = set()
-    for i, rule_a in enumerate(ast_rules):
-        for j, rule_b in enumerate(ast_rules):
+    for i, rule_a in enumerate(rules):
+        for j, rule_b in enumerate(rules):
             if i == j:
                 continue
-            # B must have at least one imm placeholder that A lacks.
-            b_imms = collect_imm_ids(rule_b)
+            b_imms = collect_imm_ids(rule_b.rule)
             if not b_imms:
                 continue
             for imm_id in b_imms:
                 for literal_val in sorted(_RESERVED_LITERALS, key=len, reverse=True):
-                    subbed = substitute_imm(rule_b, imm_id, literal_val)
-                    if structurally_equal(subbed, rule_a):
+                    subbed = substitute_imm(rule_b.rule, imm_id, literal_val)
+                    if structurally_equal(subbed, rule_a.rule):
                         subsumed_ids.add(rule_a.rule_id)
                         break
                 if rule_a.rule_id in subsumed_ids:

@@ -14,7 +14,7 @@ from angr_rule_learning.rules.writer import (
 
 
 def test_format_rule_uses_requested_plain_text_shape() -> None:
-    rule = GeneratedRule(
+    rule = GeneratedRule.from_text_lines(
         rule_id=1,
         candidate_id="candidate0",
         guest_lines=("add i32_reg1, i32_reg2, i32_reg3",),
@@ -31,7 +31,7 @@ def test_format_rule_uses_requested_plain_text_shape() -> None:
 
 
 def test_format_rule_preserves_multi_instruction_lines() -> None:
-    rule = GeneratedRule(
+    rule = GeneratedRule.from_text_lines(
         rule_id=7,
         candidate_id="candidate7",
         guest_lines=("mov i32_reg1, i32_reg2", "add i32_reg1, i32_reg1, #1"),
@@ -51,7 +51,7 @@ def test_format_rule_preserves_multi_instruction_lines() -> None:
 
 def test_write_rules_text_creates_parent_directory(tmp_path: Path) -> None:
     path = tmp_path / "nested" / "rules.txt"
-    rule = GeneratedRule(
+    rule = GeneratedRule.from_text_lines(
         rule_id=1,
         candidate_id="candidate0",
         guest_lines=("mov i32_reg1, i32_reg2",),

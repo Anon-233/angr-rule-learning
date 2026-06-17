@@ -25,7 +25,7 @@ class RegOp:
     def to_text(self) -> str:
         if self.prefix in ("sp", "fp"):
             return f"{self.prefix}{self.bits}"
-        return f"{self.prefix}{self.bits}_reg{self.id}"
+        return f"{self.prefix}_reg{self.id}"
 
 
 @dataclass(frozen=True)
@@ -65,12 +65,14 @@ class LitOp:
 
 @dataclass(frozen=True)
 class LabelOp:
-    """Branch label: ``label1``."""
+    """Branch label: ``label1`` or ``#label1``."""
 
     id: int
+    aarch64_hash: bool = False
 
     def to_text(self) -> str:
-        return f"label{self.id}"
+        prefix = "#" if self.aarch64_hash else ""
+        return f"{prefix}label{self.id}"
 
 
 @dataclass(frozen=True)
@@ -114,13 +116,10 @@ class Instruction:
     _PUNCT_RE: ClassVar[re.Pattern[str]] = re.compile(r"([\[\],#+*\-])")
 
     def to_text(self) -> str:
-        parts = []
-        if self.operands:
-            parts.append(
-                " ".join(p for p in (op.to_text() for op in self.operands) if p)
-            )
-        text = f"{self.mnemonic} {', '.join(parts)}" if parts else self.mnemonic
-        return text
+        if not self.operands:
+            return self.mnemonic
+        ops = ", ".join(op.to_text() for op in self.operands)
+        return f"{self.mnemonic} {ops}"
 
     @classmethod
     def from_text(cls, line: str) -> "Instruction":
@@ -172,9 +171,9 @@ class Instruction:
             return RegTextOp(text)
 
         # Label
-        m = re.fullmatch(r"#?label(\d+)", text)
+        m = re.fullmatch(r"(#?)label(\d+)", text)
         if m:
-            return LabelOp(id=int(m.group(1)))
+            return LabelOp(id=int(m.group(2)), aarch64_hash=bool(m.group(1)))
 
         # Temp
         m = re.fullmatch(r"tmp(\d+)", text)
@@ -229,7 +228,8 @@ class Rule:
             for meta in inst.meta:
                 lines.append(f"\t{meta.to_text()}")
             lines.append(f"\t{inst.to_text()}")
-        return "\n".join(lines)
+        lines.append("")  # trailing blank separator
+        return "\n".join(lines) + "\n"
 
     @classmethod
     def from_generated(
@@ -335,13 +335,13 @@ def _op_equal(a: Operand, b: Operand) -> bool:
     if isinstance(a, RegOp) and isinstance(b, RegOp):
         return a.prefix == b.prefix and a.bits == b.bits
     if isinstance(a, ImmOp) and isinstance(b, ImmOp):
-        return a.derived == b.derived
+        return a.derived == b.derived and a.aarch64_hash == b.aarch64_hash
     if isinstance(a, TmpOp) and isinstance(b, TmpOp):
         return True
     if isinstance(a, LitOp) and isinstance(b, LitOp):
         return a.value == b.value
     if isinstance(a, LabelOp) and isinstance(b, LabelOp):
-        return True
+        return a.aarch64_hash == b.aarch64_hash
     if isinstance(a, RegTextOp) and isinstance(b, RegTextOp):
         return a.text == b.text
     return False
