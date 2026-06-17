@@ -26,8 +26,6 @@ if TYPE_CHECKING:
     from angr_rule_learning.rules.ast import Instruction, Operand, Rule as AstRule
 
 
-_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)(?![A-Za-z0-9_])")
-
 _RESERVED_LITERALS = frozenset({"0", "00", "000"})
 
 
@@ -215,7 +213,8 @@ class RuleGeneralizer:
                 role_split,
                 host_arch,
             )
-            # Annotate dead writes via MetaOp on AST, then convert to text
+            # Annotate dead writes via MetaOp on AST, then apply label/immediate
+            # replacement directly on AST.
             guest_insts, host_insts = _annotate_dead_writes(
                 guest_insts,
                 host_insts,
@@ -225,8 +224,6 @@ class RuleGeneralizer:
                 guest_arch,
                 host_arch,
             )
-            guest_lines = tuple(i.to_text() for i in guest_insts)
-            host_lines = tuple(i.to_text() for i in host_insts)
             region_guest = (
                 region.guest_instructions
                 if region is not None
@@ -237,49 +234,42 @@ class RuleGeneralizer:
                 if region is not None
                 else window.host.instructions
             )
-            guest_lines, host_lines = _replace_labels_shared(
-                guest_lines,
+            guest_insts, host_insts = _replace_labels_ast(
+                guest_insts,
                 guest_arch,
-                host_lines,
+                host_insts,
                 host_arch,
                 region_guest,
                 region_host,
             )
-            _check_label_consistency(guest_lines, host_lines)
-            guest_lines, host_lines = _replace_immediates_shared(
-                guest_lines, guest_arch, host_lines, host_arch
+            _check_label_consistency_ast(guest_insts, host_insts)
+            guest_insts, host_insts = _replace_immediates_ast(
+                guest_insts, guest_arch, host_insts, host_arch
             )
-            if not _host_immediates_are_derivable(guest_lines, host_lines, candidate):
+            if not _host_immediates_are_derivable(guest_insts, host_insts, candidate):
                 raise _RuleSkip("unpaired_host_immediate")
         except _RuleSkip as exc:
             self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
             return None
 
-        # Parse final text to AST for structural comparison and rule building
+        # AST structural dedup
         from angr_rule_learning.rules.ast import (
-            Instruction as AstInstruction,
             Rule as AstRule,
             _insts_equal,
         )
 
-        guest_final_insts = tuple(
-            AstInstruction.from_text(line) for line in guest_lines
-        )
-        host_final_insts = tuple(AstInstruction.from_text(line) for line in host_lines)
-
-        # AST structural dedup
         for existing_guest, existing_host in self._emitted_keys:
-            if _insts_equal(existing_guest, guest_final_insts) and _insts_equal(
-                existing_host, host_final_insts
+            if _insts_equal(existing_guest, guest_insts) and _insts_equal(
+                existing_host, host_insts
             ):
                 self._record_skip(
                     candidate,
                     "duplicate_rule",
-                    guest_final_insts,
-                    host_final_insts,
+                    guest_insts,
+                    host_insts,
                 )
                 return None
-        self._emitted_keys.append((guest_final_insts, host_final_insts))
+        self._emitted_keys.append((guest_insts, host_insts))
 
         rule = GeneratedRule(
             rule_id=rule_id,
@@ -287,8 +277,8 @@ class RuleGeneralizer:
             rule=AstRule(
                 rule_id=rule_id,
                 candidate_id=candidate.candidate_id,
-                guest=guest_final_insts,
-                host=host_final_insts,
+                guest=guest_insts,
+                host=host_insts,
             ),
         )
         self.diagnostics.record_emitted()
@@ -505,17 +495,6 @@ _AARCH64_BRANCH_MNEMONICS = frozenset(
     {"b", "bl", "blr", "cbz", "cbnz", "tbz", "tbnz", "ret"}
 )
 _X86_64_BRANCH_MNEMONICS = frozenset({"jmp", "call", "ret"})
-_AARCH64_HEX_RE = re.compile(r"#(0x[0-9a-fA-F]+)")
-_X86_64_HEX_RE = re.compile(r"\b(0x[0-9a-fA-F]+)\b")
-
-
-def _branch_prefixes(arch: str) -> tuple[str, ...]:
-    arch = normalize_arch_name(arch)
-    if arch == "aarch64":
-        return ("b.",)
-    if arch == "x86-64":
-        return ("j",)
-    return ()
 
 
 def normalize_arch_name(arch: str) -> str:
@@ -559,81 +538,23 @@ def _find_hex_operand(inst: Instruction, arch: str) -> tuple[int, str] | None:
 
 
 def _replace_labels_ast(
-    insts: tuple[Instruction, ...],
-    arch: str,
-    label_ids: list[int],
-) -> tuple[Instruction, ...]:
-    """Replace hex branch targets in AST instructions with LabelOp placeholders."""
-    from angr_rule_learning.rules.ast import LabelOp
-
-    result: list[Instruction] = []
-    idx = 0
-    is_aarch64 = normalize_arch_name(arch) == "aarch64"
-    for inst in insts:
-        if not _is_branch_instruction(inst, arch):
-            result.append(inst)
-            continue
-        hex_info = _find_hex_operand(inst, arch)
-        if hex_info is not None and idx < len(label_ids):
-            op_idx, _hex_val = hex_info
-            new_ops = list(inst.operands)
-            new_ops[op_idx] = LabelOp(id=label_ids[idx], aarch64_hash=is_aarch64)
-            inst = Instruction(
-                mnemonic=inst.mnemonic, operands=tuple(new_ops), meta=inst.meta
-            )
-            idx += 1
-        result.append(inst)
-    return tuple(result)
-
-
-def _labels_are_consistent_ast(
     guest_insts: tuple[Instruction, ...],
-    host_insts: tuple[Instruction, ...],
-) -> bool:
-    """Check that guest and host use the same set of label IDs."""
-    from angr_rule_learning.rules.ast import LabelOp
-
-    def _collect(insts: tuple[Instruction, ...]) -> set[str]:
-        return {
-            str(op.id)
-            for inst in insts
-            for op in inst.operands
-            if isinstance(op, LabelOp)
-        }
-
-    guest_labels = _collect(guest_insts)
-    host_labels = _collect(host_insts)
-    if guest_labels or host_labels:
-        return guest_labels == host_labels
-    return True
-
-
-def _is_branch_line(line: str, arch: str) -> bool:
-    mnemonic = line.split()[0].lower() if line.strip() else ""
-    arch = normalize_arch_name(arch)
-    if arch == "aarch64":
-        if mnemonic in _AARCH64_BRANCH_MNEMONICS:
-            return True
-        return mnemonic.startswith(_branch_prefixes(arch))
-    if arch == "x86-64":
-        if mnemonic in _X86_64_BRANCH_MNEMONICS:
-            return True
-        return mnemonic.startswith("j") and mnemonic != "jmp"
-    return False
-
-
-def _replace_labels_shared(
-    guest_lines: tuple[str, ...],
     guest_arch: str,
-    host_lines: tuple[str, ...],
+    host_insts: tuple[Instruction, ...],
     host_arch: str,
     guest_instructions: tuple[ExtractedInstruction, ...] = (),
     host_instructions: tuple[ExtractedInstruction, ...] = (),
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> tuple[tuple[Instruction, ...], tuple[Instruction, ...]]:
+    """Replace hex branch targets in AST instructions with LabelOp placeholders.
+
+    Assigns label IDs by matching branch targets to source locations.  Two
+    branch targets that reference the same source location share a label ID.
+    Unresolved targets are matched by position.
+    """
+    from angr_rule_learning.rules.ast import Instruction as AstInstruction, LabelOp
+
     guest_arch_n = normalize_arch_name(guest_arch)
     host_arch_n = normalize_arch_name(host_arch)
-    hex_re = {"aarch64": _AARCH64_HEX_RE, "x86-64": _X86_64_HEX_RE}
-    prefix = {"aarch64": "#", "x86-64": ""}
 
     def _addr_to_line(
         instructions: tuple[ExtractedInstruction, ...],
@@ -653,24 +574,27 @@ def _replace_labels_shared(
     ) -> tuple[str, int] | None:
         return lines_map.get(int(hex_target, 16))
 
+    # Collect targets from guest AST.
     guest_targets: list[tuple[str, tuple[str, int] | None]] = []
+    for inst in guest_insts:
+        if not _is_branch_instruction(inst, guest_arch):
+            continue
+        hex_info = _find_hex_operand(inst, guest_arch)
+        if hex_info is not None:
+            _idx, hex_val = hex_info
+            sl = _resolve_source_line(hex_val, guest_lines_map)
+            guest_targets.append((hex_val, sl))
+
+    # Collect targets from host AST.
     host_targets: list[tuple[str, tuple[str, int] | None]] = []
-
-    for line in guest_lines:
-        if _is_branch_line(line, guest_arch):
-            m = hex_re[guest_arch_n].search(line)
-            if m:
-                target = m.group(1)
-                sl = _resolve_source_line(target, guest_lines_map)
-                guest_targets.append((target, sl))
-
-    for line in host_lines:
-        if _is_branch_line(line, host_arch):
-            m = hex_re[host_arch_n].search(line)
-            if m:
-                target = m.group(1)
-                sl = _resolve_source_line(target, host_lines_map)
-                host_targets.append((target, sl))
+    for inst in host_insts:
+        if not _is_branch_instruction(inst, host_arch):
+            continue
+        hex_info = _find_hex_operand(inst, host_arch)
+        if hex_info is not None:
+            _idx, hex_val = hex_info
+            sl = _resolve_source_line(hex_val, host_lines_map)
+            host_targets.append((hex_val, sl))
 
     label_by_src: dict[tuple[str, int], int] = {}
     pos_label: dict[int, int] = {}
@@ -709,27 +633,202 @@ def _replace_labels_shared(
                 host_label_ids.append(next_id)
                 next_id += 1
 
+    # Apply label IDs to guest instructions.
+    guest_result: list[Instruction] = []
+    gidx = 0
+    for inst in guest_insts:
+        if _is_branch_instruction(inst, guest_arch):
+            hex_info = _find_hex_operand(inst, guest_arch)
+            if hex_info is not None and gidx < len(guest_label_ids):
+                op_idx, _hex_val = hex_info
+                new_ops = list(inst.operands)
+                is_aarch64 = guest_arch_n == "aarch64"
+                new_ops[op_idx] = LabelOp(
+                    id=guest_label_ids[gidx], aarch64_hash=is_aarch64
+                )
+                inst = AstInstruction(
+                    mnemonic=inst.mnemonic, operands=tuple(new_ops), meta=inst.meta
+                )
+                gidx += 1
+        guest_result.append(inst)
+
+    # Apply label IDs to host instructions.
+    host_result: list[Instruction] = []
+    hidx = 0
+    for inst in host_insts:
+        if _is_branch_instruction(inst, host_arch):
+            hex_info = _find_hex_operand(inst, host_arch)
+            if hex_info is not None and hidx < len(host_label_ids):
+                op_idx, _hex_val = hex_info
+                new_ops = list(inst.operands)
+                is_aarch64 = host_arch_n == "aarch64"
+                new_ops[op_idx] = LabelOp(
+                    id=host_label_ids[hidx], aarch64_hash=is_aarch64
+                )
+                inst = AstInstruction(
+                    mnemonic=inst.mnemonic, operands=tuple(new_ops), meta=inst.meta
+                )
+                hidx += 1
+        host_result.append(inst)
+
+    return tuple(guest_result), tuple(host_result)
+
+
+def _labels_are_consistent_ast(
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
+) -> bool:
+    """Check that guest and host use the same set of label IDs."""
+    from angr_rule_learning.rules.ast import LabelOp
+
+    def _collect(insts: tuple[Instruction, ...]) -> set[str]:
+        return {
+            str(op.id)
+            for inst in insts
+            for op in inst.operands
+            if isinstance(op, LabelOp)
+        }
+
+    guest_labels = _collect(guest_insts)
+    host_labels = _collect(host_insts)
+    if guest_labels or host_labels:
+        return guest_labels == host_labels
+    return True
+
+
+def _replace_immediates_ast(
+    guest_insts: tuple[Instruction, ...],
+    guest_arch: str,
+    host_insts: tuple[Instruction, ...],
+    host_arch: str,
+) -> tuple[tuple[Instruction, ...], tuple[Instruction, ...]]:
+    """Replace immediate values in AST instructions with ImmOp placeholders.
+
+    Collection: scans instruction text for immediate values using the
+    existing regex patterns and assigns IDs.
+
+    Replacement: substitutes each matched immediate text in the instruction
+    text with ``immN`` placeholders, then re-parses to AST.
+    """
+    from angr_rule_learning.rules.ast import Instruction as AstInstruction
+
+    guest_arch_n = normalize_arch_name(guest_arch)
+    host_arch_n = normalize_arch_name(host_arch)
+    guest_pattern = _AARCH64_IMM_RE if guest_arch_n == "aarch64" else _X86_64_IMM_RE
+    host_pattern = _AARCH64_IMM_RE if host_arch_n == "aarch64" else _X86_64_IMM_RE
+
+    canonical_to_id: dict[str, int] = {}
+    value_by_id: dict[str, int] = {}
+    next_id = 1
+
+    scale_shifts: set[int] = set()
+    implicit_ids: set[str] = set()
+    has_bit_position: bool = False
+
+    # ---- Phase 1: Collection ----
+    for inst in guest_insts:
+        line = inst.to_text()
+        for m in guest_pattern.finditer(line):
+            c = _imm_canonical(m, guest_arch)
+            if _is_scale_immediate(line, m, guest_arch_n):
+                scale_shifts.add(int(c))
+                continue
+            if _is_bit_position(line, m, guest_arch_n):
+                scale_shifts.add(int(c))
+                has_bit_position = True
+            if c in _RESERVED_LITERALS:
+                continue
+            if c not in canonical_to_id:
+                canonical_to_id[c] = next_id
+                next_id += 1
+            value_by_id[str(canonical_to_id[c])] = int(c)
+
+    for inst in host_insts:
+        line = inst.to_text()
+        for m in host_pattern.finditer(line):
+            c = _imm_canonical(m, host_arch)
+            if _is_scale_immediate(line, m, host_arch_n):
+                scale_shifts.add(int(c))
+                continue
+            if c in _RESERVED_LITERALS:
+                continue
+            if c not in canonical_to_id:
+                canonical_to_id[c] = next_id
+                next_id += 1
+            value_by_id[str(canonical_to_id[c])] = int(c)
+
+    if has_bit_position:
+        _BASE_ONE = "1"
+        if _BASE_ONE not in canonical_to_id:
+            canonical_to_id[_BASE_ONE] = next_id
+            next_id += 1
+        implicit_id = str(canonical_to_id[_BASE_ONE])
+        value_by_id[implicit_id] = 1
+        implicit_ids.add(implicit_id)
+
+    # ---- Phase 2: Replacement ----
     def _replace_side(
-        lines: tuple[str, ...],
+        insts: tuple[Instruction, ...],
+        pattern: re.Pattern[str],
         arch: str,
-        label_ids: list[int],
-    ) -> tuple[str, ...]:
-        result: list[str] = []
-        p = prefix[arch]
-        idx = 0
-        for line in lines:
-            if _is_branch_line(line, arch):
-                m = hex_re[arch].search(line)
-                if m and idx < len(label_ids):
-                    line = line.replace(f"{p}{m.group(1)}", f"{p}label{label_ids[idx]}")
-                    idx += 1
-            result.append(line)
+        prefix: str,
+    ) -> tuple[Instruction, ...]:
+        result: list[Instruction] = []
+        for inst in insts:
+            line = inst.to_text()
+
+            def _replacer(match: re.Match[str]) -> str:
+                if _is_scale_immediate(line, match, arch):
+                    return match.group(0)
+                c = _imm_canonical(match, arch)
+                if c in _RESERVED_LITERALS:
+                    return match.group(0)
+                val = int(c)
+                if val < 0:
+                    if normalize_arch_name(arch) == "aarch64":
+                        return f"#-imm{canonical_to_id[c]}"
+                    else:
+                        return f"- imm{canonical_to_id[c]}"
+                return f"{prefix}imm{canonical_to_id[c]}"
+
+            new_line = pattern.sub(_replacer, line)
+            result.append(AstInstruction.from_text(new_line))
         return tuple(result)
 
-    return (
-        _replace_side(guest_lines, guest_arch_n, guest_label_ids),
-        _replace_side(host_lines, host_arch_n, host_label_ids),
-    )
+    guest_result = _replace_side(guest_insts, guest_pattern, guest_arch_n, "#")
+    host_result = _replace_side(host_insts, host_pattern, host_arch_n, "")
+
+    # ---- Phase 3: Derivation ----
+    guest_text_lines = tuple(i.to_text() for i in guest_result)
+    host_text_lines = tuple(i.to_text() for i in host_result)
+
+    guest_imms = {
+        m.group(1)
+        for line in guest_text_lines
+        for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    host_imms = {
+        m.group(1)
+        for line in host_text_lines
+        for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    host_only = host_imms - guest_imms
+
+    if host_only:
+        guest_values = {
+            k: v for k, v in value_by_id.items() if k in guest_imms or k in implicit_ids
+        }
+        host_text_lines = _inline_derived_expressions(
+            host_text_lines,
+            host_only,
+            guest_values,
+            scale_shifts,
+            value_by_id,
+            implicit_ids,
+        )
+        host_result = tuple(AstInstruction.from_text(line) for line in host_text_lines)
+
+    return guest_result, host_result
 
 
 def _is_scale_immediate(line: str, match: re.Match[str], arch: str) -> bool:
@@ -748,122 +847,6 @@ def _is_bit_position(line: str, match: re.Match[str], arch: str) -> bool:
         return mnemonic in {"tbz", "tbnz"}
     return False
     return False
-
-
-def _replace_immediates_shared(
-    guest_lines: tuple[str, ...],
-    guest_arch: str,
-    host_lines: tuple[str, ...],
-    host_arch: str,
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    canonical_to_id: dict[str, int] = {}
-    value_by_id: dict[str, int] = {}
-    next_id = 1
-
-    guest_arch_n = normalize_arch_name(guest_arch)
-    host_arch_n = normalize_arch_name(host_arch)
-    guest_pattern = _AARCH64_IMM_RE if guest_arch_n == "aarch64" else _X86_64_IMM_RE
-    host_pattern = _AARCH64_IMM_RE if host_arch_n == "aarch64" else _X86_64_IMM_RE
-
-    scale_shifts: set[int] = set()
-    implicit_ids: set[str] = set()
-    has_bit_position: bool = False
-
-    for line in guest_lines:
-        for m in guest_pattern.finditer(line):
-            c = _imm_canonical(m, guest_arch)
-            if _is_scale_immediate(line, m, guest_arch_n):
-                scale_shifts.add(int(c))
-                continue
-            if _is_bit_position(line, m, guest_arch_n):
-                scale_shifts.add(int(c))
-                has_bit_position = True
-            if c in _RESERVED_LITERALS:
-                continue
-            if c not in canonical_to_id:
-                canonical_to_id[c] = next_id
-                next_id += 1
-            value_by_id[str(canonical_to_id[c])] = int(c)
-    for line in host_lines:
-        for m in host_pattern.finditer(line):
-            c = _imm_canonical(m, host_arch)
-            if _is_scale_immediate(line, m, host_arch_n):
-                scale_shifts.add(int(c))
-                continue
-            # Zero on the host side is a fixed comparison constant
-            # (e.g. cmp reg, 0), not a parameterizable value.
-            if c in _RESERVED_LITERALS:
-                continue
-            if c not in canonical_to_id:
-                canonical_to_id[c] = next_id
-                next_id += 1
-            value_by_id[str(canonical_to_id[c])] = int(c)
-
-    if has_bit_position:
-        # Inject implicit mask base value (1) so derivation can
-        # find  (1 << immN) = mask.  Deferred until after all
-        # textual immediates are registered so it does not consume
-        # a low immN slot.
-        _BASE_ONE = "1"
-        if _BASE_ONE not in canonical_to_id:
-            canonical_to_id[_BASE_ONE] = next_id
-            next_id += 1
-        implicit_id = str(canonical_to_id[_BASE_ONE])
-        value_by_id[implicit_id] = 1
-        implicit_ids.add(implicit_id)
-
-    def _replace_side(
-        lines: tuple[str, ...],
-        pattern: re.Pattern[str],
-        arch: str,
-        prefix: str,
-    ) -> tuple[str, ...]:
-        result: list[str] = []
-        for line in lines:
-
-            def _replacer(match: re.Match[str]) -> str:
-                if _is_scale_immediate(line, match, arch):
-                    return match.group(0)
-                c = _imm_canonical(match, arch)
-                if c in _RESERVED_LITERALS:
-                    return match.group(0)
-                val = int(c)
-                if val < 0:
-                    if normalize_arch_name(arch) == "aarch64":
-                        return f"#-imm{canonical_to_id[c]}"
-                    else:
-                        return f"- imm{canonical_to_id[c]}"
-                return f"{prefix}imm{canonical_to_id[c]}"
-
-            result.append(pattern.sub(_replacer, line))
-        return tuple(result)
-
-    guest_result = _replace_side(guest_lines, guest_pattern, guest_arch_n, "#")
-    host_result = _replace_side(host_lines, host_pattern, host_arch_n, "")
-
-    # Derive host-only immediates from guest immediates.
-    guest_imms = {
-        m.group(1) for line in guest_result for m in _IMM_PLACEHOLDER_RE.finditer(line)
-    }
-    host_imms = {
-        m.group(1) for line in host_result for m in _IMM_PLACEHOLDER_RE.finditer(line)
-    }
-    host_only = host_imms - guest_imms
-
-    if host_only:
-        guest_values = {
-            k: v for k, v in value_by_id.items() if k in guest_imms or k in implicit_ids
-        }
-        host_result = _inline_derived_expressions(
-            host_result,
-            host_only,
-            guest_values,
-            scale_shifts,
-            value_by_id,
-            implicit_ids,
-        )
-
-    return guest_result, host_result
 
 
 def _inline_derived_expressions(
@@ -971,38 +954,13 @@ def _placeholder_clash(
     return False
 
 
-_LABEL_RE = re.compile(r"#?label(\d+)")
-
-
-def _labels_are_consistent(
-    guest_lines: tuple[str, ...], host_lines: tuple[str, ...]
-) -> bool:
-    guest_labels = {
-        m.group(1) for line in guest_lines for m in _LABEL_RE.finditer(line)
-    }
-    host_labels = {m.group(1) for line in host_lines for m in _LABEL_RE.finditer(line)}
-    if guest_labels or host_labels:
-        if guest_labels != host_labels:
-            return False
-    return True
-
-
-def _check_label_consistency(
-    guest_lines: tuple[str, ...],
-    host_lines: tuple[str, ...],
+def _check_label_consistency_ast(
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
 ) -> None:
-    """Check label consistency, preferring AST-based comparison."""
-    from angr_rule_learning.rules.ast import Instruction as AstInstruction
-
-    try:
-        guest_insts = tuple(AstInstruction.from_text(line) for line in guest_lines)
-        host_insts = tuple(AstInstruction.from_text(line) for line in host_lines)
-        if not _labels_are_consistent_ast(guest_insts, host_insts):
-            raise _RuleSkip("mismatched_branch_targets")
-    except Exception:
-        # Fall back to text-based check
-        if not _labels_are_consistent(guest_lines, host_lines):
-            raise _RuleSkip("mismatched_branch_targets")
+    """Check label consistency directly on AST instructions."""
+    if not _labels_are_consistent_ast(guest_insts, host_insts):
+        raise _RuleSkip("mismatched_branch_targets")
 
 
 _IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
@@ -1046,19 +1004,14 @@ def _collect_immediates_ast(insts: tuple[Instruction, ...]) -> set[str]:
 
 
 def _host_immediates_are_derivable(
-    guest_lines: tuple[str, ...],
-    host_lines: tuple[str, ...],
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
     candidate: VerificationCandidate,
 ) -> bool:
     if not candidate.memory.bindings:
         return True
     if not _has_frame_relative_binding(candidate):
         return True
-    # Use AST-based collection for reliability
-    from angr_rule_learning.rules.ast import Instruction as AstInstruction
-
-    guest_insts = tuple(AstInstruction.from_text(line) for line in guest_lines)
-    host_insts = tuple(AstInstruction.from_text(line) for line in host_lines)
     guest_imms = _collect_immediates_ast(guest_insts)
     host_imms = _collect_immediates_ast(host_insts)
     return host_imms <= guest_imms
