@@ -447,3 +447,77 @@ def test_splits_guest_register_when_output_and_input_pair_differently() -> None:
         "mov i32_reg1, i32_reg3",
         "sub i32_reg1, i32_reg2",
     )
+
+
+def test_derives_tbz_mask_from_bit_position_shift() -> None:
+    """tbz #3 → host ``and reg, 8``: mask = 1 << 3 expressed via derivation."""
+    guest_tbz = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="tbz",
+        op_str="w0, #3, #0x14",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("w0",),
+    )
+    host_and = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="and",
+        op_str="eax, 8",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("eax",),
+        read_registers=("eax",),
+    )
+    host_cmp = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="cmp",
+        op_str="eax, 0",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("eax",),
+    )
+    host_je = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2006,
+        size=2,
+        code_bytes=b"\x01\x02",
+        mnemonic="je",
+        op_str="0x14",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (1, 3),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_tbz,)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_and, host_cmp, host_je)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="sample:sample.c:1:0:g0:h0",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "0102030102030102", 3),
+        input_registers=(("w0", "eax"),),
+    )
+    report = VerificationReport(
+        candidate_id="sample:sample.c:1:0:g0:h0",
+        status="pass",
+        checks=(CheckResult("register", "pass", "w0", "eax"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(1, window, candidate, report)
+
+    assert rule is not None
+    # Guest bit position preserved as literal.
+    assert "#3" in rule.guest_lines[0]
+    # Host mask derived: 1 << 3 (after save annotation).
+    host_text = " ".join(rule.host_lines)
+    assert "${(1 << 3)}" in host_text

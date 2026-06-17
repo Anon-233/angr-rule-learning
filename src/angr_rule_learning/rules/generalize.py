@@ -627,6 +627,14 @@ def _is_scale_immediate(line: str, match: re.Match[str], arch: str) -> bool:
         return before.rstrip().endswith("lsl")
     if arch == "x86-64":
         return before.rstrip().endswith("*")
+
+
+def _is_bit_position(line: str, match: re.Match[str], arch: str) -> bool:
+    arch = normalize_arch_name(arch)
+    if arch == "aarch64":
+        mnemonic = line.strip().split()[0].lower()
+        return mnemonic in {"tbz", "tbnz"}
+    return False
     return False
 
 
@@ -646,12 +654,26 @@ def _replace_immediates_shared(
     host_pattern = _AARCH64_IMM_RE if host_arch_n == "aarch64" else _X86_64_IMM_RE
 
     scale_shifts: set[int] = set()
+    implicit_ids: set[str] = set()
 
     for line in guest_lines:
         for m in guest_pattern.finditer(line):
             c = _imm_canonical(m, guest_arch)
             if _is_scale_immediate(line, m, guest_arch_n):
                 scale_shifts.add(int(c))
+                continue
+            if _is_bit_position(line, m, guest_arch_n):
+                scale_shifts.add(int(c))
+                # Inject implicit mask base value so derivation can
+                # find  (1 << bitpos) = mask.  This value does not
+                # correspond to any textual immediate in the rule.
+                _BASE_ONE = "1"
+                if _BASE_ONE not in canonical_to_id:
+                    canonical_to_id[_BASE_ONE] = next_id
+                    next_id += 1
+                implicit_id = str(canonical_to_id[_BASE_ONE])
+                value_by_id[implicit_id] = 1
+                implicit_ids.add(implicit_id)
                 continue
             if c in ("0", "00", "000"):
                 continue
@@ -684,6 +706,8 @@ def _replace_immediates_shared(
             def _replacer(match: re.Match[str]) -> str:
                 if _is_scale_immediate(line, match, arch):
                     return match.group(0)
+                if _is_bit_position(line, match, arch):
+                    return match.group(0)
                 c = _imm_canonical(match, arch)
                 if c in ("0", "00", "000"):
                     return match.group(0)
@@ -711,9 +735,16 @@ def _replace_immediates_shared(
     host_only = host_imms - guest_imms
 
     if host_only:
-        guest_values = {k: v for k, v in value_by_id.items() if k in guest_imms}
+        guest_values = {
+            k: v for k, v in value_by_id.items() if k in guest_imms or k in implicit_ids
+        }
         host_result = _inline_derived_expressions(
-            host_result, host_only, guest_values, scale_shifts, value_by_id
+            host_result,
+            host_only,
+            guest_values,
+            scale_shifts,
+            value_by_id,
+            implicit_ids,
         )
 
     return guest_result, host_result
@@ -725,6 +756,7 @@ def _inline_derived_expressions(
     guest_values: dict[str, int],
     scale_shifts: set[int],
     all_values: dict[str, int],
+    implicit_ids: set[str],
 ) -> tuple[str, ...]:
     result: list[str] = []
     for line in host_lines:
@@ -733,7 +765,11 @@ def _inline_derived_expressions(
             if imm_id not in host_only_ids:
                 continue
             derived = _derive_host_expression(
-                int(all_values[imm_id]), guest_values, scale_shifts
+                int(all_values[imm_id]),
+                guest_values,
+                scale_shifts,
+                implicit_ids,
+                all_values,
             )
             if derived is not None:
                 line = line.replace(f"imm{imm_id}", f"${{{derived}}}")
@@ -745,6 +781,8 @@ def _derive_host_expression(
     target_value: int,
     guest_values: dict[str, int],
     scale_shifts: set[int],
+    implicit_ids: set[str],
+    all_values: dict[str, int],
 ) -> str | None:
     """Search for an expression of guest immediates that equals *target_value*.
 
@@ -753,6 +791,12 @@ def _derive_host_expression(
     items = list(guest_values.items())  # [(id, value), ...]
     candidate_shifts = scale_shifts | {0, 16, 32, 48}
 
+    def _operand(imm_id: str) -> str:
+        """Return the literal value for implicit operands, otherwise immN."""
+        if imm_id in implicit_ids:
+            return str(all_values[imm_id])
+        return f"imm{imm_id}"
+
     # L1: (imm_a << s) | imm_b  —  mov + movk → movabs
     for id_a, va in items:
         for id_b, vb in items:
@@ -760,7 +804,7 @@ def _derive_host_expression(
                 continue
             for s in sorted(candidate_shifts, reverse=True):
                 if (va << s) | vb == target_value:
-                    return f"(imm{id_a} << {s}) | imm{id_b}"
+                    return f"({_operand(id_a)} << {s}) | {_operand(id_b)}"
 
     # L2: imm_a + imm_b  —  add chain
     for id_a, va in items:
@@ -768,15 +812,23 @@ def _derive_host_expression(
             if id_a == id_b:
                 continue
             if va + vb == target_value:
-                return f"imm{id_a} + imm{id_b}"
+                return f"{_operand(id_a)} + {_operand(id_b)}"
             if va - vb == target_value:
-                return f"imm{id_a} - imm{id_b}"
+                return f"{_operand(id_a)} - {_operand(id_b)}"
 
     # L3: (imm_a << s)  —  single-shifted immediate
     for id_a, va in items:
         for s in sorted(candidate_shifts, reverse=True):
             if va << s == target_value:
-                return f"(imm{id_a} << {s})"
+                return f"({_operand(id_a)} << {s})"
+
+    # L4: implicit base shifted (only implicit values)
+    for id_a, va in items:
+        if id_a not in implicit_ids:
+            continue
+        for s in sorted(candidate_shifts, reverse=True):
+            if va << s == target_value:
+                return f"({va} << {s})"
 
     return None
 
