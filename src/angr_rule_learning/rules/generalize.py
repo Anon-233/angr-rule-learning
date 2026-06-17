@@ -932,54 +932,45 @@ def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
 
     A rule *A* is subsumed by rule *B* when substituting one of *B*'s
     ``immN`` placeholders with a reserved literal value produces the
-    exact same guest and host text as *A*.
+    exact same structure as *A*.
+
+    Uses AST-based structural comparison so that difference in
+    placeholder numbering does not prevent merging.
     """
-    if not rules:
+    if len(rules) < 2:
         return rules
 
-    _IMM_RE = re.compile(r"#?imm(\d+)")
+    from angr_rule_learning.rules.ast import (
+        Rule as AstRule,
+        collect_imm_ids,
+        substitute_imm,
+        structurally_equal,
+    )
+
+    ast_rules = [
+        AstRule.from_generated(r.rule_id, r.candidate_id, r.guest_lines, r.host_lines)
+        for r in rules
+    ]
 
     subsumed_ids: set[int] = set()
-    for i, rule_a in enumerate(rules):
-        for j, rule_b in enumerate(rules):
+    for i, rule_a in enumerate(ast_rules):
+        for j, rule_b in enumerate(ast_rules):
             if i == j:
                 continue
-            if _rule_subsumed_by(rule_a, rule_b, _IMM_RE):
-                subsumed_ids.add(rule_a.rule_id)
-                break
+            # B must have at least one imm placeholder that A lacks.
+            b_imms = collect_imm_ids(rule_b)
+            if not b_imms:
+                continue
+            for imm_id in b_imms:
+                for literal_val in sorted(_RESERVED_LITERALS, key=len, reverse=True):
+                    subbed = substitute_imm(rule_b, imm_id, literal_val)
+                    if structurally_equal(subbed, rule_a):
+                        subsumed_ids.add(rule_a.rule_id)
+                        break
+                if rule_a.rule_id in subsumed_ids:
+                    break
 
     return [r for r in rules if r.rule_id not in subsumed_ids]
-
-
-def _rule_subsumed_by(
-    candidate: GeneratedRule,
-    superset: GeneratedRule,
-    imm_re: re.Pattern[str],
-) -> bool:
-    """Check whether *candidate* is obtained from *superset* by
-    substituting a single ``immN`` placeholder with a reserved literal."""
-    superset_guest = "\n".join(superset.guest_lines)
-    superset_host = "\n".join(superset.host_lines)
-    candidate_guest = "\n".join(candidate.guest_lines)
-    candidate_host = "\n".join(candidate.host_lines)
-
-    for imm_match in imm_re.finditer(superset_guest + "\n" + superset_host):
-        imm_id = imm_match.group(1)
-        for literal_val in sorted(_RESERVED_LITERALS, key=len, reverse=True):
-            subbed_guest = _substitute_imm(superset_guest, imm_id, literal_val)
-            subbed_host = _substitute_imm(superset_host, imm_id, literal_val)
-            if subbed_guest == candidate_guest and subbed_host == candidate_host:
-                return True
-    return False
-
-
-def _substitute_imm(text: str, imm_id: str, value: str) -> str:
-    """Replace ``#imm{N}`` (AArch64) and plain ``imm{N}`` (x86) with *value*."""
-    # AArch64-style: #immN → #value
-    text = re.sub(rf"#imm{re.escape(imm_id)}\b", f"#{value}", text)
-    # x86-style (not preceded by $): immN → value
-    text = re.sub(rf"(?<!\$)imm{re.escape(imm_id)}\b", value, text)
-    return text
 
 
 def _annotate_dead_writes(
