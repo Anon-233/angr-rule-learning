@@ -516,8 +516,8 @@ def test_derives_tbz_mask_from_bit_position_shift() -> None:
     rule = RuleGeneralizer(RuleDiagnostics()).generate(1, window, candidate, report)
 
     assert rule is not None
-    # Guest bit position preserved as literal.
-    assert "#3" in rule.guest_lines[0]
-    # Host mask derived: 1 << 3 (after save annotation).
+    # Guest bit position parameterised as immN.
+    assert "#imm" in rule.guest_lines[0]
+    # Host mask derived: 1 << imm1 (after save annotation).
     host_text = " ".join(rule.host_lines)
-    assert "${(1 << 3)}" in host_text
+    assert "${(1 << imm" in host_text
