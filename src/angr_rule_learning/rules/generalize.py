@@ -666,7 +666,7 @@ def _replace_immediates_shared(
             if _is_bit_position(line, m, guest_arch_n):
                 scale_shifts.add(int(c))
                 has_bit_position = True
-            if c in ("0", "00", "000"):
+            elif c in ("0", "00", "000"):
                 continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
@@ -711,7 +711,7 @@ def _replace_immediates_shared(
                 if _is_scale_immediate(line, match, arch):
                     return match.group(0)
                 c = _imm_canonical(match, arch)
-                if c in ("0", "00", "000"):
+                if c in ("0", "00", "000") and not _is_bit_position(line, match, arch):
                     return match.group(0)
                 val = int(c)
                 if val < 0:
@@ -791,7 +791,7 @@ def _derive_host_expression(
     Templates are tried by complexity; the first match wins.
     """
     items = list(guest_values.items())  # [(id, value), ...]
-    candidate_shifts = scale_shifts | {0, 16, 32, 48}
+    candidate_shifts = scale_shifts if scale_shifts else {0, 16, 32, 48}
 
     def _operand(imm_id: str) -> str:
         """Return the literal value for implicit operands, otherwise immN."""
@@ -806,7 +806,13 @@ def _derive_host_expression(
                 return _operand(imm_id)
         return str(s)
 
-    # L1: (imm_a << s) | imm_b  —  mov + movk → movabs
+    # L1: (imm_a << s)  —  single-shifted immediate  (e.g. 1 << bitpos)
+    for id_a, va in items:
+        for s in sorted(candidate_shifts, reverse=True):
+            if va << s == target_value:
+                return f"({_operand(id_a)} << {_shift_operand(s)})"
+
+    # L2: (imm_a << s) | imm_b  —  mov + movk → movabs
     for id_a, va in items:
         for id_b, vb in items:
             if id_a == id_b:
@@ -817,7 +823,7 @@ def _derive_host_expression(
                         f"({_operand(id_a)} << {_shift_operand(s)}) | {_operand(id_b)}"
                     )
 
-    # L2: imm_a + imm_b  —  add chain
+    # L3: imm_a + imm_b  —  add chain
     for id_a, va in items:
         for id_b, vb in items:
             if id_a == id_b:
@@ -826,12 +832,6 @@ def _derive_host_expression(
                 return f"{_operand(id_a)} + {_operand(id_b)}"
             if va - vb == target_value:
                 return f"{_operand(id_a)} - {_operand(id_b)}"
-
-    # L3: (imm_a << s)  —  single-shifted immediate
-    for id_a, va in items:
-        for s in sorted(candidate_shifts, reverse=True):
-            if va << s == target_value:
-                return f"({_operand(id_a)} << {_shift_operand(s)})"
 
     return None
 
