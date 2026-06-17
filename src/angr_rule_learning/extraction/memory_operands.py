@@ -45,6 +45,8 @@ _AARCH64_INDEX_MEM_RE = re.compile(
 _X86_BRACKET_RE = re.compile(r"(?P<mem>\[[^\]]+\])", re.IGNORECASE)
 _X86_SEGMENT_OVERRIDE_RE = re.compile(r"(?:cs|ds|es|fs|gs|ss)\s*:\s*\[", re.IGNORECASE)
 
+_X86_RMW_MNEMONICS = frozenset({"add", "sub", "and", "or", "xor", "imul"})
+
 _X86_REGISTER_TOKEN_RE = re.compile(
     r"^(?:r(?:[0-9]+|[abcd]x|[sb]p|[sd]i)|e(?:[abcd]x|[sb]p|[sd]i)|"
     r"(?:[abcd][lh])|(?:[abcd]x)|(?:[sb]p)|(?:[sd]i)|r(?:8|9|1[0-5])[bwd]?)$",
@@ -119,7 +121,7 @@ def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
 
 
 def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
-    if mnemonic not in {"mov", "movsxd"}:
+    if mnemonic not in {"mov", "movsxd"} and mnemonic not in _X86_RMW_MNEMONICS:
         return ()
     parts = [part.strip() for part in op_str.split(",", maxsplit=1)]
     if len(parts) != 2:
@@ -130,6 +132,10 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if left_mem is not None and right_mem is not None:
         return ()
     if mnemonic == "movsxd" and left_mem is not None:
+        return ()
+    # RMW arithmetic only supports memory-as-source (right operand);
+    # memory-as-destination (add [mem], reg) requires a full RMW model.
+    if mnemonic in _X86_RMW_MNEMONICS and left_mem is not None:
         return ()
     if left_mem is None and right_mem is None:
         return ()
@@ -151,7 +157,11 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if _X86_SEGMENT_OVERRIDE_RE.search(right):
         return ()
     value_register = left.strip().lower()
-    width = 4 if mnemonic == "movsxd" else _x86_width(op_str, value_register)
+    width = (
+        4
+        if mnemonic in {"movsxd"} | _X86_RMW_MNEMONICS
+        else _x86_width(op_str, value_register)
+    )
     if width is None:
         return ()
     operand = _x86_operand("read", width, right_mem, value_register)

@@ -186,3 +186,56 @@ def test_parses_x86_movsxd_memory_source_as_32_bit_memory_read() -> None:
     assert operands[0].width == 4
     assert operands[0].value_register == "rax"
     assert operands[0].address == AddressExpr(base="rcx", index="rdx", scale=4)
+
+
+def test_parses_x86_add_memory_source_as_read_operand() -> None:
+    operands = extract_memory_operands(
+        _inst("x86-64", "add", "eax, dword ptr [rbp - 8]")
+    )
+
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 4
+    assert operands[0].value_register == "eax"
+    assert operands[0].address == AddressExpr(base="rbp", displacement=-8)
+
+
+def test_parses_x86_sub_memory_source_as_read_operand() -> None:
+    operands = extract_memory_operands(
+        _inst("x86-64", "sub", "eax, dword ptr [rbp - 4]")
+    )
+
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 4
+    assert operands[0].value_register == "eax"
+
+
+def test_parses_x86_imul_memory_source_as_read_operand() -> None:
+    operands = extract_memory_operands(
+        _inst("x86-64", "imul", "eax, dword ptr [rbp - 8]")
+    )
+
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 4
+    assert operands[0].value_register == "eax"
+
+
+def test_parses_x86_and_memory_source_as_read_operand() -> None:
+    operands = extract_memory_operands(
+        _inst("x86-64", "and", "eax, dword ptr [rbp - 0xc]")
+    )
+
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 4
+    assert operands[0].value_register == "eax"
+
+
+def test_rejects_x86_rmw_write_to_memory() -> None:
+    operands = extract_memory_operands(
+        _inst("x86-64", "add", "dword ptr [rbp - 8], eax")
+    )
+
+    assert operands == ()
