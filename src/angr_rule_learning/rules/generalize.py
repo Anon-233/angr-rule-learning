@@ -676,6 +676,8 @@ def _replace_immediates_shared(
             if _is_scale_immediate(line, m, host_arch_n):
                 scale_shifts.add(int(c))
                 continue
+            if c in ("0", "00", "000"):
+                continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
                 next_id += 1
@@ -707,6 +709,8 @@ def _replace_immediates_shared(
                 if _is_scale_immediate(line, match, arch):
                     return match.group(0)
                 c = _imm_canonical(match, arch)
+                if c in ("0", "00", "000") and normalize_arch_name(arch) != "aarch64":
+                    return match.group(0)
                 val = int(c)
                 if val < 0:
                     if normalize_arch_name(arch) == "aarch64":
