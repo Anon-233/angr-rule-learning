@@ -655,6 +655,7 @@ def _replace_immediates_shared(
 
     scale_shifts: set[int] = set()
     implicit_ids: set[str] = set()
+    has_bit_position: bool = False
 
     for line in guest_lines:
         for m in guest_pattern.finditer(line):
@@ -664,16 +665,7 @@ def _replace_immediates_shared(
                 continue
             if _is_bit_position(line, m, guest_arch_n):
                 scale_shifts.add(int(c))
-                # Inject implicit mask base value so derivation can
-                # find  (1 << immN) = mask.  Fall through so the bit
-                # position itself gets a regular immN placeholder.
-                _BASE_ONE = "1"
-                if _BASE_ONE not in canonical_to_id:
-                    canonical_to_id[_BASE_ONE] = next_id
-                    next_id += 1
-                implicit_id = str(canonical_to_id[_BASE_ONE])
-                value_by_id[implicit_id] = 1
-                implicit_ids.add(implicit_id)
+                has_bit_position = True
             if c in ("0", "00", "000"):
                 continue
             if c not in canonical_to_id:
@@ -692,6 +684,19 @@ def _replace_immediates_shared(
                 canonical_to_id[c] = next_id
                 next_id += 1
             value_by_id[str(canonical_to_id[c])] = int(c)
+
+    if has_bit_position:
+        # Inject implicit mask base value (1) so derivation can
+        # find  (1 << immN) = mask.  Deferred until after all
+        # textual immediates are registered so it does not consume
+        # a low immN slot.
+        _BASE_ONE = "1"
+        if _BASE_ONE not in canonical_to_id:
+            canonical_to_id[_BASE_ONE] = next_id
+            next_id += 1
+        implicit_id = str(canonical_to_id[_BASE_ONE])
+        value_by_id[implicit_id] = 1
+        implicit_ids.add(implicit_id)
 
     def _replace_side(
         lines: tuple[str, ...],
