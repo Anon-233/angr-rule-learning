@@ -666,6 +666,8 @@ def _replace_immediates_shared(
             if _is_bit_position(line, m, guest_arch_n):
                 scale_shifts.add(int(c))
                 has_bit_position = True
+            if c in ("0", "00", "000"):
+                continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
                 next_id += 1
@@ -703,8 +705,6 @@ def _replace_immediates_shared(
         pattern: re.Pattern[str],
         arch: str,
         prefix: str,
-        *,
-        keep_zero: bool = False,
     ) -> tuple[str, ...]:
         result: list[str] = []
         for line in lines:
@@ -713,7 +713,7 @@ def _replace_immediates_shared(
                 if _is_scale_immediate(line, match, arch):
                     return match.group(0)
                 c = _imm_canonical(match, arch)
-                if keep_zero and c in ("0", "00", "000"):
+                if c in ("0", "00", "000"):
                     return match.group(0)
                 val = int(c)
                 if val < 0:
@@ -727,9 +727,7 @@ def _replace_immediates_shared(
         return tuple(result)
 
     guest_result = _replace_side(guest_lines, guest_pattern, guest_arch_n, "#")
-    host_result = _replace_side(
-        host_lines, host_pattern, host_arch_n, "", keep_zero=True
-    )
+    host_result = _replace_side(host_lines, host_pattern, host_arch_n, "")
 
     # Derive host-only immediates from guest immediates.
     guest_imms = {
