@@ -28,6 +28,7 @@ from angr_rule_learning.rules.generalize import (
     GeneratedRule,
     RuleDiagnostics,
     RuleGeneralizer,
+    consolidate_rules,
 )
 from angr_rule_learning.rules.writer import (
     write_rule_diagnostics_json,
@@ -133,6 +134,7 @@ class ExtractionPipeline:
                             if rule is not None:
                                 rules.append(rule)
         candidate_tuple = tuple(candidates)
+        rules = consolidate_rules(rules)
         rule_tuple = tuple(rules)
         if rules_output is not None:
             write_rules_text(rules_output, rule_tuple)

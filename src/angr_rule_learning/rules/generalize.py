@@ -24,6 +24,8 @@ from angr_rule_learning.verification.report import VerificationReport
 
 _TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z][A-Za-z0-9_]*)(?![A-Za-z0-9_])")
 
+_RESERVED_LITERALS = frozenset({"0", "00", "000"})
+
 
 @dataclass(frozen=True)
 class GeneratedRule:
@@ -666,7 +668,7 @@ def _replace_immediates_shared(
             if _is_bit_position(line, m, guest_arch_n):
                 scale_shifts.add(int(c))
                 has_bit_position = True
-            if c in ("0", "00", "000"):
+            if c in _RESERVED_LITERALS:
                 continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
@@ -680,7 +682,7 @@ def _replace_immediates_shared(
                 continue
             # Zero on the host side is a fixed comparison constant
             # (e.g. cmp reg, 0), not a parameterizable value.
-            if c in ("0", "00", "000"):
+            if c in _RESERVED_LITERALS:
                 continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
@@ -713,7 +715,7 @@ def _replace_immediates_shared(
                 if _is_scale_immediate(line, match, arch):
                     return match.group(0)
                 c = _imm_canonical(match, arch)
-                if c in ("0", "00", "000"):
+                if c in _RESERVED_LITERALS:
                     return match.group(0)
                 val = int(c)
                 if val < 0:
@@ -923,6 +925,61 @@ def _host_immediates_are_derivable(
         m.group(1) for line in host_lines for m in _IMM_PLACEHOLDER_RE.finditer(line)
     }
     return host_imms <= guest_imms
+
+
+def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
+    """Remove rules that are subsumed by a more-parameterised rule.
+
+    A rule *A* is subsumed by rule *B* when substituting one of *B*'s
+    ``immN`` placeholders with a reserved literal value produces the
+    exact same guest and host text as *A*.
+    """
+    if not rules:
+        return rules
+
+    _IMM_RE = re.compile(r"#?imm(\d+)")
+
+    subsumed_ids: set[int] = set()
+    for i, rule_a in enumerate(rules):
+        for j, rule_b in enumerate(rules):
+            if i == j:
+                continue
+            if _rule_subsumed_by(rule_a, rule_b, _IMM_RE):
+                subsumed_ids.add(rule_a.rule_id)
+                break
+
+    return [r for r in rules if r.rule_id not in subsumed_ids]
+
+
+def _rule_subsumed_by(
+    candidate: GeneratedRule,
+    superset: GeneratedRule,
+    imm_re: re.Pattern[str],
+) -> bool:
+    """Check whether *candidate* is obtained from *superset* by
+    substituting a single ``immN`` placeholder with a reserved literal."""
+    superset_guest = "\n".join(superset.guest_lines)
+    superset_host = "\n".join(superset.host_lines)
+    candidate_guest = "\n".join(candidate.guest_lines)
+    candidate_host = "\n".join(candidate.host_lines)
+
+    for imm_match in imm_re.finditer(superset_guest + "\n" + superset_host):
+        imm_id = imm_match.group(1)
+        for literal_val in sorted(_RESERVED_LITERALS, key=len, reverse=True):
+            subbed_guest = _substitute_imm(superset_guest, imm_id, literal_val)
+            subbed_host = _substitute_imm(superset_host, imm_id, literal_val)
+            if subbed_guest == candidate_guest and subbed_host == candidate_host:
+                return True
+    return False
+
+
+def _substitute_imm(text: str, imm_id: str, value: str) -> str:
+    """Replace ``#imm{N}`` (AArch64) and plain ``imm{N}`` (x86) with *value*."""
+    # AArch64-style: #immN → #value
+    text = re.sub(rf"#imm{re.escape(imm_id)}\b", f"#{value}", text)
+    # x86-style (not preceded by $): immN → value
+    text = re.sub(rf"(?<!\$)imm{re.escape(imm_id)}\b", value, text)
+    return text
 
 
 def _annotate_dead_writes(

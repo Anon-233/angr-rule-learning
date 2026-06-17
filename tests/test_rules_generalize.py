@@ -4,7 +4,12 @@ from angr_rule_learning.extraction.models import (
     SourceLocation,
     WindowPair,
 )
-from angr_rule_learning.rules.generalize import RuleDiagnostics, RuleGeneralizer
+from angr_rule_learning.rules.generalize import (
+    GeneratedRule,
+    RuleDiagnostics,
+    RuleGeneralizer,
+    consolidate_rules,
+)
 from angr_rule_learning.verification.candidate import (
     CodeFragment,
     VerificationCandidate,
@@ -521,3 +526,22 @@ def test_derives_tbz_mask_from_bit_position_shift() -> None:
     # Host mask derived from bit position.
     host_text = " ".join(rule.host_lines)
     assert "${(1 << imm1)}" in host_text
+
+
+def test_consolidate_removes_literal_rule_subsumed_by_param_rule() -> None:
+    literal_rule = GeneratedRule(
+        rule_id=1,
+        candidate_id="a",
+        guest_lines=("tbz i32_reg1, #0, #label1",),
+        host_lines=("and i32_reg1, ${(1 << 0)}", "cmp i32_reg1, 0", "je label1"),
+    )
+    param_rule = GeneratedRule(
+        rule_id=2,
+        candidate_id="b",
+        guest_lines=("tbz i32_reg1, #imm1, #label1",),
+        host_lines=("and i32_reg1, ${(1 << imm1)}", "cmp i32_reg1, 0", "je label1"),
+    )
+
+    result = consolidate_rules([literal_rule, param_rule])
+
+    assert result == [param_rule]
