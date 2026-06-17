@@ -258,3 +258,78 @@ def test_still_generalizes_frame_rule_with_shared_displacement_immediate() -> No
     assert "imm1" in guest_line
     assert "imm1" in host_line
     assert "#-imm" in guest_line
+
+
+def test_generalizes_internal_guest_temporary_for_rmw_memory_window() -> None:
+    # 2×1 RMW window: guest needs ldr+add, host does add [mem] in one instruction.
+    # Same guest register (w8) appears as both input and output — the real
+    # pipeline pattern where eax is both source and dest in add eax, [mem].
+    guest_ldr = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="ldr",
+        op_str="w9, [x1, #8]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("x1",),
+        write_registers=("w9",),
+    )
+    guest_add = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1004,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="add",
+        op_str="w8, w8, w9",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("w8", "w9"),
+        write_registers=("w8",),
+    )
+    host_add = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="add",
+        op_str="eax, dword ptr [rcx + 8]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("eax", "rcx"),
+        write_registers=("eax",),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (2, 1),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_ldr, guest_add)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_add,)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="rmw-temp32",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 2),
+        host=CodeFragment("x86-64", 0x2000, "05060708", 1),
+        input_registers=(("x1", "rcx"), ("w8", "eax")),
+        output_registers=(("w8", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1 + 8", "rcx + 8", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="rmw-temp32",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None
+    assert rule.guest_lines == (
+        "ldr tmp1, [i64_reg2, #imm1]",
+        "add i32_reg1, i32_reg1, tmp1",
+    )
+    assert rule.host_lines == ("add i32_reg1, dword ptr [i64_reg2 + imm1]",)

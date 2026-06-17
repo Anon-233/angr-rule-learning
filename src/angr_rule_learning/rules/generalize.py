@@ -164,6 +164,8 @@ class RuleGeneralizer:
             guest_arch = candidate.guest.arch
             host_arch = candidate.host.arch
             mapping = _build_placeholder_map(candidate, guest_arch, host_arch)
+            internal_temps = _identify_internal_temps(window, candidate)
+            mapping.update(internal_temps)
             guest_lines = _generalize_lines(guest_raw_lines, mapping, guest_arch)
             host_lines = _generalize_lines(host_raw_lines, mapping, host_arch)
             guest_lines, host_lines = _annotate_dead_writes(
@@ -744,7 +746,11 @@ def _annotate_dead_writes(
                 family = family_for_register(inst.arch, reg)
                 if family in cc_families or is_allowed_literal_register(inst.arch, reg):
                     continue
-                if reg not in output_regs and reg not in first_write:
+                if (
+                    reg not in output_regs
+                    and reg not in first_write
+                    and not mapping.get(reg, "").startswith("tmp")
+                ):
                     first_write[reg] = idx
             for reg in inst.read_registers:
                 if reg in first_write:
@@ -796,3 +802,60 @@ def _generalize_lines(
     if not generalized:
         raise _RuleSkip("unsupported_rule_shape")
     return generalized
+
+
+def _identify_internal_temps(
+    window: WindowPair,
+    candidate: VerificationCandidate,
+) -> dict[str, str]:
+    """Map per-side internal temporary registers to tmpN placeholders.
+
+    A register is an internal temp when it is **written** inside the
+    window but does **not** appear as an output or input register of the
+    candidate.  Literal registers (sp, xzr, …) and condition-code
+    families are excluded.
+    """
+    from angr_rule_learning.extraction.liveness import (
+        family_for_register,
+        is_condition_family,
+    )
+
+    temps: dict[str, str] = {}
+    next_tmp = 1
+
+    guest_outputs = {normalize_register_name(r) for r, _ in candidate.output_registers}
+    guest_inputs = {normalize_register_name(r) for r, _ in candidate.input_registers}
+    host_outputs = {normalize_register_name(r) for _, r in candidate.output_registers}
+    host_inputs = {normalize_register_name(r) for _, r in candidate.input_registers}
+
+    for side, window_insts, arch, outputs, inputs in (
+        (
+            "guest",
+            window.guest.instructions,
+            candidate.guest.arch,
+            guest_outputs,
+            guest_inputs,
+        ),
+        (
+            "host",
+            window.host.instructions,
+            candidate.host.arch,
+            host_outputs,
+            host_inputs,
+        ),
+    ):
+        for inst in window_insts:
+            for reg in inst.write_registers:
+                reg_n = normalize_register_name(reg)
+                if reg_n in outputs or reg_n in inputs:
+                    continue
+                if is_allowed_literal_register(arch, reg_n):
+                    continue
+                family = family_for_register(arch, reg_n)
+                if is_condition_family(arch, family):
+                    continue
+                if reg_n not in temps:
+                    temps[reg_n] = f"tmp{next_tmp}"
+                    next_tmp += 1
+
+    return temps
