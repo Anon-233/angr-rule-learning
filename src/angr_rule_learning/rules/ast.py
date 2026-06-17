@@ -30,17 +30,19 @@ class RegOp:
 
 @dataclass(frozen=True)
 class ImmOp:
-    """Immediate placeholder: ``imm1``, ``#imm1``, or ``${expression}``."""
+    """Immediate placeholder: ``imm1``, ``#-imm1``, or ``${expression}``."""
 
     id: int
     derived: str | None = None  # "${ (1 << imm1) }" when derived
     aarch64_hash: bool = False  # True when the original text had a '#' prefix
+    neg: bool = False  # True for negative immediates like #-imm1
 
     def to_text(self) -> str:
         if self.derived is not None:
             return self.derived
         prefix = "#" if self.aarch64_hash else ""
-        return f"{prefix}imm{self.id}"
+        sign = "-" if self.neg else ""
+        return f"{prefix}{sign}imm{self.id}"
 
 
 @dataclass(frozen=True)
@@ -189,10 +191,14 @@ class Instruction:
         if m:
             return ImmOp(id=0, derived=text)
 
-        # Immediate: #immN or immN
-        m = re.fullmatch(r"(#?)imm(\d+)", text)
+        # Immediate: #immN, #-immN, -immN, immN
+        m = re.fullmatch(r"(#?)(-?)imm(\d+)", text)
         if m:
-            return ImmOp(id=int(m.group(2)), aarch64_hash=bool(m.group(1)))
+            return ImmOp(
+                id=int(m.group(3)),
+                aarch64_hash=bool(m.group(1)),
+                neg=bool(m.group(2)),
+            )
 
         # Register: i32_reg1, sp64, fp64
         m = re.fullmatch(r"(i\d+)_reg(\d+)", text)
@@ -290,7 +296,10 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
                 new_derived = re.sub(rf"#imm{imm_id}\b", f"#{value}", new_derived)
                 new_derived = re.sub(rf"(?<!\$)imm{imm_id}\b", value, new_derived)
                 return ImmOp(
-                    id=op.id, derived=new_derived, aarch64_hash=op.aarch64_hash
+                    id=op.id,
+                    derived=new_derived,
+                    aarch64_hash=op.aarch64_hash,
+                    neg=op.neg,
                 )
             return op
         if isinstance(op, LitOp):
@@ -335,7 +344,11 @@ def _op_equal(a: Operand, b: Operand) -> bool:
     if isinstance(a, RegOp) and isinstance(b, RegOp):
         return a.prefix == b.prefix and a.bits == b.bits
     if isinstance(a, ImmOp) and isinstance(b, ImmOp):
-        return a.derived == b.derived and a.aarch64_hash == b.aarch64_hash
+        return (
+            a.derived == b.derived
+            and a.aarch64_hash == b.aarch64_hash
+            and a.neg == b.neg
+        )
     if isinstance(a, TmpOp) and isinstance(b, TmpOp):
         return True
     if isinstance(a, LitOp) and isinstance(b, LitOp):

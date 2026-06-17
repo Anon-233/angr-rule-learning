@@ -4,6 +4,7 @@ from angr_rule_learning.extraction.models import (
     SourceLocation,
     WindowPair,
 )
+from angr_rule_learning.rules.ast import ImmOp
 from angr_rule_learning.rules.generalize import (
     GeneratedRule,
     RuleDiagnostics,
@@ -15,6 +16,12 @@ from angr_rule_learning.verification.candidate import (
     VerificationCandidate,
 )
 from angr_rule_learning.verification.report import CheckResult, VerificationReport
+
+
+def test_immop_neg_serializes_as_hash_minus_imm() -> None:
+    assert ImmOp(id=1, neg=True, aarch64_hash=True).to_text() == "#-imm1"
+    assert ImmOp(id=2, neg=True, aarch64_hash=False).to_text() == "-imm2"
+    assert ImmOp(id=3, neg=False, aarch64_hash=True).to_text() == "#imm3"
 
 
 def _inst(
