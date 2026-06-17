@@ -163,11 +163,25 @@ class RuleGeneralizer:
         try:
             guest_arch = candidate.guest.arch
             host_arch = candidate.host.arch
-            mapping = _build_placeholder_map(candidate, guest_arch, host_arch)
+            mapping, role_split = _build_placeholder_map(
+                candidate, guest_arch, host_arch
+            )
             internal_temps = _identify_internal_temps(window, candidate)
             mapping.update(internal_temps)
-            guest_lines = _generalize_lines(guest_raw_lines, mapping, guest_arch)
-            host_lines = _generalize_lines(host_raw_lines, mapping, host_arch)
+            guest_lines = _generalize_lines_with_roles(
+                guest_raw_lines,
+                window.guest.instructions,
+                mapping,
+                role_split,
+                guest_arch,
+            )
+            host_lines = _generalize_lines_with_roles(
+                host_raw_lines,
+                window.host.instructions,
+                mapping,
+                role_split,
+                host_arch,
+            )
             guest_lines, host_lines = _annotate_dead_writes(
                 guest_lines,
                 host_lines,
@@ -244,15 +258,40 @@ def _build_placeholder_map(
     candidate: VerificationCandidate,
     guest_arch: str,
     host_arch: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    """Return ``(mapping, role_split)``.
+
+    *mapping* maps register names to placeholders.
+    *role_split* maps a guest register name to
+    ``(output_placeholder, input_placeholder)`` when the same guest
+    register appears in both output and input pairs with **different**
+    host registers and must be given distinct placeholders per role.
+    """
     mapping: dict[str, str] = {}
     next_id = 1
+
+    # Record host register per guest register for output vs input roles.
+    output_host: dict[str, str] = {}
+    input_host: dict[str, str] = {}
+
     register_pairs = (
         candidate.output_registers
         + candidate.input_registers
         + _memory_binding_register_pairs(candidate)
     )
+    output_count = len(candidate.output_registers)
+    input_count = len(candidate.input_registers)
+
+    pair_index = 0
     for guest_reg, host_reg in register_pairs:
+        pair_index += 1
+        is_output = pair_index <= output_count
+        is_input = output_count < pair_index <= output_count + input_count
+
+        if is_output:
+            output_host[guest_reg] = host_reg
+        elif is_input:
+            input_host[guest_reg] = host_reg
         guest_reg = normalize_register_name(guest_reg)
         host_reg = normalize_register_name(host_reg)
 
@@ -355,7 +394,28 @@ def _build_placeholder_map(
             mapping[register] = existing
     if not mapping:
         raise _RuleSkip("unsupported_rule_shape")
-    return mapping
+
+    # Detect split registers: same guest register appears in both
+    # output and input pairs but with different host registers.
+    role_split: dict[str, tuple[str, str]] = {}
+    for guest_reg in output_host:
+        if guest_reg not in input_host:
+            continue
+        out_ph = mapping.get(guest_reg)
+        if out_ph is None:
+            continue
+        if output_host[guest_reg] == input_host[guest_reg]:
+            continue  # Same host register — no split needed
+        # Create a new input-role placeholder.
+        guest_class = _classify_for_rule(guest_arch, guest_reg)
+        in_ph = f"{guest_class.placeholder_prefix}_reg{next_id}"
+        next_id += 1
+        role_split[guest_reg] = (out_ph, in_ph)
+        # Also update the host input register's mapping.
+        host_input_reg = input_host[guest_reg]
+        mapping[host_input_reg] = in_ph
+
+    return mapping, role_split
 
 
 def _classify_for_rule(arch: str, register: str) -> RegisterClass:
@@ -886,6 +946,72 @@ def _generalize_lines(
     if not generalized:
         raise _RuleSkip("unsupported_rule_shape")
     return generalized
+
+
+def _generalize_lines_with_roles(
+    lines: tuple[str, ...],
+    instructions: tuple[ExtractedInstruction, ...],
+    mapping: dict[str, str],
+    role_split: dict[str, tuple[str, str]],
+    arch: str,
+) -> tuple[str, ...]:
+    result: list[str] = []
+    for line, inst in zip(lines, instructions, strict=True):
+        rewritten = line
+        for reg in sorted(role_split, key=lambda r: len(r), reverse=True):
+            out_ph, in_ph = role_split[reg]
+            is_written = bool(inst.write_registers and reg in inst.write_registers)
+            is_read = bool(inst.read_registers and reg in inst.read_registers)
+            if is_written and is_read:
+                # First occurrence is the write (dest) operand.
+                occurrence = [0]
+
+                def _repl(match: re.Match[str]) -> str:
+                    occurrence[0] += 1
+                    return out_ph if occurrence[0] == 1 else in_ph
+
+                rewritten = re.sub(
+                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    _repl,
+                    rewritten,
+                    flags=re.IGNORECASE,
+                )
+            elif is_written:
+                rewritten = re.sub(
+                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    out_ph,
+                    rewritten,
+                    flags=re.IGNORECASE,
+                )
+            elif is_read:
+                rewritten = re.sub(
+                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    in_ph,
+                    rewritten,
+                    flags=re.IGNORECASE,
+                )
+            else:
+                # No role info available — treat first occurrence as write.
+                occurrence = [0]
+
+                def _repl_noinfo(match: re.Match[str]) -> str:
+                    occurrence[0] += 1
+                    return out_ph if occurrence[0] == 1 else in_ph
+
+                rewritten = re.sub(
+                    rf"(?<![A-Za-z0-9_]){re.escape(reg)}(?![A-Za-z0-9_])",
+                    _repl_noinfo,
+                    rewritten,
+                    flags=re.IGNORECASE,
+                )
+        # Apply remaining (non-split) placeholders.
+        rewritten = _generalize_line(rewritten, mapping, arch)
+        if _remaining_registers(rewritten, arch):
+            raise _RuleSkip("unmapped_register_surface")
+        result.append(rewritten)
+    if not result:
+        raise _RuleSkip("unsupported_rule_shape")
+    return tuple(result)
 
 
 def _identify_internal_temps(

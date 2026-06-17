@@ -314,8 +314,8 @@ def test_generalizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> N
     rule = RuleGeneralizer(diagnostics).generate(1, pair, candidate, _passing_report())
 
     assert rule is not None
-    assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg1",)
-    assert rule.host_lines == ("lea i32_reg1, [i32_reg1 + i32_reg2]",)
+    assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg3",)
+    assert rule.host_lines == ("lea i32_reg1, [i32_reg3 + i32_reg2]",)
 
 
 def test_generalizer_does_not_coalesce_by_host_carrier_alone() -> None:
@@ -377,3 +377,73 @@ def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
 
     assert generalizer.generate(1, window, candidate, report) is None
     assert diagnostics.skip_reasons["unsupported_rule_shape"] == 1
+
+
+def test_splits_guest_register_when_output_and_input_pair_differently() -> None:
+    """When w0 appears as both output (paired with eax) and input (paired with
+    edi), the two roles must get different placeholders so the host's explicit
+    ``mov eax, edi`` is preserved."""
+    guest_sub = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="sub",
+        op_str="w0, w0, w1",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("w0",),
+        read_registers=("w0", "w1"),
+    )
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="eax, edi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("eax",),
+        read_registers=("edi",),
+    )
+    host_sub = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="sub",
+        op_str="eax, esi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("eax",),
+        read_registers=("eax", "esi"),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (1, 2),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_sub,)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_mov, host_sub)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="sample:sample.c:1:0:g0:h0",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "010203010203", 2),
+        input_registers=(("w0", "edi"), ("w1", "esi")),
+        output_registers=(("w0", "eax"),),
+    )
+    report = VerificationReport(
+        candidate_id="sample:sample.c:1:0:g0:h0",
+        status="pass",
+        checks=(CheckResult("register", "pass", "w0", "eax"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(1, window, candidate, report)
+
+    assert rule is not None
+    # w0-as-output → i32_reg1; w0-as-input → i32_reg3; w1 → i32_reg2.
+    assert rule.guest_lines == ("sub i32_reg1, i32_reg3, i32_reg2",)
+    assert rule.host_lines == (
+        "mov i32_reg1, i32_reg3",
+        "sub i32_reg1, i32_reg2",
+    )
