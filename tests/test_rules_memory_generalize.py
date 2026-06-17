@@ -333,3 +333,79 @@ def test_generalizes_internal_guest_temporary_for_rmw_memory_window() -> None:
         "add i32_reg1, i32_reg1, tmp1",
     )
     assert rule.host_lines == ("add i32_reg1, dword ptr [i64_reg2 + imm1]",)
+
+
+def test_derives_large_immediate_from_bitwise_immediate_construction() -> None:
+    """mov + movk → movabs: host 64-bit immediate derived from guest pair."""
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (2, 1),
+        InstructionWindow(
+            "sample:sample.c:1:0",
+            "guest",
+            (
+                ExtractedInstruction(
+                    arch="aarch64",
+                    address=0x1000,
+                    size=4,
+                    code_bytes=b"\x01\x02\x03\x04",
+                    mnemonic="mov",
+                    op_str="x0, #0x1234",
+                    function="f",
+                    source=SourceLocation("sample.c", 1),
+                ),
+                ExtractedInstruction(
+                    arch="aarch64",
+                    address=0x1004,
+                    size=4,
+                    code_bytes=b"\x01\x02\x03\x04",
+                    mnemonic="movk",
+                    op_str="x0, #0x5678, lsl #48",
+                    function="f",
+                    source=SourceLocation("sample.c", 1),
+                ),
+            ),
+        ),
+        InstructionWindow(
+            "sample:sample.c:1:0",
+            "host",
+            (
+                ExtractedInstruction(
+                    arch="x86-64",
+                    address=0x2000,
+                    size=10,
+                    code_bytes=b"\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a",
+                    mnemonic="movabs",
+                    op_str="rax, 0x5678000000001234",
+                    function="f",
+                    source=SourceLocation("sample.c", 1),
+                ),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="mov-movk-abs",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 2),
+        host=CodeFragment("x86-64", 0x2000, "05060708", 1),
+        output_registers=(("x0", "rax"),),
+    )
+    report = VerificationReport(
+        candidate_id="mov-movk-abs",
+        status="pass",
+        checks=(CheckResult("register", "pass", "x0", "rax"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(1, window, candidate, report)
+
+    assert rule is not None
+    # Guest: two separate 16-bit immediates.
+    assert "imm1" in rule.guest_lines[0]
+    assert "imm2" in rule.guest_lines[1]
+    # Guest: shift preserved as literal.
+    assert "lsl #48" in rule.guest_lines[1]
+    # Host: derived expression inlined — no separate imm3.
+    assert "imm3" not in rule.host_lines[0]
+    expected = "movabs i64_reg1, ${(imm2 << 48) | imm1}"
+    assert rule.host_lines[0] == expected, (
+        f"\n  got: {rule.host_lines[0]}\n want: {expected}"
+    )

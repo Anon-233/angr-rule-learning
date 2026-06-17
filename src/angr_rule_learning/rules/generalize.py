@@ -577,6 +577,7 @@ def _replace_immediates_shared(
     host_arch: str,
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     canonical_to_id: dict[str, int] = {}
+    value_by_id: dict[str, int] = {}
     next_id = 1
 
     guest_arch_n = normalize_arch_name(guest_arch)
@@ -584,26 +585,32 @@ def _replace_immediates_shared(
     guest_pattern = _AARCH64_IMM_RE if guest_arch_n == "aarch64" else _X86_64_IMM_RE
     host_pattern = _AARCH64_IMM_RE if host_arch_n == "aarch64" else _X86_64_IMM_RE
 
+    scale_shifts: set[int] = set()
+
     for line in guest_lines:
         for m in guest_pattern.finditer(line):
-            if _is_scale_immediate(line, m, guest_arch_n):
-                continue
             c = _imm_canonical(m, guest_arch)
+            if _is_scale_immediate(line, m, guest_arch_n):
+                scale_shifts.add(int(c))
+                continue
             if c in ("0", "00", "000"):
                 continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
                 next_id += 1
+            value_by_id[str(canonical_to_id[c])] = int(c)
     for line in host_lines:
         for m in host_pattern.finditer(line):
-            if _is_scale_immediate(line, m, host_arch_n):
-                continue
             c = _imm_canonical(m, host_arch)
+            if _is_scale_immediate(line, m, host_arch_n):
+                scale_shifts.add(int(c))
+                continue
             if c in ("0", "00", "000"):
                 continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
                 next_id += 1
+            value_by_id[str(canonical_to_id[c])] = int(c)
 
     def _replace_side(
         lines: tuple[str, ...],
@@ -631,10 +638,87 @@ def _replace_immediates_shared(
             result.append(pattern.sub(_replacer, line))
         return tuple(result)
 
-    return (
-        _replace_side(guest_lines, guest_pattern, guest_arch_n, "#"),
-        _replace_side(host_lines, host_pattern, host_arch_n, ""),
-    )
+    guest_result = _replace_side(guest_lines, guest_pattern, guest_arch_n, "#")
+    host_result = _replace_side(host_lines, host_pattern, host_arch_n, "")
+
+    # Derive host-only immediates from guest immediates.
+    guest_imms = {
+        m.group(1) for line in guest_result for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    host_imms = {
+        m.group(1) for line in host_result for m in _IMM_PLACEHOLDER_RE.finditer(line)
+    }
+    host_only = host_imms - guest_imms
+
+    if host_only:
+        guest_values = {k: v for k, v in value_by_id.items() if k in guest_imms}
+        host_result = _inline_derived_expressions(
+            host_result, host_only, guest_values, scale_shifts, value_by_id
+        )
+
+    return guest_result, host_result
+
+
+def _inline_derived_expressions(
+    host_lines: tuple[str, ...],
+    host_only_ids: set[str],
+    guest_values: dict[str, int],
+    scale_shifts: set[int],
+    all_values: dict[str, int],
+) -> tuple[str, ...]:
+    result: list[str] = []
+    for line in host_lines:
+        for m in _IMM_PLACEHOLDER_RE.finditer(line):
+            imm_id = m.group(1)
+            if imm_id not in host_only_ids:
+                continue
+            derived = _derive_host_expression(
+                int(all_values[imm_id]), guest_values, scale_shifts
+            )
+            if derived is not None:
+                line = line.replace(f"imm{imm_id}", f"${{{derived}}}")
+        result.append(line)
+    return tuple(result)
+
+
+def _derive_host_expression(
+    target_value: int,
+    guest_values: dict[str, int],
+    scale_shifts: set[int],
+) -> str | None:
+    """Search for an expression of guest immediates that equals *target_value*.
+
+    Templates are tried by complexity; the first match wins.
+    """
+    items = list(guest_values.items())  # [(id, value), ...]
+    candidate_shifts = scale_shifts | {0, 16, 32, 48}
+
+    # L1: (imm_a << s) | imm_b  —  mov + movk → movabs
+    for id_a, va in items:
+        for id_b, vb in items:
+            if id_a == id_b:
+                continue
+            for s in sorted(candidate_shifts, reverse=True):
+                if (va << s) | vb == target_value:
+                    return f"(imm{id_a} << {s}) | imm{id_b}"
+
+    # L2: imm_a + imm_b  —  add chain
+    for id_a, va in items:
+        for id_b, vb in items:
+            if id_a == id_b:
+                continue
+            if va + vb == target_value:
+                return f"imm{id_a} + imm{id_b}"
+            if va - vb == target_value:
+                return f"imm{id_a} - imm{id_b}"
+
+    # L3: (imm_a << s)  —  single-shifted immediate
+    for id_a, va in items:
+        for s in sorted(candidate_shifts, reverse=True):
+            if va << s == target_value:
+                return f"(imm{id_a} << {s})"
+
+    return None
 
 
 def _imm_canonical(match: re.Match[str], arch: str) -> str:
