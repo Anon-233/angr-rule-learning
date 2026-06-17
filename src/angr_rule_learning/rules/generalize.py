@@ -703,6 +703,8 @@ def _replace_immediates_shared(
         pattern: re.Pattern[str],
         arch: str,
         prefix: str,
+        *,
+        keep_zero: bool = False,
     ) -> tuple[str, ...]:
         result: list[str] = []
         for line in lines:
@@ -711,9 +713,7 @@ def _replace_immediates_shared(
                 if _is_scale_immediate(line, match, arch):
                     return match.group(0)
                 c = _imm_canonical(match, arch)
-                # Zero is a fixed semantic constant on the host side
-                # (e.g. cmp reg, 0) — not a parameterizable immediate.
-                if c in ("0", "00", "000") and normalize_arch_name(arch) != "aarch64":
+                if keep_zero and c in ("0", "00", "000"):
                     return match.group(0)
                 val = int(c)
                 if val < 0:
@@ -727,7 +727,9 @@ def _replace_immediates_shared(
         return tuple(result)
 
     guest_result = _replace_side(guest_lines, guest_pattern, guest_arch_n, "#")
-    host_result = _replace_side(host_lines, host_pattern, host_arch_n, "")
+    host_result = _replace_side(
+        host_lines, host_pattern, host_arch_n, "", keep_zero=True
+    )
 
     # Derive host-only immediates from guest immediates.
     guest_imms = {
