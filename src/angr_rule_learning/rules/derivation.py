@@ -1,14 +1,14 @@
-"""Heuristic immediate expression derivation.
+"""Heuristic immediate expression derivation — precise to Host occurrence.
 
 Given guest and host instruction ASTs, attempts to express host-only
-immediate values as arithmetic expressions of guest immediates using
-instruction-aware derivation strategies.
+immediate values as arithmetic expressions of guest immediates.  Each
+derivation strategy is specific to a known instruction pattern (tbz→and,
+mov+movk→movabs, indexed scale) and receives the exact Host instruction
+index, operand index, and (for compound operands) the match span so it
+can verify that the derived expression belongs at that position.
 
-The primary entry point is :func:`derive_host_expressions`, which accepts
-full instruction AST from both architectures together with an extracted
-value table. Each derivation strategy inspects mnemonics and operand
-positions to ensure the derivation is semantically valid for the
-instruction pattern rather than coincidental arithmetic.
+If **any** host-only occurrence cannot be derived, the entire rule is
+rejected as ``unpaired_host_immediate``.
 """
 
 from __future__ import annotations
@@ -29,12 +29,7 @@ from angr_rule_learning.rules.ast import (
 
 @dataclass(frozen=True)
 class DerivationContext:
-    """Complete context for deriving host-only immediate expressions.
-
-    Carries full instruction AST from both architectures together with a
-    value-by-id table so that derivation strategies can inspect mnemonics,
-    operand positions, and original immediate values.
-    """
+    """Complete context for deriving host-only immediate expressions."""
 
     guest_insts: tuple[Instruction, ...]
     host_insts: tuple[Instruction, ...]
@@ -44,25 +39,33 @@ class DerivationContext:
 
 
 class DerivationStrategy(Protocol):
-    """Strategy that attempts to derive a host-only immediate in terms of guest
-    immediates.
+    """Strategy that attempts to derive a host-only immediate at a specific
+    position in the Host instruction sequence.
 
-    Returns a derivation expression string (e.g. ``"(1 << imm1)"``)
-    suitable for use in ``ImmOp.derived``, or ``None`` if the strategy
-    does not apply.
+    *imm_id* is the host-only immediate identifier.
+    *host_idx* and *op_idx* locate the operand within ``ctx.host_insts``.
+    *span* is ``(start, end)`` for the match inside a ``LitOp``/``RegTextOp``
+    operand, or ``None`` for a standalone ``ImmOp`` operand.
     """
 
-    def __call__(self, ctx: DerivationContext, imm_id: str) -> str | None: ...
+    def __call__(
+        self,
+        ctx: DerivationContext,
+        imm_id: str,
+        host_idx: int,
+        op_idx: int,
+        span: tuple[int, int] | None,
+    ) -> str | None: ...
 
 
 def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
     """Attempt to express host-only immediates in terms of guest immediates.
 
-    For each host-side ``ImmOp`` whose ID does not appear on the guest side,
-    attempts derivation strategies in order.  Found derivations are stored in
-    ``ImmOp.derived``.
-
-    Returns new host instructions (the guest side is unchanged).
+    Strategies receive the exact Host position (instruction index, operand
+    index, span) and must verify the instruction context matches their
+    pattern.  If any host-only immediate remains underived after all
+    strategies are tried, it is left as-is — the caller is responsible for
+    rejecting the rule.
     """
     guest_imm_ids = collect_instruction_imm_ids(ctx.guest_insts)
     host_imm_ids = collect_instruction_imm_ids(ctx.host_insts)
@@ -78,15 +81,13 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
     ]
 
     result: list[Instruction] = []
-    for inst in ctx.host_insts:
+    for host_idx, inst in enumerate(ctx.host_insts):
         new_operands = []
-        for op in inst.operands:
+        for op_idx, op in enumerate(inst.operands):
             if isinstance(op, ImmOp) and str(op.id) in host_only:
-                derived = None
-                for strategy in strategies:
-                    derived = strategy(ctx, str(op.id))
-                    if derived is not None:
-                        break
+                derived = _try_strategies(
+                    strategies, ctx, str(op.id), host_idx, op_idx, None
+                )
                 if derived is not None:
                     op = ImmOp(
                         id=op.id,
@@ -99,11 +100,10 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                 for m in IMM_PLACEHOLDER_RE.finditer(text):
                     imm_id = m.group(1)
                     if imm_id in host_only:
-                        derived = None
-                        for strategy in strategies:
-                            derived = strategy(ctx, imm_id)
-                            if derived is not None:
-                                break
+                        span = (m.start(), m.end())
+                        derived = _try_strategies(
+                            strategies, ctx, imm_id, host_idx, op_idx, span
+                        )
                         if derived is not None:
                             text = re.sub(
                                 rf"\bimm{re.escape(imm_id)}\b",
@@ -126,20 +126,43 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
     return tuple(result)
 
 
+def _try_strategies(
+    strategies: list[DerivationStrategy],
+    ctx: DerivationContext,
+    imm_id: str,
+    host_idx: int,
+    op_idx: int,
+    span: tuple[int, int] | None,
+) -> str | None:
+    for strategy in strategies:
+        derived = strategy(ctx, imm_id, host_idx, op_idx, span)
+        if derived is not None:
+            return derived
+    return None
+
+
 # ── Derivation strategies ─────────────────────────────────────────────────
 
 
-def _derive_tbz_mask(ctx: DerivationContext, imm_id: str) -> str | None:
-    """Derive host mask from a guest ``tbz``/``tbnz`` bit-position immediate.
+def _derive_tbz_mask(
+    ctx: DerivationContext,
+    imm_id: str,
+    host_idx: int,
+    op_idx: int,
+    span: tuple[int, int] | None,
+) -> str | None:
+    """Derive host ``and`` mask from guest ``tbz``/``tbnz`` bit position.
 
-    Requires:
-    - A guest instruction with mnemonic ``tbz`` or ``tbnz``.
-    - Its second operand is the bit-position immediate (ImmOp).
-    - The host value equals ``1 << bitpos_value``.
+    Only applies when the Host instruction is ``and`` — the lowering of
+    a bit-test into a mask-and-compare sequence.
 
-    Returns ``"(1 << immN)"`` where ``immN`` is the guest bit-position
-    placeholder.
+    Handles both parameterised bit positions (``ImmOp``) and the reserved
+    literal ``#0`` (``LitOp`` with value ``\"0\"`` or ``\"#0\"``).
     """
+    host_inst = ctx.host_insts[host_idx]
+    if host_inst.mnemonic.strip().lower() != "and":
+        return None
+
     target_value = ctx.value_by_id.get(imm_id)
     if target_value is None:
         return None
@@ -151,65 +174,66 @@ def _derive_tbz_mask(ctx: DerivationContext, imm_id: str) -> str | None:
         if len(inst.operands) < 2:
             continue
         bitpos_op = inst.operands[1]
-        if not isinstance(bitpos_op, ImmOp) or bitpos_op.id == 0:
-            continue
-        bitpos_id = str(bitpos_op.id)
-        bitpos_value = ctx.value_by_id.get(bitpos_id)
-        if bitpos_value is None:
-            continue
-        if (1 << bitpos_value) == target_value:
-            return f"(1 << imm{bitpos_id})"
+        if isinstance(bitpos_op, ImmOp) and bitpos_op.id != 0:
+            bitpos_id = str(bitpos_op.id)
+            bitpos_value = ctx.value_by_id.get(bitpos_id)
+            if bitpos_value is not None and (1 << bitpos_value) == target_value:
+                return f"(1 << imm{bitpos_id})"
+        elif isinstance(bitpos_op, LitOp) and bitpos_op.value in {"0", "#0"}:
+            if (1 << 0) == target_value:
+                return "(1 << 0)"
 
     return None
 
 
-def _derive_movk_constant(ctx: DerivationContext, imm_id: str) -> str | None:
-    """Derive a 64-bit host constant from guest ``mov`` + ``movk`` pattern.
+def _derive_movk_constant(
+    ctx: DerivationContext,
+    imm_id: str,
+    host_idx: int,
+    op_idx: int,
+    span: tuple[int, int] | None,
+) -> str | None:
+    """Derive a 64-bit host constant from guest ``mov`` + ``movk``.
 
-    Requires:
-    - A guest instruction with mnemonic ``mov`` writing a register.
-    - A guest instruction with mnemonic ``movk`` writing the same register
-      with an ``lsl #immN`` shift operand.
-    - The host value equals ``(movk_imm << shift) | mov_imm``.
-
-    Returns ``"((imm_high << imm_shift) | imm_low)"`` where the placeholder
-    IDs come from the guest instructions.
+    Only applies when the Host instruction is ``mov`` or ``movabs`` and
+    the immediate is a standalone ``ImmOp`` (not embedded in a compound
+    operand).
     """
+    host_inst = ctx.host_insts[host_idx]
+    host_mnem = host_inst.mnemonic.strip().lower()
+    if host_mnem not in {"mov", "movabs"}:
+        return None
+    # Must be a standalone ImmOp, not embedded in a compound operand.
+    if span is not None:
+        return None
+
     target_value = ctx.value_by_id.get(imm_id)
     if target_value is None:
         return None
 
-    # Collect guest mov instructions and their dest + imm.
-    mov_entries: list[tuple[ImmOp, str]] = []  # (imm_op, dest_placeholder)
+    mov_entries: list[tuple[ImmOp, str]] = []
     for inst in ctx.guest_insts:
         mnemonic = inst.mnemonic.strip().lower()
         if mnemonic != "mov":
             continue
         if len(inst.operands) < 2:
             continue
-        dest_op = inst.operands[0]
         src_op = inst.operands[1]
         if isinstance(src_op, ImmOp) and src_op.id != 0:
-            dest_text = dest_op.to_text()
-            mov_entries.append((src_op, dest_text))
+            mov_entries.append((src_op, inst.operands[0].to_text()))
 
-    # Collect guest movk instructions.
-    movk_entries: list[
-        tuple[ImmOp, str, str]
-    ] = []  # (imm_op, shift_id, dest_placeholder)
+    movk_entries: list[tuple[ImmOp, str, str]] = []
     for inst in ctx.guest_insts:
         mnemonic = inst.mnemonic.strip().lower()
         if mnemonic != "movk":
             continue
         if len(inst.operands) < 3:
             continue
-        dest_op = inst.operands[0]
         imm_op = inst.operands[1]
         shift_op = inst.operands[2]
         if not isinstance(imm_op, ImmOp) or imm_op.id == 0:
             continue
-        dest_text = dest_op.to_text()
-        # Extract immN from the shift operand (LitOp like "lsl #imm3").
+        dest_text = inst.operands[0].to_text()
         shift_id: str | None = None
         if isinstance(shift_op, ImmOp) and shift_op.id != 0:
             shift_id = str(shift_op.id)
@@ -221,8 +245,6 @@ def _derive_movk_constant(ctx: DerivationContext, imm_id: str) -> str | None:
             continue
         movk_entries.append((imm_op, shift_id, dest_text))
 
-    # For each (mov, movk) pair writing the same dest register, check the
-    # expression.
     for mov_imm, mov_dest in mov_entries:
         for movk_imm, shift_id, movk_dest in movk_entries:
             if mov_dest != movk_dest:
@@ -238,43 +260,52 @@ def _derive_movk_constant(ctx: DerivationContext, imm_id: str) -> str | None:
     return None
 
 
-def _derive_index_scale(ctx: DerivationContext, imm_id: str) -> str | None:
-    """Derive a host index scale factor from a guest ``lsl #immN`` shift.
+def _derive_index_scale(
+    ctx: DerivationContext,
+    imm_id: str,
+    host_idx: int,
+    op_idx: int,
+    span: tuple[int, int] | None,
+) -> str | None:
+    """Derive host index scale from guest ``lsl #immN``.
 
-    Requires:
-    - A guest instruction with an ``lsl #immN`` operand (detected via
-      LitOp/RegTextOp text containing ``lsl #immN``).
-    - The host value equals ``1 << shift_value``.
-
-    Returns ``"(1 << immN)"`` where ``immN`` is the guest lsl shift
-    placeholder.
+    Only applies when the ``immN`` is part of a ``*immN`` scale factor
+    within a host memory operand, not a plain displacement.
     """
     target_value = ctx.value_by_id.get(imm_id)
     if target_value is None:
         return None
 
+    # Only apply to embedded immediates inside memory operands.
+    if span is None:
+        return None
+    host_inst = ctx.host_insts[host_idx]
+    host_op = host_inst.operands[op_idx]
+    operand_text = host_op.to_text()
+
+    # Verify this immN appears in a *immN (scale) context, not as a
+    # standalone displacement.
+    imm_str = f"imm{imm_id}"
+    scale_pattern = re.compile(rf"\*{re.escape(imm_str)}\b")
+    if not scale_pattern.search(operand_text):
+        return None
+
     # Find guest lsl #immN operands.
-    guest_shift_ids: list[str] = []
     for inst in ctx.guest_insts:
         for op in inst.operands:
             if isinstance(op, (LitOp, RegTextOp)):
                 text = op.to_text()
                 for m in IMM_PLACEHOLDER_RE.finditer(text):
-                    imm_id_candidate = m.group(1)
-                    # Check if this imm_id appears in a lsl #immN context.
+                    candidate_id = m.group(1)
                     lsl_match = re.search(
-                        rf"lsl #imm{re.escape(imm_id_candidate)}", text
+                        rf"lsl #imm{re.escape(candidate_id)}", text
                     )
-                    if lsl_match:
-                        guest_shift_ids.append(imm_id_candidate)
-            elif isinstance(op, ImmOp):
-                pass  # standalone ImmOp wouldn't have lsl context
-
-    for shift_id in guest_shift_ids:
-        shift_value = ctx.value_by_id.get(shift_id)
-        if shift_value is None:
-            continue
-        if (1 << shift_value) == target_value:
-            return f"(1 << imm{shift_id})"
+                    if not lsl_match:
+                        continue
+                    shift_value = ctx.value_by_id.get(candidate_id)
+                    if shift_value is None:
+                        continue
+                    if (1 << shift_value) == target_value:
+                        return f"(1 << imm{candidate_id})"
 
     return None

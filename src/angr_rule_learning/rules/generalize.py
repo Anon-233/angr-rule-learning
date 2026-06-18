@@ -954,29 +954,48 @@ def _annotate_dead_writes(
     guest_arch: str,
     host_arch: str,
 ) -> tuple[tuple[Instruction, ...], tuple[Instruction, ...]]:
-    output_regs = {reg for pair in candidate.output_registers for reg in pair}
+    output_families = {
+        family_for_register(arch, reg)
+        for pair in candidate.output_registers
+        for arch, reg in [(candidate.guest.arch, pair[0]), (candidate.host.arch, pair[1])]
+    }
     cc_families = {"nzcv", "rflags"}
 
     def _dead_write_info(
         instructions: tuple[ExtractedInstruction, ...],
     ) -> tuple[dict[str, int], dict[str, int]]:
+        """Return (first_write: reg→idx, last_access: reg→idx).
+
+        Uses register *families* (w8≡x8, eax≡rax) as the identity for
+        dead-write tracking.  A write to a family member after the first
+        write is treated as a later access, not a separate saved register.
+        """
         first_write: dict[str, int] = {}
-        last_read: dict[str, int] = {}
+        dead_families: set[str] = set()
+        last_access: dict[str, int] = {}
+
         for idx, inst in enumerate(instructions):
             for reg in inst.write_registers:
                 family = family_for_register(inst.arch, reg)
-                if family in cc_families or is_allowed_literal_register(inst.arch, reg):
+                if family in cc_families or is_allowed_literal_register(
+                    inst.arch, reg
+                ):
                     continue
                 if (
-                    reg not in output_regs
-                    and reg not in first_write
+                    family not in output_families
+                    and family not in dead_families
                     and "_tmp" not in mapping.get(reg, "")
                 ):
                     first_write[reg] = idx
+                    dead_families.add(family)
+                    last_access[reg] = idx
             for reg in inst.read_registers:
-                if reg in first_write:
-                    last_read[reg] = idx
-        return first_write, last_read
+                family = family_for_register(inst.arch, reg)
+                for fw_reg in list(first_write.keys()):
+                    fw_family = family_for_register(inst.arch, fw_reg)
+                    if fw_family == family:
+                        last_access[fw_reg] = idx
+        return first_write, last_access
 
     def _text_to_regop(placeholder: str) -> Operand:
         from angr_rule_learning.rules.ast import RegOp, TmpOp
@@ -1001,15 +1020,9 @@ def _annotate_dead_writes(
     ) -> tuple[Instruction, ...]:
         from angr_rule_learning.rules.ast import Instruction as AstInstruction, MetaOp
 
-        first_write, last_read = _dead_write_info(instructions)
+        first_write, last_access = _dead_write_info(instructions)
         if not first_write:
             return insts
-
-        # Compute last_access index for each dead register: the last read,
-        # or the first write itself if never subsequently read.
-        last_access: dict[str, int] = {}
-        for reg, fw_idx in first_write.items():
-            last_access[reg] = last_read.get(reg, fw_idx)
 
         result: list[Instruction] = []
         for idx, inst in enumerate(insts):
