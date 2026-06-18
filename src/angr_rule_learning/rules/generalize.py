@@ -346,13 +346,103 @@ def _memory_binding_register_pairs(
     return tuple(pairs)
 
 
+def _x86_reg_bit_range(reg: str) -> tuple[int, int] | None:
+    """Return ``(low_bit, high_bit)`` for an x86-64 register, or ``None``."""
+    reg = normalize_register_name(reg)
+    mapping: dict[str, tuple[int, int]] = {
+        # 64-bit
+        "rax": (0, 63),
+        "rbx": (0, 63),
+        "rcx": (0, 63),
+        "rdx": (0, 63),
+        "rsi": (0, 63),
+        "rdi": (0, 63),
+        "rbp": (0, 63),
+        "rsp": (0, 63),
+        "r8": (0, 63),
+        "r9": (0, 63),
+        "r10": (0, 63),
+        "r11": (0, 63),
+        "r12": (0, 63),
+        "r13": (0, 63),
+        "r14": (0, 63),
+        "r15": (0, 63),
+        # 32-bit
+        "eax": (0, 31),
+        "ebx": (0, 31),
+        "ecx": (0, 31),
+        "edx": (0, 31),
+        "esi": (0, 31),
+        "edi": (0, 31),
+        "ebp": (0, 31),
+        "esp": (0, 31),
+        "r8d": (0, 31),
+        "r9d": (0, 31),
+        "r10d": (0, 31),
+        "r11d": (0, 31),
+        "r12d": (0, 31),
+        "r13d": (0, 31),
+        "r14d": (0, 31),
+        "r15d": (0, 31),
+        # 16-bit
+        "ax": (0, 15),
+        "bx": (0, 15),
+        "cx": (0, 15),
+        "dx": (0, 15),
+        "si": (0, 15),
+        "di": (0, 15),
+        "bp": (0, 15),
+        "sp": (0, 15),
+        "r8w": (0, 15),
+        "r9w": (0, 15),
+        "r10w": (0, 15),
+        "r11w": (0, 15),
+        "r12w": (0, 15),
+        "r13w": (0, 15),
+        "r14w": (0, 15),
+        "r15w": (0, 15),
+        # 8-bit low
+        "al": (0, 7),
+        "bl": (0, 7),
+        "cl": (0, 7),
+        "dl": (0, 7),
+        "spl": (0, 7),
+        "bpl": (0, 7),
+        "sil": (0, 7),
+        "dil": (0, 7),
+        "r8b": (0, 7),
+        "r9b": (0, 7),
+        "r10b": (0, 7),
+        "r11b": (0, 7),
+        "r12b": (0, 7),
+        "r13b": (0, 7),
+        "r14b": (0, 7),
+        "r15b": (0, 7),
+        # 8-bit high (only on classic registers)
+        "ah": (8, 15),
+        "bh": (8, 15),
+        "ch": (8, 15),
+        "dh": (8, 15),
+    }
+    return mapping.get(reg)
+
+
+def _writer_covers_consumer(writer: str, consumer: str) -> bool:
+    """Return True if *writer*'s bit range covers *consumer*'s bit range."""
+    w_range = _x86_reg_bit_range(writer)
+    c_range = _x86_reg_bit_range(consumer)
+    if w_range is None or c_range is None:
+        return False
+    return w_range[0] <= c_range[0] and w_range[1] >= c_range[1]
+
+
 def _require_fixed_role_producers(
     window: WindowPair,
     candidate: VerificationCandidate,
 ) -> frozenset[str]:
     """Verify every fixed-role host register read has a reaching definition
-    in the Host window, and return the set of producer register names to
-    keep as literals in the output.
+    in the Host window whose bit range covers the consumer, and return
+    the set of producer register names to keep as literals in the output.
 
     Fixed-role registers (e.g. ``cl`` for shift counts) are emitted as
     literals.  Their producer targets (e.g. ``ecx`` written by a preceding
@@ -368,16 +458,17 @@ def _require_fixed_role_producers(
             read_n = normalize_register_name(read_reg)
             if not is_fixed_role_register(host_arch, read_n):
                 continue
-            host_family = family_for_register(host_arch, read_n)
 
-            # Search backward for the nearest reaching definition.
+            # Search backward for the nearest reaching definition whose
+            # bit range covers the consumer.
             has_producer = False
             for prev_idx in range(inst_idx - 1, -1, -1):
                 prev_inst = window.host.instructions[prev_idx]
                 for w in prev_inst.write_registers:
-                    if family_for_register(host_arch, w) == host_family:
+                    w_n = normalize_register_name(w)
+                    if _writer_covers_consumer(w_n, read_n):
                         has_producer = True
-                        producers.add(normalize_register_name(w))
+                        producers.add(w_n)
                         break
                 if has_producer:
                     break
@@ -1080,10 +1171,15 @@ def _annotate_dead_writes(
             prefix = m.group(1)
             bits = int(prefix[1:])
             return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
-        # Raw register names kept as literals (fixed-role producer targets
-        # and other registers mapped to themselves).
+        # Fixed-role producer targets (validated by
+        # _require_fixed_role_producers) are kept as literal register names.
+        # Only accept names that are known register tokens on some arch.
         if re.fullmatch(r"[a-z][a-z0-9]+", placeholder, re.IGNORECASE):
-            return LitOp(value=placeholder)
+            if any(
+                placeholder in known_register_tokens(arch)
+                for arch in ("aarch64", "x86-64")
+            ):
+                return LitOp(value=placeholder)
         raise ValueError(f"unknown placeholder format: {placeholder!r}")
 
     def _apply(

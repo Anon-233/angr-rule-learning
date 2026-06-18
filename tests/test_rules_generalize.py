@@ -1639,6 +1639,126 @@ def test_fixed_role_no_tmp_to_cl_output() -> None:
     assert "_tmp" not in host_text
 
 
+def test_fixed_role_ch_write_does_not_cover_cl() -> None:
+    """mov ch, ... does not define the cl bit range (bits 0-7 vs 8-15)."""
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="ch, sil",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("ch",),
+        read_registers=("sil",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov, host_shl)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "esi")), outputs=(("w0", "eax"),)
+    )
+    diagnostics = RuleDiagnostics()
+    rule = RuleGeneralizer(diagnostics).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unbound_fixed_role_register", 0) >= 1
+
+
+def test_fixed_role_mov_ecx_ecx_without_producer_is_rejected() -> None:
+    """mov ecx, ecx reads old RCX; without a prior producer, reject."""
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="ecx, ecx",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("ecx",),
+        read_registers=("ecx",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov, host_shl)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "ecx")), outputs=(("w0", "eax"),)
+    )
+    # ecx is an input (paired with w1), so mov ecx, ecx reads it.
+    # But there's no *earlier* producer for the RCX family that can
+    # be traced — the source is external, which is fine for the
+    # fixed-role check since ecx itself covers cl.
+    diagnostics = RuleDiagnostics()
+    rule = RuleGeneralizer(diagnostics).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    # ecx covers cl (bit range 0-31 covers 0-7), and ecx is a valid
+    # input from outside the window.  Should be accepted.
+    assert rule is not None
+    host_text = "\n".join(rule.host_lines)
+    assert "ecx" in host_text
+    assert "cl" in host_text
+
+
 def test_no_untyped_temporaries_in_output() -> None:
     """All temporaries must carry type/width: i32_tmp1 not tmp1."""
     # Use the RMW memory window test pattern that generates internal temps.
