@@ -15,6 +15,7 @@ from angr_rule_learning.rules.ast import (
     RegTextOp,
 )
 from angr_rule_learning.rules.generalize import (
+    _verify_fixed_role_sources_in_host,
     GeneratedRule,
     RuleDiagnostics,
     RuleGeneralizer,
@@ -101,7 +102,7 @@ def _passing_report(
     )
 
 
-def test_generalizes_output_register_before_input_registers() -> None:
+def testgeneralizes_output_register_before_input_registers() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w8, w0, w1"),),
         (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
@@ -121,7 +122,7 @@ def test_generalizes_output_register_before_input_registers() -> None:
     assert diagnostics.to_json()["rules_emitted"] == 1
 
 
-def test_generalizes_multi_instruction_windows() -> None:
+def testgeneralizes_multi_instruction_windows() -> None:
     pair = _window_pair(
         (
             _inst("aarch64", 0x1000, "mov", "w8, w0"),
@@ -249,7 +250,7 @@ def test_nonpassing_reports_are_not_considered_for_rule_output() -> None:
     }
 
 
-def test_generalizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
+def testgeneralizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w8, w0, w1"),),
         (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
@@ -271,7 +272,7 @@ def test_generalizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
     assert diagnostics.to_json()["rules_emitted"] == 1
 
 
-def test_generalizer_allows_two_address_input_output_pair() -> None:
+def testgeneralizer_allows_two_address_input_output_pair() -> None:
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)
     window = _window_pair(
@@ -334,7 +335,7 @@ def test_rule_diagnostics_records_detailed_skip_when_enabled() -> None:
     ]
 
 
-def test_generalizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> None:
+def testgeneralizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w0, w1, w0"),),
         (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
@@ -352,7 +353,7 @@ def test_generalizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> N
     assert rule.host_lines == ("lea i32_reg1, [i32_reg3 + i32_reg2]",)
 
 
-def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> None:
+def testgeneralizer_role_split_prevents_coalescing_distinct_guest_regs() -> None:
     """When a guest register (w8) appears in both output and input pairs
     with *different* host registers (eax for output, ecx for input),
     the input role gets a separate placeholder so the distinct guest
@@ -380,7 +381,7 @@ def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> Non
     assert rule.host_lines == ("add i32_reg1, i32_reg2",)
 
 
-def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
+def testgeneralizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "sub", "sp, sp, #16"),),
         (_inst("x86-64", 0x2000, "sub", "rsp, 16"),),
@@ -402,7 +403,7 @@ def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None
     assert rule.host_lines == ("sub sp64, imm1",)
 
 
-def test_generalizer_handles_input_reusing_output_host_register() -> None:
+def testgeneralizer_handles_input_reusing_output_host_register() -> None:
     """When a guest input register maps to a host register that already
     has a placeholder from an output pair, the input should inherit the
     same placeholder.  Combined with role-split detection this produces
@@ -648,7 +649,7 @@ def test_validate_allows_parameterized_memory_with_kw() -> None:
     _validate_no_remaining_registers((inst,), "x86-64")  # no exception
 
 
-def test_generalize_ast_replaces_registers() -> None:
+def testgeneralize_ast_replaces_registers() -> None:
     """AST generalization replaces LitOp operands with RegOp placeholders."""
     inst = Instruction(mnemonic="add", operands=(LitOp("w8"), LitOp("w0"), LitOp("w1")))
     mapping = {"w8": "i32_reg1", "w0": "i32_reg2", "w1": "i32_reg3"}
@@ -661,7 +662,7 @@ def test_generalize_ast_replaces_registers() -> None:
     assert ops == (RegOp("i32", 32, 1), RegOp("i32", 32, 2), RegOp("i32", 32, 3))
 
 
-def test_generalize_ast_role_split() -> None:
+def testgeneralize_ast_role_split() -> None:
     """AST generalization applies role_split so write/read of same reg get
     different placeholders."""
     inst = Instruction(mnemonic="sub", operands=(LitOp("w0"), LitOp("w0"), LitOp("w1")))
@@ -1369,11 +1370,11 @@ def test_scale_derivation_uses_span_not_operand_search() -> None:
     """When the same immediate value appears as both *scale and +displacement
     in a host memory operand, only the *-adjacent occurrence is derivable.
     The unproven displacement occurrence returns None."""
+    from angr_rule_learning.rules.ast import Instruction as AstInst
     from angr_rule_learning.rules.derivation import (
         DerivationContext,
         _derive_index_scale,
     )
-    from angr_rule_learning.rules.ast import Instruction as AstInst
 
     # Guest has lsl #imm1 where imm1=2 (shift), value = 1<<2 = 4.
     # After immediate replacement Phase 1 the guest text already has immN.
@@ -2048,8 +2049,167 @@ def test_fixed_role_save_restore_uses_full_rcx() -> None:
     )
     assert rule is not None
     host_text = "\n".join(rule.host_lines)
-    assert "save rcx" in host_text or "restore rcx" in host_text
+    assert "save rcx" in host_text
+    assert "restore rcx" in host_text
     assert "save ecx" not in host_text
+    assert "restore ecx" not in host_text
+
+
+def test_collect_sources_edx_via_mov_returns_esi() -> None:
+    """mov edx,esi; mov ecx,edx; shl eax,cl:
+    _collect_fixed_role_sources("edx", before_idx=1) must return {esi}
+    because mov edx,esi is the backward writer for edx."""
+    from angr_rule_learning.rules.generalize import _collect_fixed_role_sources
+
+    host_mov_edx = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="edx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("edx",),
+        read_registers=("esi",),
+    )
+    host_mov_ecx = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="mov",
+        op_str="ecx, edx",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("ecx",),
+        read_registers=("edx",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2006,
+        size=3,
+        code_bytes=b"\x07\x08\x09",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 3),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 3),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov_edx, host_mov_ecx, host_shl)),
+    )
+    sources = _collect_fixed_role_sources(
+        "edx",
+        1,
+        window,
+        "x86-64",
+        host_inputs=frozenset({"edx", "esi"}),
+    )
+    assert sources == frozenset({"esi"})
+    assert "edx" not in sources
+
+
+def test_collect_sources_add_edx_esi_returns_both() -> None:
+    """add edx,esi is RMW: old edx and esi are both sources."""
+    from angr_rule_learning.rules.generalize import _collect_fixed_role_sources
+
+    host_add = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="add",
+        op_str="edx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("edx", "rflags"),
+        read_registers=("edx", "esi"),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_add, host_shl)),
+    )
+    sources = _collect_fixed_role_sources(
+        "edx",
+        1,
+        window,
+        "x86-64",
+        host_inputs=frozenset({"edx", "esi"}),
+    )
+    assert sources == frozenset({"edx", "esi"})
+
+
+def test_verify_sources_rejects_placeholder_not_in_ast() -> None:
+    """Host AST only contains i32_reg20 but source requires i32_reg2."""
+    from angr_rule_learning.rules.ast import Instruction as AstInst
+
+    inst = AstInst.from_text("mov i32_reg20, i32_reg1")
+    with pytest.raises(_RuleSkip) as exc:
+        _verify_fixed_role_sources_in_host(
+            (inst,),
+            frozenset({"esi"}),
+            {"esi": "i32_reg2"},
+        )
+    assert exc.value.reason == "unbound_fixed_role_register"
+
+
+def test_verify_sources_rejects_missing_mapping() -> None:
+    """Source register has no mapping entry — must reject."""
+    from angr_rule_learning.rules.ast import Instruction as AstInst
+
+    inst = AstInst.from_text("mov i32_reg2, i32_reg1")
+    with pytest.raises(_RuleSkip) as exc:
+        _verify_fixed_role_sources_in_host(
+            (inst,),
+            frozenset({"esi"}),
+            {},
+        )
+    assert exc.value.reason == "unbound_fixed_role_register"
 
 
 def test_no_untyped_temporaries_in_output() -> None:

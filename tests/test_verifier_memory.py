@@ -576,3 +576,31 @@ def test_multi_slot_value_mismatch_still_reported() -> None:
     mem_checks = [c for c in report.checks if c.kind == "memory"]
     # Both memory slots must be checked.
     assert len(mem_checks) == 2
+
+
+def test_three_slot_stp_push_equivalent_passes() -> None:
+    """2-slot stp→push test: ordered fails on address, slot match
+    re-pairs correctly.  All memory checks must pass."""
+    candidate = VerificationCandidate(
+        candidate_id="3slot-eq",
+        guest=CodeFragment("aarch64", 0x10000, _STP_X0_X1_SP_PRE, 1),
+        host=CodeFragment("x86-64", 0x8048000, _PUSH_RSI_RDI, 2),
+        input_registers=(("x0", "rdi"), ("x1", "rsi")),
+        output_registers=(("sp", "rsp"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 8), MemorySlot("mem1", 8)),
+            bindings=(
+                MemoryBinding("mem0", "sp - 16", "rsp - 16", "write"),
+                MemoryBinding("mem1", "sp - 8", "rsp - 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 8),
+                MemoryAccessExpectation("mem1", "write", 8),
+            ),
+        ),
+    )
+    report = SemanticVerifier().verify(candidate)
+    assert report.status == "pass"
+    mem_checks = [c for c in report.checks if c.kind == "memory"]
+    assert len(mem_checks) == 2
+    assert all(c.status == "pass" for c in mem_checks)

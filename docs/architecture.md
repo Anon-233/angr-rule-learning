@@ -308,6 +308,18 @@ generalised to a ``tmpN`` placeholder, so the family relationship
 (``ecx`` → ``cl``) is explicit in the emitted rule.  Rules lacking a
 producer are rejected with ``unbound_fixed_role_register``.
 
+**Provenance tracing** resolves the full backward slice of a fixed-role
+consumer to its external inputs.  A producer's target must have a
+covering bit range (``ecx`` covers ``cl``; ``ch`` does not) and belong to
+the same register family.  All read dependencies of the producer are
+recursively traced until every chain reaches a non-fixed-family mapped
+input; any untraceable dependency causes rejection.
+
+**Save/restore** annotations for fixed-role producer targets use the
+widest family register (e.g. ``save rcx`` / ``restore rcx``) to
+correctly preserve the full physical register, even when the instruction
+text writes a sub-register (``ecx``, ``cx``, ``cl``).
+
 ## Candidate Boundary
 
 The request boundary is JSON-shaped and intentionally strict. All top-level
