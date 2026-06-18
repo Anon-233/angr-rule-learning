@@ -43,6 +43,10 @@ Registers are replaced with typed placeholders:
 - `f32_regN` and `f64_regN` are reserved for scalar floating-point rules;
 - `v128_regN` and wider vector placeholders are reserved for vector rules.
 
+Temporaries carry the same type and width as ordinary registers:
+`i8_tmpN`, `i16_tmpN`, `i32_tmpN`, `i64_tmpN` for integer temporaries;
+`f32_tmpN`, `f64_tmpN`, `v128_tmpN` are reserved for future types.
+
 The first implementation emits integer register rules only. It keeps
 immediates, offsets, scales, labels, and mnemonics literal.
 
@@ -64,16 +68,19 @@ the register surface:
     mov i32_reg1, dword ptr [i64_reg2 + imm1]
 
 2.Guest:
-    ldr i32_reg1, [i64_reg2, i64_reg3, lsl #2]
+    ldr i32_reg1, [i64_reg2, i64_reg3, lsl #imm2]
 .Host:
-    mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*4]
+    mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*${(1 << imm2)}]
 ```
 
 Rules for the new design:
 
 - address base/index registers use normal typed register placeholders;
 - displacements shared by guest and host use the same ``immN``;
-- scale/shift literals remain literal in the current implementation;
+- AArch64 shift amounts (``lsl #immN``) are bindable Guest immediates; the
+  corresponding x86 multiplier is a derived expression ``${(1 << immN)}``
+  that references the guest shift placeholder rather than an independent Host
+  placeholder;
 - ``[addr64_N]`` is no longer emitted for memory rules.
 
 ### Supported Memory Forms
@@ -109,6 +116,10 @@ rule:
 - `unknown_register_class`: a mapped register cannot be classified;
 - `unsupported_register_class`: the register class is known but not enabled;
 - `unmapped_register_surface`: a concrete register remains after replacement;
+- `unpaired_host_immediate`: a host-side immediate placeholder has no
+  guest-side counterpart and cannot be derived through any approved template.
+  This is a universal rejection condition that applies to all rule types, not
+  just frame-relative memory rules.
 - `unsupported_rule_shape`: the candidate mapping is inconsistent or empty.
 
 AArch64 `xzr` and `wzr` may remain literal because they represent architectural

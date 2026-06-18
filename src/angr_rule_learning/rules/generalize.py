@@ -104,6 +104,7 @@ class RuleDiagnostics:
     collect_details: bool = False
     rules_considered: int = 0
     rules_emitted: int = 0
+    rules_subsumed: int = 0
     skip_reasons: Counter[str] = field(default_factory=Counter)
     skipped_rules: list[RuleSkipDetail] = field(default_factory=list)
 
@@ -116,6 +117,10 @@ class RuleDiagnostics:
 
     def record_emitted(self) -> None:
         self.rules_emitted += 1
+
+    def record_subsumed(self, count: int = 1) -> None:
+        self.rules_subsumed += count
+        self.rules_emitted -= count
 
     def record_skipped(
         self,
@@ -131,6 +136,7 @@ class RuleDiagnostics:
             "rules_considered": self.rules_considered,
             "rules_emitted": self.rules_emitted,
             "rules_skipped": self.rules_skipped,
+            "rules_subsumed": self.rules_subsumed,
             "skip_reasons": dict(sorted(self.skip_reasons.items())),
         }
         if include_details:
@@ -885,7 +891,10 @@ def _host_immediates_are_derivable(
     return host_imms <= guest_imms
 
 
-def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
+def consolidate_rules(
+    rules: list[GeneratedRule],
+    diagnostics: RuleDiagnostics | None = None,
+) -> list[GeneratedRule]:
     """Remove rules that are subsumed by a more-parameterised rule.
 
     A rule *A* is subsumed by rule *B* when substituting one of *B*'s
@@ -894,6 +903,10 @@ def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
 
     Uses AST-based structural comparison so that difference in
     placeholder numbering does not prevent merging.
+
+    If *diagnostics* is provided, subsumed rules are recorded via
+    ``diagnostics.record_subsumed()`` so that ``rules_emitted``
+    reflects the final count after consolidation.
     """
     if len(rules) < 2:
         return rules
@@ -920,6 +933,10 @@ def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
                         break
                 if rule_a.rule_id in subsumed_ids:
                     break
+
+    removed = len(subsumed_ids)
+    if removed > 0 and diagnostics is not None:
+        diagnostics.record_subsumed(removed)
 
     return [r for r in rules if r.rule_id not in subsumed_ids]
 

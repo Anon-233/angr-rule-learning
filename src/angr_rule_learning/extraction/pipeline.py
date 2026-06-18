@@ -134,7 +134,7 @@ class ExtractionPipeline:
                             if rule is not None:
                                 rules.append(rule)
         candidate_tuple = tuple(candidates)
-        rules = consolidate_rules(rules)
+        rules = consolidate_rules(rules, diagnostics=rule_diagnostics)
         rule_tuple = tuple(rules)
         if rules_output is not None:
             write_rules_text(rules_output, rule_tuple)

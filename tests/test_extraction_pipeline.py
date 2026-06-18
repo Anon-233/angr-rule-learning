@@ -17,6 +17,18 @@ from angr_rule_learning.extraction.pipeline import (
     ExtractionPipeline,
 )
 from angr_rule_learning.io.readers import read_candidates
+from angr_rule_learning.rules.ast import (
+    ImmOp,
+    Instruction,
+    LitOp,
+    RegOp,
+    Rule as AstRule,
+)
+from angr_rule_learning.rules.generalize import (
+    GeneratedRule,
+    RuleDiagnostics,
+    consolidate_rules,
+)
 from angr_rule_learning.verification.report import CheckResult, VerificationReport
 
 
@@ -539,3 +551,157 @@ def test_indexed_memory_rule_smoke(tmp_path: Path) -> None:
     assert "addr64_" not in rules_text
     assert "i64_reg" in rules_text
     assert "lsl #imm" in rules_text or "*imm" in rules_text, rules_text[:1000]
+
+
+def test_consolidation_diagnostics_match_emitted_count():
+    """After consolidation, rules_emitted equals file count."""
+    # Rule A: a literal-zero rule (eor reg, reg, #0 -> xor reg, reg, 0)
+    rule_a = GeneratedRule(
+        rule_id=1,
+        candidate_id="cand_a",
+        rule=AstRule(
+            rule_id=1,
+            candidate_id="cand_a",
+            guest=(
+                Instruction(
+                    "eor",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        LitOp(value="#0"),
+                    ),
+                ),
+            ),
+            host=(
+                Instruction(
+                    "xor",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        LitOp(value="0"),
+                    ),
+                ),
+            ),
+        ),
+    )
+    # Rule B: parameterised version with imm1 for the immediate value
+    rule_b = GeneratedRule(
+        rule_id=2,
+        candidate_id="cand_b",
+        rule=AstRule(
+            rule_id=2,
+            candidate_id="cand_b",
+            guest=(
+                Instruction(
+                    "eor",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        ImmOp(id=1, aarch64_hash=True),
+                    ),
+                ),
+            ),
+            host=(
+                Instruction(
+                    "xor",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        ImmOp(id=1, aarch64_hash=False),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    diagnostics = RuleDiagnostics()
+    diagnostics.rules_emitted = 2
+    diagnostics.rules_considered = 2
+
+    consolidated = consolidate_rules([rule_a, rule_b], diagnostics=diagnostics)
+
+    # Rule A should be subsumed by rule B (substitute imm1 -> 0 produces rule A)
+    assert len(consolidated) == 1
+    assert consolidated[0].rule_id == 2
+
+    # Diagnostics should reflect consolidation
+    assert diagnostics.rules_subsumed == 1
+    assert diagnostics.rules_emitted == 1  # 2 - 1 subsumed
+    assert diagnostics.rules_emitted == len(consolidated)
+
+    # Invariant: considered == emitted + skipped + subsumed
+    assert diagnostics.rules_considered == (
+        diagnostics.rules_emitted
+        + diagnostics.rules_skipped
+        + diagnostics.rules_subsumed
+    )
+
+
+def test_consolidation_no_subsumption_leaves_diagnostics_unchanged():
+    """When no rules are subsumed, emitted count is unchanged."""
+    rule_a = GeneratedRule(
+        rule_id=1,
+        candidate_id="cand_a",
+        rule=AstRule(
+            rule_id=1,
+            candidate_id="cand_a",
+            guest=(
+                Instruction(
+                    "add",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        ImmOp(id=1, aarch64_hash=True),
+                    ),
+                ),
+            ),
+            host=(
+                Instruction(
+                    "add",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        ImmOp(id=1),
+                    ),
+                ),
+            ),
+        ),
+    )
+    rule_b = GeneratedRule(
+        rule_id=2,
+        candidate_id="cand_b",
+        rule=AstRule(
+            rule_id=2,
+            candidate_id="cand_b",
+            guest=(
+                Instruction(
+                    "sub",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        ImmOp(id=1, aarch64_hash=True),
+                    ),
+                ),
+            ),
+            host=(
+                Instruction(
+                    "sub",
+                    (
+                        RegOp(prefix="i32", bits=32, id=1),
+                        RegOp(prefix="i32", bits=32, id=1),
+                        ImmOp(id=1),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    diagnostics = RuleDiagnostics()
+    diagnostics.rules_emitted = 2
+    diagnostics.rules_considered = 2
+
+    consolidated = consolidate_rules([rule_a, rule_b], diagnostics=diagnostics)
+
+    assert len(consolidated) == 2
+    assert diagnostics.rules_subsumed == 0
+    assert diagnostics.rules_emitted == 2

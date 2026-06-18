@@ -83,8 +83,9 @@ src/angr_rule_learning/
   analysis/
     skip_patterns.py
   rules/
+    ast.py
+    derivation.py
     registers.py
-    memory.py
     generalize.py
     writer.py
 ```
@@ -101,8 +102,12 @@ The package boundaries are:
 - `extraction`: compiles source, extracts functions and debug information,
   builds alignment regions, mines bounded windows, infers verifier surfaces,
   and orchestrates the source-to-candidate pipeline.
-- `rules`: classifies registers, generalizes verified extraction windows into
-  typed placeholder rules, and writes plain text rule output with diagnostics.
+- `rules`: defines the structured Rule AST (`ast.py`) as the canonical
+  internal rule model; classifies registers; generalizes verified extraction
+  windows into typed placeholder rules; derives host-only immediates from
+  prescribed instruction-aware templates (`derivation.py`); performs
+  relationship-preserving alpha-equivalence deduplication and consolidation;
+  and writes plain text rule output with diagnostics.
 - `analysis`: read-only diagnostics/observability tools.  Reuses extraction
   components to aggregate skip patterns but never participates in candidate
   extraction, verification, or rule generation decisions.  Exposed via the
@@ -206,6 +211,54 @@ The verifier currently checks:
 
 Detailed verifier behavior and support boundaries are documented in
 [Verifier](verifier.md).
+
+## Rule AST
+
+The canonical rule model lives in `rules/ast.py`.  Every generated rule is
+a dataclass tree of `Rule`, `Instruction`, and typed `Operand` nodes (RegOp,
+ImmOp, TmpOp, LabelOp, LitOp, RegTextOp).  The AST supports:
+
+- **Structured comparison**: relationship-preserving alpha-equivalence
+  (`canonicalize_rule`) that recognizes two rules as equal when they differ
+  only by consistent renumbering of placeholders, but distinguishes rules
+  where the same placeholder maps to different operand positions.
+- **Substitution**: `substitute_imm` replaces an immediate placeholder with a
+  literal value for consolidation (subsumed-rule detection).
+- **Pre/post metadata ordering**: `Instruction.meta` holds pre-instruction
+  annotations (e.g. `save`), `Instruction.post_meta` holds post-instruction
+  annotations (e.g. `restore`).  This preserves the correct execution order:
+  `save -> instruction -> restore`.
+
+Consolidation (`consolidate_rules`) uses these AST primitives: a rule is
+subsumed when substituting one of its `immN` placeholders with a reserved
+literal (`0`, `00`, `000`) produces a structure alpha-equivalent to another
+rule.
+
+### Supported Memory Forms for Rules
+
+- AArch64: `ldr`, `ldur`, `str`, `stur` with base-only, base+displacement,
+  register-offset, and shifted-index (`lsl #N`) addressing.
+- x86-64: `mov` with base-only, base+displacement, indexed
+  (`base + index*scale`), and indexed+displacement addressing.
+- x86-64 memory-source arithmetic: `add`, `sub`, `and`, `or`, `xor`, `imul`
+  with a memory source operand are parsed and verified.
+- x86-64 memory-destination read-modify-write (RMW) remains unsupported.
+
+### Immediate Derivation
+
+Host-only immediates are derived from guest placeholders only through
+explicit, instruction-aware templates:
+
+- **tbz/tbnz mask**: host mask derived as `(1 << immN)` from the guest
+  bit-position immediate.
+- **mov/movk constant**: host 64-bit constant derived as
+  `(imm_high << imm_shift) | imm_low` from a guest `mov` + `movk` pair.
+- **Indexed-address scale**: host x86 multiplier derived as `(1 << immN)`
+  from the guest `lsl #immN` shift amount.
+
+Any host immediate that cannot be expressed through these templates causes
+the rule to be skipped with `unpaired_host_immediate` (a universal rejection
+condition, not limited to frame-relative memory rules).
 
 ## Candidate Boundary
 

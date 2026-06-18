@@ -28,7 +28,8 @@ Implemented:
 - memory rule learning: structured memory operand extraction, memory surface
   inference, and generalized memory rules with native ISA syntax and typed
   register placeholders for base+displacement and indexed (base+index*scale)
-  load/store/mov patterns;
+  load/store/mov patterns, including x86 memory-source arithmetic
+  (add/sub/and/or/xor/imul);
 - compiler/debug-info based candidate extraction for one C source file;
 - verified rule generalization producing plain text rules with typed
   register and address placeholders.
@@ -40,8 +41,8 @@ Not implemented yet:
 - precondition solving;
 - branch target equivalence for direct or indirect branches;
 - generalized memory rules for complex addressing modes (push/pop,
-  ldp/stp, writeback, extension-indexed), multi-slot memory surfaces,
-  and memory alias constraints.
+  ldp/stp, writeback, extension-indexed), x86 memory-destination RMW,
+  multi-slot memory surfaces, and memory alias constraints.
 
 ## Quick Start
 
@@ -108,6 +109,8 @@ Pipeline code should call the Python API directly.
   JSON, and batch summary schemas.
 - [Rule Generalization](docs/rule-generalization.md): text rule format,
   register placeholders, and CLI usage.
+- [Rule Format](docs/rule-format.md): detailed placeholder catalogue, semantic
+  contract, and supported/unsupported rule patterns.
 
 ## Repository Layout
 

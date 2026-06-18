@@ -244,6 +244,7 @@ def test_nonpassing_reports_are_not_considered_for_rule_output() -> None:
         "rules_considered": 0,
         "rules_emitted": 0,
         "rules_skipped": 0,
+        "rules_subsumed": 0,
         "skip_reasons": {},
     }
 

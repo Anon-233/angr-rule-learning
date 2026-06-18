@@ -485,6 +485,31 @@ git status --short
 
 Expected: clean working tree.
 
+## Implementation Status
+
+### Completed
+
+- [x] **Task 1: Preserve save/restore execution order in AST** -- commit `2d3277a`
+  - `Instruction.post_meta` field added; restore attached after last access
+  - Metadata preserved through all AST reconstruction helpers
+- [x] **Task 2: Relationship-preserving alpha-equivalence** -- commit `4dbbdcf`
+  - `canonicalize_rule()` fingerprint preserves placeholder relationships
+  - Replaced unsafe equality consumers in dedup and consolidation
+- [x] **Task 3: Template-specific immediate derivation** -- commit `829653b`
+  - Removed generic value-only expression search
+  - Only `tbz`/`tbnz`, `mov`/`movk`, and index-scale templates allowed
+  - `unpaired_host_immediate` now universal rejection condition
+- [x] **Task 4: Typed temporary placeholders** -- commit `0068b5d`
+  - `TmpOp` carries `prefix` and `bits`; emits `i32_tmpN`, `i64_tmpN`, etc.
+  - `_identify_internal_temps()` classifies via `_classify_for_rule()`
+- [x] **Task 5: RMW widths and embedded-register validation** -- commit `d639c29`
+  - Memory-source arithmetic widths parsed from operand text
+  - `_validate_no_remaining_registers()` tokenizes compound operands
+- [x] **Task 6: Documentation and diagnostics** -- pending commit
+  - Documentation updated: architecture, rule-generalization, rule-format, README
+  - Post-consolidation diagnostics: `rules_subsumed` tracking, invariant `considered == emitted + skipped + subsumed`
+  - Pipeline test for consolidation diagnostics
+
 ## Final Report Requirements
 
 Report all of the following:

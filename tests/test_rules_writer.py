@@ -77,6 +77,7 @@ def test_write_rule_diagnostics_json(tmp_path: Path) -> None:
         "rules_considered": 1,
         "rules_emitted": 0,
         "rules_skipped": 1,
+        "rules_subsumed": 0,
         "skip_reasons": {"unmapped_register_surface": 1},
     }
 

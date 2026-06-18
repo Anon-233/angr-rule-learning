@@ -102,8 +102,25 @@ Host:  mov i32_reg1, imm1
 Hexadecimal and decimal immediates are canonicalized to signed integers so
 that `#-0xc` (AArch64) and `- 0xc` (x86-64) share the same `imm{N}`.
 
-Scale immediates (`lsl #2` in AArch64, `*4` in x86-64) are **not** replaced
-— they remain as literal constants.
+Scale immediates (`lsl #immN` in AArch64) are bindable Guest immediates;
+the corresponding x86 multiplier is a derived expression `${(1 << immN)}`
+that references the guest shift placeholder.
+
+### Derived Expressions — `${...}`
+
+Host-only immediates that can be expressed in terms of guest placeholders
+use a derived expression syntax:
+
+| Expression | Meaning |
+|------------|---------|
+| `${(1 << immN)}` | Power-of-two derived from guest shift bit-position |
+| `${(imm_high << imm_shift) \| imm_low}` | 64-bit constant composed from mov/movk pair |
+
+Derived expressions are only produced by approved instruction-aware
+templates (`tbz`/`tbnz` bit-test, `mov`/`movk` constant construction,
+indexed-address scale).  A host immediate that cannot be expressed
+through these templates causes the rule to be skipped with
+`unpaired_host_immediate`.
 
 ### Branch Label Placeholders — `label{N}`
 
@@ -116,10 +133,10 @@ Host:  je label1
 
 AArch64 prefixes labels with `#`; x86-64 does not.
 
-### Temporary Register Placeholders — `tmp{N}`
+### Temporary Register Placeholders — `{type}_tmp{N}`
 
-Rules may introduce `tmp{N}` registers that do **not** correspond to any
-physical register in the original candidate.  These appear when:
+Rules may introduce typed temporary registers that do **not** correspond to
+any physical register in the original candidate.  These appear when:
 
 - One ISA uses a load-store sequence while the other fuses the memory access
   into a single CISC instruction (e.g. `ldr tmp + add` ↔ `add [mem]`).
@@ -127,10 +144,19 @@ physical register in the original candidate.  These appear when:
   does not expose.
 
 ```
-Guest: ldr tmp1, [i64_reg2, #imm1]
-       add i32_reg1, i32_reg1, tmp1
+Guest: ldr i32_tmp1, [i64_reg2, #imm1]
+       add i32_reg1, i32_reg1, i32_tmp1
 Host:  add i32_reg1, dword ptr [i64_reg2 + imm1]
 ```
+
+Temporaries carry the same type and width as ordinary registers:
+
+| Placeholder | Meaning |
+|-------------|---------|
+| `i8_tmp1` | 8-bit integer temporary |
+| `i16_tmp1` | 16-bit integer temporary |
+| `i32_tmp1` | 32-bit integer temporary |
+| `i64_tmp1` | 64-bit integer temporary |
 
 A register is classified as a temporary when it satisfies **all** of:
 
@@ -159,12 +185,18 @@ Host:  save i32_reg1
 ```
 
 - `save r` marks the point where the register's old value must be preserved.
-- `restore r` marks the point where the old value is restored, after the
-  last read of the overwritten register.
+  It appears as a pre-instruction annotation on the first instruction that
+  writes the dead register.
+- `restore r` marks the point where the old value is restored.  It appears
+  as a post-instruction annotation on the instruction that performs the last
+  access (read or write) of the overwritten register.
+- Annotations are emitted in proper execution order: `save` before the
+  instruction, instruction text, then `restore` after.
 
-Temporary registers (`tmp{N}`) are **not** annotated with `save`/`restore`
-— they are introduced specifically to hold transient values and their
-lifespan is implicitly bounded by the side that defines them.
+Temporary registers (`i32_tmpN`, `i64_tmpN`, etc.) are **not** annotated
+with `save`/`restore` — they are introduced specifically to hold transient
+values and their lifespan is implicitly bounded by the side that defines
+them.
 
 ## Semantic Contract
 
@@ -192,7 +224,7 @@ expressed with the available placeholder vocabulary:
 |-------------|---------|
 | `register_class_mismatch` | Guest and host registers differ in bit-width or kind (integer vs float). |
 | `unsupported_rule_shape` | Register coalescing conflicts — the same guest register maps to different host registers (or vice versa) in a way that cannot be resolved. |
-| `unpaired_host_immediate` | A frame-relative memory rule has host-side immediate placeholders with no guest-side counterpart (different frame-layout displacements). |
+| `unpaired_host_immediate` | A host-side immediate placeholder has no guest-side counterpart and cannot be derived through any approved template.  This applies to all rule types, not just frame-relative memory rules. |
 | `unmapped_register_surface` | The instruction text contains a register that was not classified (should only occur when no `tmp` heuristic applies). |
 | `duplicate_rule` | The generated rule text is identical to a previously emitted rule. |
 | `mismatched_branch_targets` | Guest and host branch targets use different label sets. |
