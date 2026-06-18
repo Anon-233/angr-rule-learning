@@ -263,6 +263,14 @@ rule.
   with a memory source operand are parsed and verified.
 - x86-64 memory-destination read-modify-write (RMW) remains unsupported.
 
+Memory operands from stack-based instructions (``push``/``pop``,
+``stp``/``ldp``) are matched by effective address displacement rather than
+instruction order when both sides are homogeneous (all reads / all writes)
+and non-overlapping.  This correctly pairs ``stp x0, x1, [sp, #-0x10]!``
+with ``push rsi; push rdi`` by ascending address.  Overlapping or mixed
+read/write stack accesses are rejected as
+``memory_address_order_conflict``.
+
 ### Immediate Derivation
 
 Host-only immediates are derived from guest placeholders through
@@ -285,6 +293,20 @@ Current templates for ``("aarch64", "x86-64")``:
 Any host immediate that cannot be expressed through these templates causes
 the rule to be skipped with `unpaired_host_immediate` (a universal rejection
 condition, not limited to frame-relative memory rules).
+
+### Fixed-role Registers
+
+Some ISA-specific registers serve architecturally fixed roles (e.g. ``cl``
+is the only valid shift-count register on x86-64).  Such registers are
+classified via ``is_fixed_role_register()`` in ``registers.py`` and are
+emitted as literals in rule output.
+
+For correctness, every fixed-role register *read* must have a visible
+reaching definition in the Host window.  The producer target register
+(e.g. ``ecx`` feeding into ``cl``) is preserved as a literal rather than
+generalised to a ``tmpN`` placeholder, so the family relationship
+(``ecx`` → ``cl``) is explicit in the emitted rule.  Rules lacking a
+producer are rejected with ``unbound_fixed_role_register``.
 
 ## Candidate Boundary
 
