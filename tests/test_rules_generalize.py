@@ -15,7 +15,10 @@ from angr_rule_learning.rules.ast import (
     RegTextOp,
 )
 from angr_rule_learning.rules.generalize import (
+    _annotate_dead_writes,
+    _build_placeholder_map,
     _verify_fixed_role_sources_in_host,
+    _writer_covers_consumer,
     GeneratedRule,
     RuleDiagnostics,
     RuleGeneralizer,
@@ -40,6 +43,26 @@ def test_immop_neg_serializes_as_hash_minus_imm() -> None:
     assert ImmOp(id=1, neg=True, aarch64_hash=True).to_text() == "#-imm1"
     assert ImmOp(id=2, neg=True, aarch64_hash=False).to_text() == "-imm2"
     assert ImmOp(id=3, neg=False, aarch64_hash=True).to_text() == "#imm3"
+
+
+def test_writer_coverage_uses_explicit_architecture() -> None:
+    assert _writer_covers_consumer("x86-64", "ecx", "cl")
+    assert not _writer_covers_consumer("x86-64", "ch", "cl")
+    assert _writer_covers_consumer("aarch64", "x1", "w1")
+
+
+def test_guest_fixed_role_is_detected_with_guest_architecture() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="reverse-fixed-role",
+        guest=CodeFragment("x86-64", 0x1000, "0102", 1),
+        host=CodeFragment("aarch64", 0x2000, "01020304", 1),
+        input_registers=(("cl", "w1"),),
+    )
+
+    with pytest.raises(_RuleSkip) as excinfo:
+        _build_placeholder_map(candidate, "x86-64", "aarch64")
+
+    assert excinfo.value.reason == "unsupported_rule_shape"
 
 
 def _inst(
@@ -696,6 +719,55 @@ def test_dead_write_produces_meta_ops() -> None:
     assert inst_with_save.meta[0].kind == "save"
     assert inst_with_save.meta[0].regs == (RegOp("i32", 32, 1),)
     assert "save i32_reg1" in inst_with_save.to_text()
+
+
+def test_dead_write_save_restore_uses_guest_architecture() -> None:
+    window = _window_pair(
+        (
+            _inst(
+                "x86-64",
+                0x1000,
+                "mov",
+                "ecx, edi",
+                write_registers=("ecx",),
+                read_registers=("edi",),
+            ),
+        ),
+        (
+            _inst(
+                "aarch64",
+                0x2000,
+                "mov",
+                "w8, w0",
+                write_registers=("w8",),
+                read_registers=("w0",),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="reverse-dead-write",
+        guest=CodeFragment("x86-64", 0x1000, "0102", 1),
+        host=CodeFragment("aarch64", 0x2000, "01020304", 1),
+        input_registers=(("edi", "w0"), ("ecx", "w8")),
+    )
+
+    guest, _host = _annotate_dead_writes(
+        _instructions_to_ast(window.guest.instructions),
+        _instructions_to_ast(window.host.instructions),
+        candidate,
+        window,
+        {
+            "edi": "i32_reg1",
+            "w0": "i32_reg1",
+            "ecx": "ecx",
+            "w8": "i32_reg2",
+        },
+        "x86-64",
+        "aarch64",
+    )
+
+    assert "save rcx" in guest[0].to_text()
+    assert "restore rcx" in guest[0].to_text()
 
 
 def test_is_branch_instruction():
