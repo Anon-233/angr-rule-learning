@@ -50,17 +50,27 @@ def _check_ordered(
     host_events,
     context: CheckContext,
 ) -> list[CheckResult] | None:
-    """Check events paired by execution order.  Returns ``None`` when
-    an address mismatch suggests reordering may be needed."""
+    """Check events paired by execution order in two phases.
+
+    Phase 1 validates kind, width, and address for every event.  If any
+    address does not match and there are multiple slots the function
+    returns ``None`` to signal the caller to try slot-based matching.
+
+    Phase 2 compares values.  This separation guarantees that a partial
+    pass from Phase 1 is never mistaken for a full equivalence result
+    when a later event has an address mismatch.
+    """
+    multi_slot = len(expectations) >= 2
     checker = RelationChecker(symbols=context.symbols, constraints=context.constraints)
-    checks: list[CheckResult] = []
-    address_mismatch = False
+
+    # -- Phase 1: kind, width, address ------------------------------------
+    fail_checks: list[CheckResult] = []
 
     for index, (expectation, guest_event, host_event) in enumerate(
         zip(expectations, guest_events, host_events, strict=True)
     ):
         if guest_event.kind != expectation.kind or host_event.kind != expectation.kind:
-            checks.append(
+            fail_checks.append(
                 CheckResult(
                     kind="memory",
                     status="fail",
@@ -75,7 +85,7 @@ def _check_ordered(
             guest_event.width != expectation.width
             or host_event.width != expectation.width
         ):
-            checks.append(
+            fail_checks.append(
                 CheckResult(
                     kind="memory",
                     status="fail",
@@ -98,10 +108,10 @@ def _check_ordered(
             metadata={"event_index": index, "side": "guest"},
         )
         if guest_addr_result.status != "pass":
-            address_mismatch = True
-            if len(expectations) < 2:
-                checks.append(guest_addr_result)
-            break
+            if multi_slot:
+                return None  # fall back to slot-based match
+            fail_checks.append(guest_addr_result)
+            continue
 
         host_addr_result = checker.check_equal(
             kind="memory",
@@ -113,11 +123,19 @@ def _check_ordered(
             metadata={"event_index": index, "side": "host"},
         )
         if host_addr_result.status != "pass":
-            address_mismatch = True
-            if len(expectations) < 2:
-                checks.append(host_addr_result)
-            break
+            if multi_slot:
+                return None  # fall back to slot-based match
+            fail_checks.append(host_addr_result)
+            continue
 
+    if fail_checks:
+        return fail_checks
+
+    # -- Phase 2: values (only reached when all addresses matched) --------
+    checks: list[CheckResult] = []
+    for index, (expectation, guest_event, host_event) in enumerate(
+        zip(expectations, guest_events, host_events, strict=True)
+    ):
         value_result = checker.check_equal(
             kind="memory",
             guest=expectation.slot,
@@ -132,11 +150,6 @@ def _check_ordered(
             metadata={"event_index": index, "width": expectation.width},
         )
         checks.append(value_result)
-
-    # Only signal "try slot match" for pure address mismatches with
-    # multiple slots (single-slot mismatches are genuine failures).
-    if address_mismatch and not checks and len(expectations) >= 2:
-        return None  # signal caller to try slot-based match
     return checks
 
 
