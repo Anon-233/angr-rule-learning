@@ -844,15 +844,45 @@ def test_dead_write_subsequent_write_updates_last_access() -> None:
     """Same-reg dead write twice: restore on second (last access)."""
     pair = _window_pair(
         (
-            _inst("aarch64", 0x1000, "mov", "w8, w0", write_registers=("w8",), read_registers=("w0",)),
-            _inst("aarch64", 0x1004, "add", "w8, w8, w1", write_registers=("w8",), read_registers=("w8", "w1")),
+            _inst(
+                "aarch64",
+                0x1000,
+                "mov",
+                "w8, w0",
+                write_registers=("w8",),
+                read_registers=("w0",),
+            ),
+            _inst(
+                "aarch64",
+                0x1004,
+                "add",
+                "w8, w8, w1",
+                write_registers=("w8",),
+                read_registers=("w8", "w1"),
+            ),
         ),
         (
-            _inst("x86-64", 0x2000, "mov", "eax, edi", write_registers=("eax",), read_registers=("edi",)),
-            _inst("x86-64", 0x2003, "add", "eax, eax, esi", write_registers=("eax",), read_registers=("eax", "esi")),
+            _inst(
+                "x86-64",
+                0x2000,
+                "mov",
+                "eax, edi",
+                write_registers=("eax",),
+                read_registers=("edi",),
+            ),
+            _inst(
+                "x86-64",
+                0x2003,
+                "add",
+                "eax, eax, esi",
+                write_registers=("eax",),
+                read_registers=("eax", "esi"),
+            ),
         ),
     )
-    candidate = _candidate(inputs=(("w0", "edi"), ("w1", "esi"), ("w8", "eax")), outputs=())
+    candidate = _candidate(
+        inputs=(("w0", "edi"), ("w1", "esi"), ("w8", "eax")), outputs=()
+    )
     rule = RuleGeneralizer(RuleDiagnostics()).generate(
         1, pair, candidate, _passing_report(candidate.candidate_id)
     )
