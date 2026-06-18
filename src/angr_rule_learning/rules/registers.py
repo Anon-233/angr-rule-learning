@@ -42,6 +42,14 @@ _ALLOWED_LITERAL_REGISTERS = {
     "x86-64": frozenset({"rsp", "esp", "sp", "rbp", "ebp", "bp"}),
 }
 
+# Registers that serve a fixed architectural role and should be emitted
+# as literals in rule output.  Unlike _ALLOWED_LITERAL_REGISTERS these
+# registers ARE classifiable — their width-flexible matching is handled
+# by the caller checking is_fixed_role_register before comparing classes.
+_FIXED_ROLE_REGISTERS: dict[str, frozenset[str]] = {
+    "x86-64": frozenset({"cl"}),
+}
+
 _UNSUPPORTED_PREFIXES = {
     "aarch64": ("s", "d", "q", "v"),
     "x86-64": ("xmm", "ymm", "zmm", "st", "mm"),
@@ -145,6 +153,20 @@ def frame_pointer_placeholder(arch: str, register: str) -> str | None:
 def is_allowed_literal_register(arch: str, register: str) -> bool:
     canonical = canonical_arch_name(arch)
     return normalize_register_name(register) in _ALLOWED_LITERAL_REGISTERS.get(
+        canonical, frozenset()
+    )
+
+
+def is_fixed_role_register(arch: str, register: str) -> bool:
+    """Return True if *register* serves a fixed architectural role.
+
+    Fixed-role registers (e.g. ``cl`` for x86-64 shift counts) should be
+    emitted as literals in rule output.  Unlike allowed-literal registers
+    they are still classifiable — callers should skip width comparison
+    when pairing a fixed-role register with an integer guest register.
+    """
+    canonical = canonical_arch_name(arch)
+    return normalize_register_name(register) in _FIXED_ROLE_REGISTERS.get(
         canonical, frozenset()
     )
 

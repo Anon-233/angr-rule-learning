@@ -23,6 +23,7 @@ from angr_rule_learning.rules.registers import (
     classify_register,
     frame_pointer_placeholder,
     is_allowed_literal_register,
+    is_fixed_role_register,
     known_register_tokens,
     normalize_register_name,
     stack_pointer_placeholder,
@@ -453,7 +454,13 @@ def _build_placeholder_map(
         guest_class = _classify_for_rule(guest_arch, guest_reg)
         host_class = _classify_for_rule(host_arch, host_reg)
         if guest_class != host_class:
-            raise _RuleSkip("register_class_mismatch")
+            # Allow architecturally fixed host registers (e.g. cl for
+            # shift counts) to match any integer-width guest register.
+            # The host register is emitted as a literal in the output.
+            if not (
+                is_fixed_role_register(host_arch, host_reg) and guest_class.kind == "i"
+            ):
+                raise _RuleSkip("register_class_mismatch")
         guest_existing = mapping.get(guest_reg)
         host_existing = mapping.get(host_reg)
 
@@ -474,6 +481,11 @@ def _build_placeholder_map(
             raise _RuleSkip("unsupported_rule_shape")
 
         for register in (guest_reg, host_reg):
+            # Fixed-role host registers stay as literals in the output;
+            # skip them in the mapping so the text generator leaves
+            # them untouched.
+            if is_fixed_role_register(host_arch, register):
+                continue
             previous = mapping.get(register)
             if previous is not None and previous != existing:
                 raise _RuleSkip("unsupported_rule_shape")
@@ -1234,6 +1246,11 @@ def _validate_no_remaining_registers(
                     if is_allowed_literal_register(arch, token_n):
                         continue
                     if _RESERVED_LITERALS and token_n in _RESERVED_LITERALS:
+                        continue
+                    # Fixed-role host registers (e.g. cl for shift counts)
+                    # are emitted as literals and should not trigger
+                    # unmapped-register errors.
+                    if is_fixed_role_register(arch, token_n):
                         continue
                     # Skip bare numeric tokens (decimal or hex).
                     try:
