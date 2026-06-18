@@ -205,14 +205,11 @@ class Instruction:
                 neg=bool(m.group(2)),
             )
 
-        # Register: i32_reg1, sp64, fp64
-        m = re.fullmatch(r"(i\d+)_reg(\d+)", text)
-        if m:
-            bits = int(m.group(1)[1:])
-            return RegOp(prefix=m.group(1), bits=bits, id=int(m.group(2)))
-        m = re.fullmatch(r"(sp|fp)(\d+)", text)
-        if m:
-            return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
+        # Register: delegate to parse_placeholder
+        try:
+            return parse_placeholder(text)
+        except ValueError:
+            pass
 
         # Literal: #0, #-4, 0, etc.
         return LitOp(value=text)
@@ -286,7 +283,7 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
     """Return a new rule with every occurrence of ``imm{N}`` replaced by *value*.
 
     Substitution handles plain ``immN``, AArch64 ``#immN``, and ``immN``
-    nested inside derived ``\${...}`` expressions.
+    nested inside derived ``${...}`` expressions.
     """
 
     def _sub(op: Operand) -> Operand:
@@ -369,9 +366,81 @@ def _insts_equal(a: tuple[Instruction, ...], b: tuple[Instruction, ...]) -> bool
     for ia, ib in zip(a, b):
         if ia.mnemonic != ib.mnemonic:
             return False
+        if ia.meta != ib.meta:
+            return False
         if len(ia.operands) != len(ib.operands):
             return False
         for oa, ob in zip(ia.operands, ib.operands):
             if not _op_equal(oa, ob):
                 return False
+    return True
+
+
+# ── Placeholder parsing and collection ─────────────────────────────────
+
+
+IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
+
+
+def parse_placeholder(placeholder: str) -> RegOp | TmpOp:
+    """Parse a placeholder string into its AST operand type.
+
+    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp, and ``tmp1`` → TmpOp.
+    """
+    m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
+    if m:
+        bits = int(m.group(1)[1:])
+        return RegOp(prefix=m.group(1), bits=bits, id=int(m.group(2)))
+    m = re.fullmatch(r"(sp|fp)(\d+)", placeholder)
+    if m:
+        return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
+    m = re.fullmatch(r"tmp(\d+)", placeholder)
+    if m:
+        return TmpOp(id=int(m.group(1)))
+    raise ValueError(f"unknown placeholder format: {placeholder!r}")
+
+
+def collect_instruction_imm_ids(insts: tuple[Instruction, ...]) -> set[str]:
+    """Collect immN placeholder IDs from AST instructions.
+
+    Checks both typed ImmOp operands and LitOp/RegTextOp values that may
+    contain embedded ``immN`` placeholders (e.g. ``dword ptr [fp64 - imm2]``).
+
+    For ImmOp operands with a derived expression (``${…}``), the derivation
+    text is scanned for guest ``immN`` references instead of collecting the
+    ImmOp's own host-only id.
+    """
+    ids: set[str] = set()
+    for inst in insts:
+        for op in inst.operands:
+            if isinstance(op, ImmOp) and op.id != 0:
+                if op.derived is not None:
+                    for m in IMM_PLACEHOLDER_RE.finditer(op.derived):
+                        ids.add(m.group(1))
+                else:
+                    ids.add(str(op.id))
+            elif isinstance(op, (LitOp, RegTextOp)):
+                for m in IMM_PLACEHOLDER_RE.finditer(op.to_text()):
+                    ids.add(m.group(1))
+    return ids
+
+
+def labels_are_consistent(
+    guest: tuple[Instruction, ...],
+    host: tuple[Instruction, ...],
+) -> bool:
+    """Check that guest and host use the same set of label IDs."""
+
+    def _collect(insts: tuple[Instruction, ...]) -> set[str]:
+        return {
+            str(op.id)
+            for inst in insts
+            for op in inst.operands
+            if isinstance(op, LabelOp)
+        }
+
+    guest_labels = _collect(guest)
+    host_labels = _collect(host)
+    if guest_labels or host_labels:
+        return guest_labels == host_labels
     return True

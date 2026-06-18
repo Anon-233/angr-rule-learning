@@ -7,6 +7,15 @@ from typing import TYPE_CHECKING
 
 from angr_rule_learning.extraction.models import ExtractedInstruction, WindowPair
 from angr_rule_learning.extraction.liveness import family_for_register
+from angr_rule_learning.rules.ast import (
+    collect_instruction_imm_ids,
+    labels_are_consistent,
+    parse_placeholder,
+)
+from angr_rule_learning.rules.derivation import (
+    DerivationContext,
+    derive_host_expressions,
+)
 from angr_rule_learning.rules.registers import (
     RegisterClass,
     RegisterClassError,
@@ -674,28 +683,6 @@ def _replace_labels_ast(
     return tuple(guest_result), tuple(host_result)
 
 
-def _labels_are_consistent_ast(
-    guest_insts: tuple[Instruction, ...],
-    host_insts: tuple[Instruction, ...],
-) -> bool:
-    """Check that guest and host use the same set of label IDs."""
-    from angr_rule_learning.rules.ast import LabelOp
-
-    def _collect(insts: tuple[Instruction, ...]) -> set[str]:
-        return {
-            str(op.id)
-            for inst in insts
-            for op in inst.operands
-            if isinstance(op, LabelOp)
-        }
-
-    guest_labels = _collect(guest_insts)
-    host_labels = _collect(host_insts)
-    if guest_labels or host_labels:
-        return guest_labels == host_labels
-    return True
-
-
 def _replace_immediates_ast(
     guest_insts: tuple[Instruction, ...],
     guest_arch: str,
@@ -799,34 +786,16 @@ def _replace_immediates_ast(
     host_result = _replace_side(host_insts, host_pattern, host_arch_n, "")
 
     # ---- Phase 3: Derivation ----
-    guest_text_lines = tuple(i.to_text() for i in guest_result)
-    host_text_lines = tuple(i.to_text() for i in host_result)
-
-    guest_imms = {
-        m.group(1)
-        for line in guest_text_lines
-        for m in _IMM_PLACEHOLDER_RE.finditer(line)
-    }
-    host_imms = {
-        m.group(1)
-        for line in host_text_lines
-        for m in _IMM_PLACEHOLDER_RE.finditer(line)
-    }
-    host_only = host_imms - guest_imms
-
-    if host_only:
-        guest_values = {
-            k: v for k, v in value_by_id.items() if k in guest_imms or k in implicit_ids
-        }
-        host_text_lines = _inline_derived_expressions(
-            host_text_lines,
-            host_only,
-            guest_values,
-            scale_shifts,
-            value_by_id,
-            implicit_ids,
-        )
-        host_result = tuple(AstInstruction.from_text(line) for line in host_text_lines)
+    ctx = DerivationContext(
+        guest_insts=guest_result,
+        host_insts=host_result,
+        guest_arch=guest_arch_n,
+        host_arch=host_arch_n,
+        value_by_id=value_by_id,
+        scale_shifts=scale_shifts,
+        implicit_ids=implicit_ids,
+    )
+    host_result = derive_host_expressions(ctx)
 
     return guest_result, host_result
 
@@ -846,91 +815,6 @@ def _is_bit_position(line: str, match: re.Match[str], arch: str) -> bool:
         mnemonic = line.strip().split()[0].lower()
         return mnemonic in {"tbz", "tbnz"}
     return False
-    return False
-
-
-def _inline_derived_expressions(
-    host_lines: tuple[str, ...],
-    host_only_ids: set[str],
-    guest_values: dict[str, int],
-    scale_shifts: set[int],
-    all_values: dict[str, int],
-    implicit_ids: set[str],
-) -> tuple[str, ...]:
-    result: list[str] = []
-    for line in host_lines:
-        for m in _IMM_PLACEHOLDER_RE.finditer(line):
-            imm_id = m.group(1)
-            if imm_id not in host_only_ids:
-                continue
-            derived = _derive_host_expression(
-                int(all_values[imm_id]),
-                guest_values,
-                scale_shifts,
-                implicit_ids,
-                all_values,
-            )
-            if derived is not None:
-                line = line.replace(f"imm{imm_id}", f"${{{derived}}}")
-        result.append(line)
-    return tuple(result)
-
-
-def _derive_host_expression(
-    target_value: int,
-    guest_values: dict[str, int],
-    scale_shifts: set[int],
-    implicit_ids: set[str],
-    all_values: dict[str, int],
-) -> str | None:
-    """Search for an expression of guest immediates that equals *target_value*.
-
-    Templates are tried by complexity; the first match wins.
-    """
-    items = list(guest_values.items())  # [(id, value), ...]
-    candidate_shifts = scale_shifts if scale_shifts else {0, 16, 32, 48}
-
-    def _operand(imm_id: str) -> str:
-        """Return the literal value for implicit operands, otherwise immN."""
-        if imm_id in implicit_ids:
-            return str(all_values[imm_id])
-        return f"imm{imm_id}"
-
-    def _shift_operand(s: int) -> str:
-        """Return ``immN`` if *s* matches a guest immediate, else the literal."""
-        for imm_id, val in guest_values.items():
-            if val == s:
-                return _operand(imm_id)
-        return str(s)
-
-    # L1: (imm_a << s)  —  single-shifted immediate  (e.g. 1 << bitpos)
-    for id_a, va in items:
-        for s in sorted(candidate_shifts, reverse=True):
-            if va << s == target_value:
-                return f"({_operand(id_a)} << {_shift_operand(s)})"
-
-    # L2: (imm_a << s) | imm_b  —  mov + movk → movabs
-    for id_a, va in items:
-        for id_b, vb in items:
-            if id_a == id_b:
-                continue
-            for s in sorted(candidate_shifts, reverse=True):
-                if (va << s) | vb == target_value:
-                    return (
-                        f"({_operand(id_a)} << {_shift_operand(s)}) | {_operand(id_b)}"
-                    )
-
-    # L3: imm_a + imm_b  —  add chain
-    for id_a, va in items:
-        for id_b, vb in items:
-            if id_a == id_b:
-                continue
-            if va + vb == target_value:
-                return f"{_operand(id_a)} + {_operand(id_b)}"
-            if va - vb == target_value:
-                return f"{_operand(id_a)} - {_operand(id_b)}"
-
-    return None
 
 
 def _imm_canonical(match: re.Match[str], arch: str) -> str:
@@ -959,11 +843,9 @@ def _check_label_consistency_ast(
     host_insts: tuple[Instruction, ...],
 ) -> None:
     """Check label consistency directly on AST instructions."""
-    if not _labels_are_consistent_ast(guest_insts, host_insts):
+    if not labels_are_consistent(guest_insts, host_insts):
         raise _RuleSkip("mismatched_branch_targets")
 
-
-_IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 
 _AARCH64_FRAME_REGS = frozenset({"sp", "wsp", "x29", "fp"})
 _X86_64_FRAME_REGS = frozenset({"rsp", "esp", "sp", "rbp", "ebp", "bp"})
@@ -984,25 +866,6 @@ def _has_frame_relative_binding(candidate: VerificationCandidate) -> bool:
     return False
 
 
-def _collect_immediates_ast(insts: tuple[Instruction, ...]) -> set[str]:
-    """Collect immN IDs from AST instructions.
-
-    Checks both typed ImmOp operands and LitOp/RegTextOp values that may
-    contain embedded ``immN`` placeholders (e.g. ``dword ptr [fp64 - imm2]``).
-    """
-    from angr_rule_learning.rules.ast import ImmOp, LitOp, RegTextOp
-
-    ids: set[str] = set()
-    for inst in insts:
-        for op in inst.operands:
-            if isinstance(op, ImmOp) and op.id != 0:
-                ids.add(str(op.id))
-            elif isinstance(op, (LitOp, RegTextOp)):
-                for m in _IMM_PLACEHOLDER_RE.finditer(op.to_text()):
-                    ids.add(m.group(1))
-    return ids
-
-
 def _host_immediates_are_derivable(
     guest_insts: tuple[Instruction, ...],
     host_insts: tuple[Instruction, ...],
@@ -1012,8 +875,8 @@ def _host_immediates_are_derivable(
         return True
     if not _has_frame_relative_binding(candidate):
         return True
-    guest_imms = _collect_immediates_ast(guest_insts)
-    host_imms = _collect_immediates_ast(host_insts)
+    guest_imms = collect_instruction_imm_ids(guest_insts)
+    host_imms = collect_instruction_imm_ids(host_insts)
     return host_imms <= guest_imms
 
 
@@ -1155,26 +1018,6 @@ def _instructions_to_ast(
     )
 
 
-def _parse_placeholder(placeholder: str):
-    """Parse a placeholder string into its AST operand type.
-
-    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp, and ``tmp1`` → TmpOp.
-    """
-    from angr_rule_learning.rules.ast import RegOp, TmpOp
-
-    m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
-    if m:
-        bits = int(m.group(1)[1:])
-        return RegOp(prefix=m.group(1), bits=bits, id=int(m.group(2)))
-    m = re.fullmatch(r"(sp|fp)(\d+)", placeholder)
-    if m:
-        return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
-    m = re.fullmatch(r"tmp(\d+)", placeholder)
-    if m:
-        return TmpOp(id=int(m.group(1)))
-    raise ValueError(f"unknown placeholder format: {placeholder!r}")
-
-
 def _generalize_instructions_with_roles(
     insts: tuple[Instruction, ...],
     extracted: tuple[ExtractedInstruction, ...],
@@ -1273,7 +1116,7 @@ def _generalize_instructions_with_roles(
             if isinstance(op, (LitOp, RegTextOp)):
                 text = op.to_text()
                 try:
-                    new_operands.append(_parse_placeholder(text))
+                    new_operands.append(parse_placeholder(text))
                 except ValueError:
                     new_operands.append(op)
             else:
