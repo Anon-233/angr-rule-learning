@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from angr_rule_learning.arch.registers import is_compatible_frame_base_pair
 from angr_rule_learning.extraction.liveness import family_for_register
 from angr_rule_learning.extraction.memory_operands import (
     MemoryOperand,
@@ -147,7 +148,12 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
                 host_operands=host_operands,
             )
         for guest_reg, host_reg in zip(guest_addr_regs, host_addr_regs, strict=True):
-            if _is_frame_address_pair(guest_reg, host_reg):
+            if _is_frame_address_pair(
+                guest_item.instruction.arch,
+                guest_reg,
+                host_item.instruction.arch,
+                host_reg,
+            ):
                 continue
             input_registers.append((guest_reg, host_reg))
         if guest.kind == "write":
@@ -433,14 +439,17 @@ def _collect_external_sources(
     return external
 
 
-_AARCH64_FRAME_REGS = {"sp", "wsp", "x29", "fp"}
-_X86_64_FRAME_REGS = {"rsp", "esp", "sp", "rbp", "ebp", "bp"}
-
-
-def _is_frame_address_pair(guest_reg: str, host_reg: str) -> bool:
-    return (
-        guest_reg.lower() in _AARCH64_FRAME_REGS
-        and host_reg.lower() in _X86_64_FRAME_REGS
+def _is_frame_address_pair(
+    guest_arch: str,
+    guest_reg: str | None,
+    host_arch: str,
+    host_reg: str | None,
+) -> bool:
+    return is_compatible_frame_base_pair(
+        guest_arch,
+        guest_reg,
+        host_arch,
+        host_reg,
     )
 
 

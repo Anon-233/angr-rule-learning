@@ -493,6 +493,21 @@ def test_frame_address_pairs_are_not_shared_input_registers() -> None:
     assert ("w0", "eax") in surface.input_registers
 
 
+def test_reverse_frame_address_pairs_are_not_shared_input_registers() -> None:
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("x86-64", 0x1000, "mov", "dword ptr [rbp - 4], eax"),),
+            (_inst("aarch64", 0x2000, "str", "w0, [sp, #12]"),),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert surface.spec.bindings[0].guest_addr == "rbp - 4"
+    assert surface.spec.bindings[0].host_addr == "sp + 12"
+    assert ("rbp", "sp") not in surface.input_registers
+    assert ("eax", "w0") in surface.input_registers
+
+
 def test_infers_sign_extension_load_surface() -> None:
     surface = infer_memory_surface(
         _pair(
