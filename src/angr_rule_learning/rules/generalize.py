@@ -225,9 +225,13 @@ class RuleGeneralizer:
             mapping, role_split = _build_placeholder_map(
                 candidate, guest_arch, host_arch
             )
-            _require_fixed_role_producers(window, candidate)
+            fixed_producers = _require_fixed_role_producers(window, candidate)
             internal_temps = _identify_internal_temps(window, candidate)
             mapping.update(internal_temps)
+            # Fixed-role producer targets must retain their register-family
+            # identity (e.g. ecx→cl); override any temp placeholders.
+            for reg in fixed_producers:
+                mapping[reg] = reg
             guest_insts = _instructions_to_ast(window.guest.instructions)
             host_insts = _instructions_to_ast(window.host.instructions)
             guest_insts = _generalize_instructions_with_roles(
@@ -236,6 +240,7 @@ class RuleGeneralizer:
                 mapping,
                 role_split,
                 guest_arch,
+                allowed_literals=fixed_producers,
             )
             host_insts = _generalize_instructions_with_roles(
                 host_insts,
@@ -243,6 +248,7 @@ class RuleGeneralizer:
                 mapping,
                 role_split,
                 host_arch,
+                allowed_literals=fixed_producers,
             )
             # Annotate dead writes via MetaOp on AST, then apply label/immediate
             # replacement directly on AST.
@@ -343,30 +349,43 @@ def _memory_binding_register_pairs(
 def _require_fixed_role_producers(
     window: WindowPair,
     candidate: VerificationCandidate,
-) -> None:
-    """Verify every fixed-role host input register has a visible producer
-    in the Host window.
+) -> frozenset[str]:
+    """Verify every fixed-role host register read has a reaching definition
+    in the Host window, and return the set of producer register names to
+    keep as literals in the output.
 
     Fixed-role registers (e.g. ``cl`` for shift counts) are emitted as
-    literals in the rule output.  Without a host-side instruction that
-    writes to the register family the Guest→Host binding is invisible
-    in the emitted rule text and the translation is ambiguous.
+    literals.  Their producer targets (e.g. ``ecx`` written by a preceding
+    ``mov ecx, esi``) must also retain their register-family identity so
+    the relationship between the producer and the fixed-role consumer is
+    visible in the emitted rule.
     """
     host_arch = candidate.host.arch
-    for _guest_reg, host_reg in candidate.input_registers:
-        if not is_fixed_role_register(host_arch, host_reg):
-            continue
-        host_family = family_for_register(host_arch, host_reg)
-        has_producer = False
-        for inst in window.host.instructions:
-            for w in inst.write_registers:
-                if family_for_register(host_arch, w) == host_family:
-                    has_producer = True
+    producers: set[str] = set()
+
+    for inst_idx, inst in enumerate(window.host.instructions):
+        for read_reg in inst.read_registers:
+            read_n = normalize_register_name(read_reg)
+            if not is_fixed_role_register(host_arch, read_n):
+                continue
+            host_family = family_for_register(host_arch, read_n)
+
+            # Search backward for the nearest reaching definition.
+            has_producer = False
+            for prev_idx in range(inst_idx - 1, -1, -1):
+                prev_inst = window.host.instructions[prev_idx]
+                for w in prev_inst.write_registers:
+                    if family_for_register(host_arch, w) == host_family:
+                        has_producer = True
+                        producers.add(normalize_register_name(w))
+                        break
+                if has_producer:
                     break
-            if has_producer:
-                break
-        if not has_producer:
-            raise _RuleSkip("unpaired_host_immediate")
+
+            if not has_producer:
+                raise _RuleSkip("unbound_fixed_role_register")
+
+    return frozenset(producers)
 
 
 def _build_placeholder_map(
@@ -1047,7 +1066,7 @@ def _annotate_dead_writes(
         return first_write, last_access
 
     def _text_to_regop(placeholder: str) -> Operand:
-        from angr_rule_learning.rules.ast import RegOp, TmpOp
+        from angr_rule_learning.rules.ast import LitOp, RegOp, TmpOp
 
         m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
         if m:
@@ -1061,6 +1080,10 @@ def _annotate_dead_writes(
             prefix = m.group(1)
             bits = int(prefix[1:])
             return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
+        # Raw register names kept as literals (fixed-role producer targets
+        # and other registers mapped to themselves).
+        if re.fullmatch(r"[a-z][a-z0-9]+", placeholder, re.IGNORECASE):
+            return LitOp(value=placeholder)
         raise ValueError(f"unknown placeholder format: {placeholder!r}")
 
     def _apply(
@@ -1130,6 +1153,8 @@ def _generalize_instructions_with_roles(
     mapping: dict[str, str],
     role_split: dict[str, tuple[str, str]],
     arch: str,
+    *,
+    allowed_literals: frozenset[str] = frozenset(),
 ) -> tuple[Instruction, ...]:
     """Replace physical register operands in AST instructions with typed placeholders.
 
@@ -1238,7 +1263,9 @@ def _generalize_instructions_with_roles(
         )
 
     # Step 3: Validate.
-    _validate_no_remaining_registers(tuple(result), arch)
+    _validate_no_remaining_registers(
+        tuple(result), arch, allowed_literals=allowed_literals
+    )
 
     return tuple(result)
 
@@ -1253,6 +1280,8 @@ _TOKEN_RE = re.compile(r"\[|\]|0x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[-+*
 def _validate_no_remaining_registers(
     insts: tuple[Instruction, ...],
     arch: str,
+    *,
+    allowed_literals: frozenset[str] = frozenset(),
 ) -> None:
     from angr_rule_learning.rules.ast import LitOp, RegTextOp
 
@@ -1281,6 +1310,10 @@ def _validate_no_remaining_registers(
                     # are emitted as literals and should not trigger
                     # unmapped-register errors.
                     if is_fixed_role_register(arch, token_n):
+                        continue
+                    # Fixed-role producer targets (e.g. ecx that feeds cl)
+                    # are kept as literals to preserve register-family identity.
+                    if token_n in allowed_literals:
                         continue
                     # Skip bare numeric tokens (decimal or hex).
                     try:

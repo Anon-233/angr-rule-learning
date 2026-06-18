@@ -1458,7 +1458,7 @@ def test_fixed_role_cl_rejected_without_rcx_producer() -> None:
 
     assert rule is None
     # Rejected because cl has no RCX-family producer in the Host window.
-    assert diagnostics.skip_reasons.get("unpaired_host_immediate", 0) >= 1
+    assert diagnostics.skip_reasons.get("unbound_fixed_role_register", 0) >= 1
 
 
 def test_fixed_role_cl_allowed_with_rcx_producer() -> None:
@@ -1518,12 +1518,125 @@ def test_fixed_role_cl_allowed_with_rcx_producer() -> None:
     rule = RuleGeneralizer(RuleDiagnostics()).generate(1, window, candidate, report)
 
     assert rule is not None
-    # mov ecx, esi writes RCX family → ecx becomes an internal temp
-    # (i32_tmp1), providing the producer that justifies the cl literal.
-    # i32_reg2 (for w1/esi) is the source of the mov.
+    # ecx stays as a literal (not generalized to i32_tmpN), preserving
+    # the RCX-family link to cl.  i32_reg2 (for w1/esi) is the source.
     host_text = "\n".join(rule.host_lines)
-    assert "cl" in host_text  # fixed-role literal preserved
-    assert "i32_reg2" in host_text  # guest input traceable in host
+    assert "mov ecx, i32_reg2" in host_text
+    assert "shl i32_reg1, cl" in host_text
+
+
+def test_fixed_role_producer_after_use_is_rejected() -> None:
+    """A write to RCX family AFTER cl is read cannot serve as producer."""
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    host_ecx = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="mov",
+        op_str="ecx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("ecx",),
+        read_registers=("esi",),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov, host_ecx)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "esi")), outputs=(("w0", "eax"),)
+    )
+    diagnostics = RuleDiagnostics()
+    rule = RuleGeneralizer(diagnostics).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unbound_fixed_role_register", 0) >= 1
+
+
+def test_fixed_role_no_tmp_to_cl_output() -> None:
+    """Emitted rule must not contain a plain i32_tmpN feeding into cl."""
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="ecx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("ecx",),
+        read_registers=("esi",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov, host_shl)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "esi")), outputs=(("w0", "eax"),)
+    )
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    host_text = "\n".join(rule.host_lines)
+    # ecx must be a literal, not a generic tmpN.
+    assert "ecx" in host_text
+    assert "_tmp" not in host_text
 
 
 def test_no_untyped_temporaries_in_output() -> None:
