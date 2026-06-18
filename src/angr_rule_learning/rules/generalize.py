@@ -428,12 +428,60 @@ def _x86_reg_bit_range(reg: str) -> tuple[int, int] | None:
 
 
 def _writer_covers_consumer(writer: str, consumer: str) -> bool:
-    """Return True if *writer*'s bit range covers *consumer*'s bit range."""
+    """Return True if *writer* covers *consumer*: same register family AND
+    the writer's bit range fully contains the consumer's bit range."""
     w_range = _x86_reg_bit_range(writer)
     c_range = _x86_reg_bit_range(consumer)
     if w_range is None or c_range is None:
         return False
+    if family_for_register("x86-64", writer) != family_for_register("x86-64", consumer):
+        return False
     return w_range[0] <= c_range[0] and w_range[1] >= c_range[1]
+
+
+def _trace_source_to_input(
+    start_reg: str,
+    inst_idx: int,
+    window: WindowPair,
+    host_arch: str,
+    host_inputs: frozenset[str],
+    visited: frozenset[str] | None = None,
+) -> str | None:
+    """Recursively trace *start_reg* backward through producers to an
+    external input.  Returns the input register name or ``None`` if
+    the chain cannot be resolved to a known input."""
+    if visited is None:
+        visited = frozenset()
+    reg_n = normalize_register_name(start_reg)
+    if reg_n in visited:
+        return None  # cycle
+    if reg_n in host_inputs:
+        return reg_n  # reached external input
+
+    # Search backward from inst_idx for a writer that covers reg_n.
+    family = family_for_register(host_arch, reg_n)
+    for prev_idx in range(inst_idx - 1, -1, -1):
+        prev_inst = window.host.instructions[prev_idx]
+        for w in prev_inst.write_registers:
+            w_n = normalize_register_name(w)
+            if not _writer_covers_consumer(w_n, reg_n):
+                continue
+            # Recurse through the writer's read registers.
+            for src in prev_inst.read_registers:
+                src_n = normalize_register_name(src)
+                if family_for_register(host_arch, src_n) == family:
+                    result = _trace_source_to_input(
+                        src_n,
+                        prev_idx,
+                        window,
+                        host_arch,
+                        host_inputs,
+                        visited | {reg_n},
+                    )
+                    if result is not None:
+                        return result
+            break  # one writer per register, per instruction
+    return None
 
 
 def _require_fixed_role_producers(
@@ -441,16 +489,12 @@ def _require_fixed_role_producers(
     candidate: VerificationCandidate,
 ) -> frozenset[str]:
     """Verify every fixed-role host register read has a reaching definition
-    in the Host window whose bit range covers the consumer, and return
-    the set of producer register names to keep as literals in the output.
-
-    Fixed-role registers (e.g. ``cl`` for shift counts) are emitted as
-    literals.  Their producer targets (e.g. ``ecx`` written by a preceding
-    ``mov ecx, esi``) must also retain their register-family identity so
-    the relationship between the producer and the fixed-role consumer is
-    visible in the emitted rule.
-    """
+    whose value can be traced to a mapped input, and return the set of
+    producer register names to keep as literals in the output."""
     host_arch = candidate.host.arch
+    host_inputs = frozenset(
+        normalize_register_name(hr) for _gr, hr in candidate.input_registers
+    )
     producers: set[str] = set()
 
     for inst_idx, inst in enumerate(window.host.instructions):
@@ -459,8 +503,7 @@ def _require_fixed_role_producers(
             if not is_fixed_role_register(host_arch, read_n):
                 continue
 
-            # Search backward for the nearest reaching definition whose
-            # bit range covers the consumer.
+            # Search backward for the nearest reaching definition.
             has_producer = False
             for prev_idx in range(inst_idx - 1, -1, -1):
                 prev_inst = window.host.instructions[prev_idx]
@@ -469,6 +512,23 @@ def _require_fixed_role_producers(
                     if _writer_covers_consumer(w_n, read_n):
                         has_producer = True
                         producers.add(w_n)
+                        # Trace the producer's source to a mapped input.
+                        source = None
+                        w_family = family_for_register(host_arch, w_n)
+                        for src in prev_inst.read_registers:
+                            src_n = normalize_register_name(src)
+                            src_family = family_for_register(host_arch, src_n)
+                            if src_family == w_family:
+                                source = _trace_source_to_input(
+                                    src_n, prev_idx, window, host_arch, host_inputs
+                                )
+                                if source is not None:
+                                    break
+                            elif src_n in host_inputs:
+                                source = src_n
+                                break
+                        if source is None:
+                            raise _RuleSkip("unbound_fixed_role_register")
                         break
                 if has_producer:
                     break

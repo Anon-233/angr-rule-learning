@@ -1740,23 +1740,15 @@ def test_fixed_role_mov_ecx_ecx_without_producer_is_rejected() -> None:
         ),
         InstructionWindow("s", "host", (host_mov, host_shl)),
     )
-    candidate = _candidate(
-        inputs=(("w0", "eax"), ("w1", "ecx")), outputs=(("w0", "eax"),)
-    )
-    # ecx is an input (paired with w1), so mov ecx, ecx reads it.
-    # But there's no *earlier* producer for the RCX family that can
-    # be traced — the source is external, which is fine for the
-    # fixed-role check since ecx itself covers cl.
+    # ecx is NOT in the input registers — mov ecx,ecx reads old RCX
+    # from outside the window, and no prior producer can be traced.
+    candidate = _candidate(inputs=(("w0", "eax"),), outputs=(("w0", "eax"),))
     diagnostics = RuleDiagnostics()
     rule = RuleGeneralizer(diagnostics).generate(
         1, window, candidate, _passing_report(candidate.candidate_id)
     )
-    # ecx covers cl (bit range 0-31 covers 0-7), and ecx is a valid
-    # input from outside the window.  Should be accepted.
-    assert rule is not None
-    host_text = "\n".join(rule.host_lines)
-    assert "ecx" in host_text
-    assert "cl" in host_text
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unbound_fixed_role_register", 0) >= 1
 
 
 def test_no_untyped_temporaries_in_output() -> None:
