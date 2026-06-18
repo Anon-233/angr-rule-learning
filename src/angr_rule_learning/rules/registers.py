@@ -7,8 +7,22 @@ from typing import Literal
 
 from archinfo import ArchNotFound, arch_from_id
 
+from angr_rule_learning.arch.registers import (
+    frame_pointer_placeholder as _frame_pointer_placeholder,
+    is_fixed_role_register as _is_fixed_role_register,
+    normalize_register_name,
+    stack_pointer_placeholder as _stack_pointer_placeholder,
+)
+from angr_rule_learning.arch.registry import canonical_arch_name
+
 
 RegisterKind = Literal["i", "f", "v"]
+
+# Compatibility exports for callers that historically imported rule-oriented
+# register helpers from this module.
+frame_pointer_placeholder = _frame_pointer_placeholder
+is_fixed_role_register = _is_fixed_role_register
+stack_pointer_placeholder = _stack_pointer_placeholder
 
 
 class RegisterClassError(ValueError):
@@ -40,14 +54,6 @@ _ARCHINFO_IDS = {
 _ALLOWED_LITERAL_REGISTERS = {
     "aarch64": frozenset({"xzr", "wzr", "sp", "wsp", "fp"}),
     "x86-64": frozenset({"rsp", "esp", "sp", "rbp", "ebp", "bp"}),
-}
-
-# Registers that serve a fixed architectural role and should be emitted
-# as literals in rule output.  Unlike _ALLOWED_LITERAL_REGISTERS these
-# registers ARE classifiable — their width-flexible matching is handled
-# by the caller checking is_fixed_role_register before comparing classes.
-_FIXED_ROLE_REGISTERS: dict[str, frozenset[str]] = {
-    "x86-64": frozenset({"cl"}),
 }
 
 _UNSUPPORTED_PREFIXES = {
@@ -103,70 +109,13 @@ for index in range(8, 16):
 _AARCH64_INTEGER_PATTERN = re.compile(r"^(?:w|x)(?:[0-9]|[12][0-9]|30)$")
 
 
-def normalize_register_name(register: str) -> str:
-    return register.strip().lower()
-
-
-def canonical_arch_name(arch: str) -> str:
-    normalized = arch.strip().lower()
-    if normalized in {"amd64", "x86_64", "x86-64"}:
-        return "x86-64"
-    if normalized in {"aarch64", "arm64"}:
-        return "aarch64"
-    return normalized
-
-
 def _archinfo_id(arch: str) -> str:
     return _ARCHINFO_IDS.get(canonical_arch_name(arch), arch.strip().lower())
-
-
-_STACK_POINTER_WIDTHS = {
-    "aarch64": {"sp": 64, "wsp": 32},
-    "x86-64": {"rsp": 64, "esp": 32, "sp": 16},
-}
-
-
-def stack_pointer_placeholder(arch: str, register: str) -> str | None:
-    canonical = canonical_arch_name(arch)
-    reg = normalize_register_name(register)
-    width = _STACK_POINTER_WIDTHS.get(canonical, {}).get(reg)
-    if width is None:
-        return None
-    return f"sp{width}"
-
-
-_FRAME_POINTER_WIDTHS = {
-    "aarch64": {"x29": 64, "fp": 64},
-    "x86-64": {"rbp": 64, "ebp": 32, "bp": 16},
-}
-
-
-def frame_pointer_placeholder(arch: str, register: str) -> str | None:
-    canonical = canonical_arch_name(arch)
-    reg = normalize_register_name(register)
-    width = _FRAME_POINTER_WIDTHS.get(canonical, {}).get(reg)
-    if width is None:
-        return None
-    return f"fp{width}"
 
 
 def is_allowed_literal_register(arch: str, register: str) -> bool:
     canonical = canonical_arch_name(arch)
     return normalize_register_name(register) in _ALLOWED_LITERAL_REGISTERS.get(
-        canonical, frozenset()
-    )
-
-
-def is_fixed_role_register(arch: str, register: str) -> bool:
-    """Return True if *register* serves a fixed architectural role.
-
-    Fixed-role registers (e.g. ``cl`` for x86-64 shift counts) should be
-    emitted as literals in rule output.  Unlike allowed-literal registers
-    they are still classifiable — callers should skip width comparison
-    when pairing a fixed-role register with an integer guest register.
-    """
-    canonical = canonical_arch_name(arch)
-    return normalize_register_name(register) in _FIXED_ROLE_REGISTERS.get(
         canonical, frozenset()
     )
 
