@@ -219,9 +219,12 @@ a dataclass tree of `Rule`, `Instruction`, and typed `Operand` nodes (RegOp,
 ImmOp, TmpOp, LabelOp, LitOp, RegTextOp).  The AST supports:
 
 - **Structured comparison**: relationship-preserving alpha-equivalence
-  (`canonicalize_rule`) that recognizes two rules as equal when they differ
-  only by consistent renumbering of placeholders, but distinguishes rules
-  where the same placeholder maps to different operand positions.
+  (`build_rule_fingerprint` / `rule_alpha_equal`) that recognizes two rules
+  as equal when they differ only by consistent renumbering of placeholders,
+  but distinguishes rules where the same placeholder maps to different
+  operand positions.  The fingerprint is a nested tuple-of-tuples with
+  explicit Guest/Host boundary markers and per-namespace canonical-ID maps
+  that preserve alias relationships across both sides.
 - **Substitution**: `substitute_imm` replaces an immediate placeholder with a
   literal value for consolidation (subsumed-rule detection).
 - **Pre/post metadata ordering**: `Instruction.meta` holds pre-instruction

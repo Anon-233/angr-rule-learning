@@ -66,7 +66,7 @@ class _FingerprintBuilder:
         self._reg_map: dict[tuple[object, ...], int] = {}
         self._tmp_map: dict[tuple[object, ...], int] = {}
         self._imm_map: dict[int, int] = {}
-        self._label_map: dict[tuple[int, bool], int] = {}
+        self._label_map: dict[int, int] = {}
         self._reg_next = 1
         self._tmp_next = 1
         self._imm_next = 1
@@ -92,11 +92,11 @@ class _FingerprintBuilder:
             self._imm_next += 1
         return self._imm_map[orig_id]
 
-    def _cid_label(self, key: tuple[int, bool]) -> int:
-        if key not in self._label_map:
-            self._label_map[key] = self._label_next
+    def _cid_label(self, orig_id: int) -> int:
+        if orig_id not in self._label_map:
+            self._label_map[orig_id] = self._label_next
             self._label_next += 1
-        return self._label_map[key]
+        return self._label_map[orig_id]
 
     # ── Text canonicalisation (embedded placeholders) ─────────────────
 
@@ -104,7 +104,7 @@ class _FingerprintBuilder:
         matches: list[tuple[int, int, str, int, tuple[object, ...]]] = []
         for m in _LABEL_RE.finditer(text):
             is_hash = bool(m.group(1))
-            cid = self._cid_label((int(m.group(2)), is_hash))
+            cid = self._cid_label(int(m.group(2)))
             matches.append((m.start(), m.end(), "L", cid, (is_hash,)))
         for m in _TMP_RE.finditer(text):
             prefix = m.group(1)
@@ -174,7 +174,7 @@ class _FingerprintBuilder:
         elif isinstance(op, LitOp):
             return (TAG_LIT,) + self._canon_text(op.value)
         elif isinstance(op, LabelOp):
-            cid = self._cid_label((op.id, op.aarch64_hash))
+            cid = self._cid_label(op.id)
             parts: list[object] = [TAG_LABEL, cid]
             if op.aarch64_hash:
                 parts.append(SYN_HASH)

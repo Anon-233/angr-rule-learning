@@ -97,19 +97,20 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                     )
             elif isinstance(op, (LitOp, RegTextOp)):
                 text = op.to_text()
+                # Collect all matches first, then process in reverse so
+                # span positions remain valid after each replacement.
+                replacements: list[tuple[int, int, str]] = []
                 for m in IMM_PLACEHOLDER_RE.finditer(text):
                     imm_id = m.group(1)
                     if imm_id in host_only:
-                        span = (m.start(), m.end())
+                        match_span = (m.start(), m.end())
                         derived = _try_strategies(
-                            strategies, ctx, imm_id, host_idx, op_idx, span
+                            strategies, ctx, imm_id, host_idx, op_idx, match_span
                         )
                         if derived is not None:
-                            text = re.sub(
-                                rf"\bimm{re.escape(imm_id)}\b",
-                                f"${{{derived}}}",
-                                text,
-                            )
+                            replacements.append((m.start(), m.end(), f"${{{derived}}}"))
+                for start, end, repl in reversed(replacements):
+                    text = text[:start] + repl + text[end:]
                 if isinstance(op, LitOp):
                     op = LitOp(value=text)
                 else:

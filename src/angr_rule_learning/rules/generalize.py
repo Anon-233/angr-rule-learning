@@ -989,7 +989,11 @@ def _annotate_dead_writes(
                 ):
                     first_write[reg] = idx
                     dead_families.add(family)
-                    last_access[reg] = idx
+                if family in dead_families:
+                    for fw_reg in list(first_write.keys()):
+                        fw_family = family_for_register(inst.arch, fw_reg)
+                        if fw_family == family:
+                            last_access[fw_reg] = idx
             for reg in inst.read_registers:
                 family = family_for_register(inst.arch, reg)
                 for fw_reg in list(first_write.keys()):

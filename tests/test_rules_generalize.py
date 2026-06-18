@@ -786,6 +786,86 @@ def test_single_dead_write_restore_on_post_meta() -> None:
     assert not any(m.kind == "restore" for m in host_insts[0].meta)
 
 
+def test_dead_write_second_write_updates_last_access() -> None:
+    """Same register family written twice — restore goes on second write's post_meta."""
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "mov",
+                "w8, w0",
+                write_registers=("w8",),
+                read_registers=("w0",),
+            ),
+            _inst(
+                "aarch64",
+                0x1004,
+                "add",
+                "w8, w8, w1",
+                write_registers=("w8",),
+                read_registers=("w8", "w1"),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "mov",
+                "eax, edi",
+                write_registers=("eax",),
+                read_registers=("edi",),
+            ),
+            _inst(
+                "x86-64",
+                0x2003,
+                "add",
+                "eax, esi",
+                write_registers=("eax",),
+                read_registers=("eax", "esi"),
+            ),
+        ),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "edi"), ("w1", "esi"), ("w8", "eax")), outputs=()
+    )
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    host_insts = rule.rule.host
+    assert len(host_insts) == 2
+    # restore on second instruction's post_meta (not first's)
+    assert any(m.kind == "restore" for m in host_insts[1].post_meta)
+    assert not any(m.kind == "restore" for m in host_insts[0].post_meta)
+
+
+def test_dead_write_subsequent_write_updates_last_access() -> None:
+    """Same-reg dead write twice: restore on second (last access)."""
+    pair = _window_pair(
+        (
+            _inst("aarch64", 0x1000, "mov", "w8, w0", write_registers=("w8",), read_registers=("w0",)),
+            _inst("aarch64", 0x1004, "add", "w8, w8, w1", write_registers=("w8",), read_registers=("w8", "w1")),
+        ),
+        (
+            _inst("x86-64", 0x2000, "mov", "eax, edi", write_registers=("eax",), read_registers=("edi",)),
+            _inst("x86-64", 0x2003, "add", "eax, eax, esi", write_registers=("eax",), read_registers=("eax", "esi")),
+        ),
+    )
+    candidate = _candidate(inputs=(("w0", "edi"), ("w1", "esi"), ("w8", "eax")), outputs=())
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    host_insts = rule.rule.host
+    assert len(host_insts) == 2
+    assert any(m.kind == "save" for m in host_insts[0].meta)
+    assert any(m.kind == "restore" for m in host_insts[1].post_meta), (
+        "restore should be on second instruction's post_meta"
+    )
+    assert not any(m.kind == "restore" for m in host_insts[0].post_meta)
+
+
 def test_host_lines_are_flat_no_embedded_newlines() -> None:
     """GeneratedRule.host_lines returns individual lines with no embedded newlines."""
     pair = _window_pair(
@@ -1032,6 +1112,68 @@ def test_dedup_keeps_both_add_variants():
     assert not instruction_sequences_alpha_equal(r1.rule.guest, r2.rule.guest), (
         "Variant guest sequences should not be alpha-equivalent"
     )
+
+
+def test_label_alpha_equal_same_ids_across_sides():
+    """Labels with same original ID across Guest/Host are alpha-equivalent
+    under consistent renumbering."""
+    from angr_rule_learning.rules.ast import LabelOp, Rule, rule_alpha_equal
+
+    a = Rule(
+        1,
+        "a",
+        guest=(Instruction("b", (RegOp("i32", 32, 1), LabelOp(id=1))),),
+        host=(Instruction("jmp", (LabelOp(id=1),)),),
+    )
+    b = Rule(
+        2,
+        "b",
+        guest=(Instruction("b", (RegOp("i32", 32, 5), LabelOp(id=5))),),
+        host=(Instruction("jmp", (LabelOp(id=5),)),),
+    )
+    assert rule_alpha_equal(a, b)
+
+
+def test_label_hash_prefix_is_syntax_not_identity():
+    """#label1 without hash and label1 with hash share identity but differ
+    in syntax attribute."""
+    from angr_rule_learning.rules.ast import LabelOp, Rule, rule_alpha_equal
+
+    a = Rule(
+        1,
+        "a",
+        guest=(
+            Instruction("b", (RegOp("i32", 32, 1), LabelOp(id=1, aarch64_hash=True))),
+        ),
+        host=(Instruction("jmp", (LabelOp(id=1, aarch64_hash=True),)),),
+    )
+    b = Rule(
+        2,
+        "b",
+        guest=(Instruction("b", (RegOp("i32", 32, 1), LabelOp(id=1))),),
+        host=(Instruction("jmp", (LabelOp(id=1),)),),
+    )
+    # Hash prefix differs — not alpha-equivalent
+    assert not rule_alpha_equal(a, b)
+
+
+def test_label_host_swap_not_equal():
+    """Guest label1→Host label1 vs Guest label1→Host label2 are NOT equal."""
+    from angr_rule_learning.rules.ast import LabelOp, Rule, rule_alpha_equal
+
+    a = Rule(
+        1,
+        "a",
+        guest=(Instruction("b", (RegOp("i32", 32, 1), LabelOp(id=1))),),
+        host=(Instruction("je", (LabelOp(id=1),)),),
+    )
+    b = Rule(
+        2,
+        "b",
+        guest=(Instruction("b", (RegOp("i32", 32, 1), LabelOp(id=1))),),
+        host=(Instruction("je", (LabelOp(id=2),)),),
+    )
+    assert not rule_alpha_equal(a, b)
 
 
 # ── Immediate derivation tests (Task 3) ───────────────────────────────────
