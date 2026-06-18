@@ -102,7 +102,7 @@ def _passing_report(
     )
 
 
-def testgeneralizes_output_register_before_input_registers() -> None:
+def test_generalizes_output_register_before_input_registers() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w8, w0, w1"),),
         (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
@@ -122,7 +122,7 @@ def testgeneralizes_output_register_before_input_registers() -> None:
     assert diagnostics.to_json()["rules_emitted"] == 1
 
 
-def testgeneralizes_multi_instruction_windows() -> None:
+def test_generalizes_multi_instruction_windows() -> None:
     pair = _window_pair(
         (
             _inst("aarch64", 0x1000, "mov", "w8, w0"),
@@ -250,7 +250,7 @@ def test_nonpassing_reports_are_not_considered_for_rule_output() -> None:
     }
 
 
-def testgeneralizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
+def test_generalizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w8, w0, w1"),),
         (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
@@ -272,7 +272,7 @@ def testgeneralizer_uses_candidate_arch_not_hardcoded_defaults() -> None:
     assert diagnostics.to_json()["rules_emitted"] == 1
 
 
-def testgeneralizer_allows_two_address_input_output_pair() -> None:
+def test_generalizer_allows_two_address_input_output_pair() -> None:
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)
     window = _window_pair(
@@ -335,7 +335,7 @@ def test_rule_diagnostics_records_detailed_skip_when_enabled() -> None:
     ]
 
 
-def testgeneralizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> None:
+def test_generalizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w0, w1, w0"),),
         (_inst("x86-64", 0x2000, "lea", "eax, [edi + esi]"),),
@@ -353,7 +353,7 @@ def testgeneralizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> No
     assert rule.host_lines == ("lea i32_reg1, [i32_reg3 + i32_reg2]",)
 
 
-def testgeneralizer_role_split_prevents_coalescing_distinct_guest_regs() -> None:
+def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> None:
     """When a guest register (w8) appears in both output and input pairs
     with *different* host registers (eax for output, ecx for input),
     the input role gets a separate placeholder so the distinct guest
@@ -381,7 +381,7 @@ def testgeneralizer_role_split_prevents_coalescing_distinct_guest_regs() -> None
     assert rule.host_lines == ("add i32_reg1, i32_reg2",)
 
 
-def testgeneralizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
+def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "sub", "sp, sp, #16"),),
         (_inst("x86-64", 0x2000, "sub", "rsp, 16"),),
@@ -403,7 +403,7 @@ def testgeneralizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
     assert rule.host_lines == ("sub sp64, imm1",)
 
 
-def testgeneralizer_handles_input_reusing_output_host_register() -> None:
+def test_generalizer_handles_input_reusing_output_host_register() -> None:
     """When a guest input register maps to a host register that already
     has a placeholder from an output pair, the input should inherit the
     same placeholder.  Combined with role-split detection this produces
@@ -649,7 +649,7 @@ def test_validate_allows_parameterized_memory_with_kw() -> None:
     _validate_no_remaining_registers((inst,), "x86-64")  # no exception
 
 
-def testgeneralize_ast_replaces_registers() -> None:
+def test_generalize_ast_replaces_registers() -> None:
     """AST generalization replaces LitOp operands with RegOp placeholders."""
     inst = Instruction(mnemonic="add", operands=(LitOp("w8"), LitOp("w0"), LitOp("w1")))
     mapping = {"w8": "i32_reg1", "w0": "i32_reg2", "w1": "i32_reg3"}
@@ -662,7 +662,7 @@ def testgeneralize_ast_replaces_registers() -> None:
     assert ops == (RegOp("i32", 32, 1), RegOp("i32", 32, 2), RegOp("i32", 32, 3))
 
 
-def testgeneralize_ast_role_split() -> None:
+def test_generalize_ast_role_split() -> None:
     """AST generalization applies role_split so write/read of same reg get
     different placeholders."""
     inst = Instruction(mnemonic="sub", operands=(LitOp("w0"), LitOp("w0"), LitOp("w1")))
@@ -1935,9 +1935,10 @@ def test_fixed_role_cross_family_chain_accepted() -> None:
     assert "i32_reg2" in host_text
 
 
-def test_fixed_role_mov_edx_esi_source_is_esi() -> None:
-    """mov edx, esi overwrites edx; reaching-definition search finds the
-    mov before checking external inputs.  Source must be esi, not edx."""
+def test_fixed_role_mov_ecx_edx_with_edx_input_accepted() -> None:
+    """mov ecx, edx; shl eax, cl where edx is mapped input (w1↔edx).
+    The writer (mov ecx,edx) traces through edx to the external input.
+    edx is not in the fixed-role family so it is a valid source."""
     host_mov = ExtractedInstruction(
         arch="x86-64",
         address=0x2000,
@@ -1981,10 +1982,6 @@ def test_fixed_role_mov_edx_esi_source_is_esi() -> None:
         ),
         InstructionWindow("s", "host", (host_mov, host_shl)),
     )
-    # edx is in input_registers BUT has a writer (mov ecx,edx) before
-    # the cl read.  The source must be edx via the writer, not edx as
-    # an external input.  edx is mapped (w1↔edx) so the provenance
-    # trace succeeds through edx → i32_reg2.
     candidate = _candidate(
         inputs=(("w0", "eax"), ("w1", "edx")), outputs=(("w0", "eax"),)
     )
