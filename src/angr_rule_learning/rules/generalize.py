@@ -451,6 +451,19 @@ def _fixed_family_for_arch(arch: str) -> str | None:
     return None
 
 
+def _save_restore_form(arch: str, reg: str) -> str:
+    """Normalise a fixed-role-family register to its widest form for
+    save/restore annotations.  ``ecx``/``cx``/``cl`` → ``rcx``."""
+    reg_n = normalize_register_name(reg)
+    fixed_family = _fixed_family_for_arch(arch)
+    if fixed_family is not None and family_for_register(
+        arch, reg_n
+    ) == family_for_register(arch, fixed_family):
+        # Return the 64-bit family head.
+        return fixed_family
+    return reg_n
+
+
 def _collect_fixed_role_sources(
     reg: str,
     before_idx: int,
@@ -474,29 +487,14 @@ def _collect_fixed_role_sources(
         raise _RuleSkip("unbound_fixed_role_register")
     visited = visited | {state}
 
-    # If this register is externally mapped AND not in a fixed-role
-    # register family, it is a valid provenance source.
-    in_fixed_family = is_fixed_role_register(host_arch, reg_n) or (
-        _fixed_family_for_arch(host_arch) is not None
-        and reg_family == _fixed_family_for_arch(host_arch)
-    )
-    if reg_n in host_inputs and not in_fixed_family:
-        return frozenset({reg_n})
-
-    # Fixed-role family register as external input → reject.
-    # A literal ecx/cl cannot express a Guest placeholder.
-    if reg_n in host_inputs and in_fixed_family:
-        raise _RuleSkip("unbound_fixed_role_register")
-
-    # Search backward for a writer that covers reg_n.
+    # Search backward for the nearest covering writer FIRST.
     for prev_idx in range(before_idx - 1, -1, -1):
         prev_inst = window.host.instructions[prev_idx]
         for w in prev_inst.write_registers:
             w_n = normalize_register_name(w)
             if not _writer_covers_consumer(w_n, reg_n):
                 continue
-            # Found a writer.  Collect sources from ALL of its read
-            # dependencies.
+            # Found a writer.  Resolve ALL of its read dependencies.
             all_sources: set[str] = set()
             for src in prev_inst.read_registers:
                 src_n = normalize_register_name(src)
@@ -509,10 +507,20 @@ def _collect_fixed_role_sources(
                     visited=visited,
                 )
                 all_sources.update(sources)
-            # Every dependency must have produced at least one source.
             if all_sources:
                 return frozenset(all_sources)
             raise _RuleSkip("unbound_fixed_role_register")
+
+    # No backward writer found.  Only at this point can an external
+    # input serve as a provenance source, and only if it is NOT in
+    # a fixed-role register family.
+    in_fixed_family = is_fixed_role_register(host_arch, reg_n) or (
+        _fixed_family_for_arch(host_arch) is not None
+        and reg_family == _fixed_family_for_arch(host_arch)
+    )
+    if reg_n in host_inputs and not in_fixed_family:
+        return frozenset({reg_n})
+
     raise _RuleSkip("unbound_fixed_role_register")
 
 
@@ -567,19 +575,42 @@ def _require_fixed_role_producers(
     return frozenset(producers), frozenset(all_sources)
 
 
+def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
+    """Return the set of placeholder strings appearing in *insts*, collected
+    from typed operands and tokenised compound operand text."""
+    from angr_rule_learning.rules.ast import LitOp, RegOp, RegTextOp, TmpOp
+
+    result: set[str] = set()
+    for inst in insts:
+        for op in inst.operands:
+            if isinstance(op, (RegOp, TmpOp)):
+                result.add(op.to_text())
+            elif isinstance(op, (LitOp, RegTextOp)):
+                text = op.to_text()
+                for token in _TOKEN_RE.findall(text):
+                    if _PARAMETERIZED_TOKEN_RE.match(token):
+                        result.add(token)
+    return frozenset(result)
+
+
 def _verify_fixed_role_sources_in_host(
     host_insts: tuple[Instruction, ...],
     sources: frozenset[str],
     mapping: dict[str, str],
 ) -> None:
     """Verify that every provenance source's placeholder appears in the
-    Host AST.  If a source's placeholder is missing the Guest→Host binding
-    is invisible in the emitted rule."""
-    source_placeholders = {mapping.get(normalize_register_name(s)) for s in sources}
-    source_placeholders.discard(None)
-    host_text = "\n".join(i.to_text() for i in host_insts)
+    Host AST using exact token matching.  Missing mapping or placeholder
+    causes rejection."""
+    source_placeholders: set[str] = set()
+    for s in sources:
+        ph = mapping.get(normalize_register_name(s))
+        if ph is None:
+            raise _RuleSkip("unbound_fixed_role_register")
+        source_placeholders.add(ph)
+
+    host_tokens = _collect_ast_placeholders(host_insts)
     for ph in source_placeholders:
-        if ph not in host_text:
+        if ph not in host_tokens:
             raise _RuleSkip("unbound_fixed_role_register")
 
 
@@ -1276,14 +1307,18 @@ def _annotate_dead_writes(
             bits = int(prefix[1:])
             return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
         # Fixed-role producer targets (validated by
-        # _require_fixed_role_producers) are kept as literal register names.
+        # _require_fixed_role_producers) are kept as literal register
+        # names.  For save/restore, normalise to the widest family
+        # register so that save rcx / restore rcx preserves the full
+        # register even when the instruction writes a sub-register.
         # Only accept names that are known register tokens on some arch.
         if re.fullmatch(r"[a-z][a-z0-9]+", placeholder, re.IGNORECASE):
             if any(
                 placeholder in known_register_tokens(arch)
                 for arch in ("aarch64", "x86-64")
             ):
-                return LitOp(value=placeholder)
+                normalized = _save_restore_form(host_arch, placeholder)
+                return LitOp(value=normalized)
         raise ValueError(f"unknown placeholder format: {placeholder!r}")
 
     def _apply(

@@ -1934,6 +1934,124 @@ def test_fixed_role_cross_family_chain_accepted() -> None:
     assert "i32_reg2" in host_text
 
 
+def test_fixed_role_mov_edx_esi_source_is_esi() -> None:
+    """mov edx, esi overwrites edx; reaching-definition search finds the
+    mov before checking external inputs.  Source must be esi, not edx."""
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="ecx, edx",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("ecx",),
+        read_registers=("edx",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov, host_shl)),
+    )
+    # edx is in input_registers BUT has a writer (mov ecx,edx) before
+    # the cl read.  The source must be edx via the writer, not edx as
+    # an external input.  edx is mapped (w1↔edx) so the provenance
+    # trace succeeds through edx → i32_reg2.
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "edx")), outputs=(("w0", "eax"),)
+    )
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    host_text = "\n".join(rule.host_lines)
+    assert "i32_reg2" in host_text
+
+
+def test_fixed_role_save_restore_uses_full_rcx() -> None:
+    """Save/restore for fixed-role producers must use rcx, not ecx."""
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="ecx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("ecx",),
+        read_registers=("esi",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov, host_shl)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "esi")), outputs=(("w0", "eax"),)
+    )
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    host_text = "\n".join(rule.host_lines)
+    assert "save rcx" in host_text or "restore rcx" in host_text
+    assert "save ecx" not in host_text
+
+
 def test_no_untyped_temporaries_in_output() -> None:
     """All temporaries must carry type/width: i32_tmp1 not tmp1."""
     # Use the RMW memory window test pattern that generates internal temps.
