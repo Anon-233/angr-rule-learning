@@ -446,3 +446,74 @@ def test_verifier_rejects_inconsistent_frame_relative_layout() -> None:
     report = SemanticVerifier().verify(candidate)
 
     assert report.status in {"fail", "unsupported"}
+
+
+# ── semantic-slot matching with real machine code ───────────────────────
+
+# stp x0, x1, [sp, #-0x10]!
+_STP_X0_X1_SP_PRE = "e007bfa9"
+# push rsi; push rdi
+_PUSH_RSI_RDI = "5657"
+# ldp x0, x1, [sp], #0x10
+_LDP_X0_X1_SP_POST = "e007c1a8"
+# pop rsi; pop rdi
+_POP_RSI_RDI = "5e5f"
+
+
+def test_stp_pre_index_push_push_passes_by_slot() -> None:
+    """stp x0,x1,[sp,#-0x10]! ↔ push rsi;push rdi.
+
+    After reorder by address: x0@sp-16↔rdi@rsp-16, x1@sp-8↔rsi@rsp-8."""
+    candidate = VerificationCandidate(
+        candidate_id="stp-push-slot",
+        guest=CodeFragment("aarch64", 0x10000, _STP_X0_X1_SP_PRE, 1),
+        host=CodeFragment("x86-64", 0x8048000, _PUSH_RSI_RDI, 2),
+        input_registers=(("x0", "rdi"), ("x1", "rsi")),
+        output_registers=(("sp", "rsp"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 8), MemorySlot("mem1", 8)),
+            bindings=(
+                MemoryBinding("mem0", "sp - 16", "rsp - 16", "write"),
+                MemoryBinding("mem1", "sp - 8", "rsp - 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 8),
+                MemoryAccessExpectation("mem1", "write", 8),
+            ),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass", (
+        f"unexpected status {report.status}: {report.checks}"
+    )
+
+
+def test_ldp_post_index_pop_pop_passes_by_slot() -> None:
+    """ldp x0,x1,[sp],#0x10 ↔ pop rsi;pop rdi.
+
+    After slot-based reorder: x0@sp↔rsi@rsp, x1@sp+8↔rdi@rsp+8."""
+    candidate = VerificationCandidate(
+        candidate_id="ldp-pop-slot",
+        guest=CodeFragment("aarch64", 0x10000, _LDP_X0_X1_SP_POST, 1),
+        host=CodeFragment("x86-64", 0x8048000, _POP_RSI_RDI, 2),
+        output_registers=(("x0", "rsi"), ("x1", "rdi"), ("sp", "rsp")),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 8), MemorySlot("mem1", 8)),
+            bindings=(
+                MemoryBinding("mem0", "sp", "rsp", "read"),
+                MemoryBinding("mem1", "sp + 8", "rsp + 8", "read"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "read", 8),
+                MemoryAccessExpectation("mem1", "read", 8),
+            ),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass", (
+        f"unexpected status {report.status}: {report.checks}"
+    )

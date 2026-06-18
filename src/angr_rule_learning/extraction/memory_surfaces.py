@@ -243,11 +243,6 @@ def _reorder_stack_operands(
         host = tuple(sorted(host, key=lambda x: x.operand.address.displacement))
     return guest, host, None
 
-    # Both sides are safe: sort by ascending displacement.
-    guest_sorted = tuple(sorted(guest, key=lambda x: x.operand.address.displacement))
-    host_sorted = tuple(sorted(host, key=lambda x: x.operand.address.displacement))
-    return guest_sorted, host_sorted, None
-
 
 _STACK_POINTERS = frozenset({"sp", "wsp", "rsp", "esp"})
 
