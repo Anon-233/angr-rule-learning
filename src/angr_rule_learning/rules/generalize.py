@@ -957,7 +957,10 @@ def _annotate_dead_writes(
     output_families = {
         family_for_register(arch, reg)
         for pair in candidate.output_registers
-        for arch, reg in [(candidate.guest.arch, pair[0]), (candidate.host.arch, pair[1])]
+        for arch, reg in [
+            (candidate.guest.arch, pair[0]),
+            (candidate.host.arch, pair[1]),
+        ]
     }
     cc_families = {"nzcv", "rflags"}
 
@@ -977,9 +980,7 @@ def _annotate_dead_writes(
         for idx, inst in enumerate(instructions):
             for reg in inst.write_registers:
                 family = family_for_register(inst.arch, reg)
-                if family in cc_families or is_allowed_literal_register(
-                    inst.arch, reg
-                ):
+                if family in cc_families or is_allowed_literal_register(inst.arch, reg):
                     continue
                 if (
                     family not in output_families

@@ -297,9 +297,7 @@ def _derive_index_scale(
                 text = op.to_text()
                 for m in IMM_PLACEHOLDER_RE.finditer(text):
                     candidate_id = m.group(1)
-                    lsl_match = re.search(
-                        rf"lsl #imm{re.escape(candidate_id)}", text
-                    )
+                    lsl_match = re.search(rf"lsl #imm{re.escape(candidate_id)}", text)
                     if not lsl_match:
                         continue
                     shift_value = ctx.value_by_id.get(candidate_id)
