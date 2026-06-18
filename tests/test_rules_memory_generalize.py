@@ -123,8 +123,8 @@ def test_generalizes_indexed_memory_keeps_scale_literals() -> None:
     )
 
     assert rule is not None
-    assert rule.guest_lines == ("ldr i32_reg1, [i64_reg2, i64_reg3, lsl #2]",)
-    assert rule.host_lines == ("mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*4]",)
+    assert "ldr i32_reg1, [i64_reg2, i64_reg3, lsl #imm1]" in rule.guest_lines[0]
+    assert "mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*imm2]" in rule.host_lines[0]
     assert "addr64" not in "\n".join(rule.guest_lines + rule.host_lines)
 
 
@@ -398,14 +398,13 @@ def test_derives_large_immediate_from_bitwise_immediate_construction() -> None:
     rule = RuleGeneralizer(RuleDiagnostics()).generate(1, window, candidate, report)
 
     assert rule is not None
-    # Guest: two separate 16-bit immediates.
+    # Guest: two separate 16-bit immediates, plus parameterised shift.
     assert "imm1" in rule.guest_lines[0]
     assert "imm2" in rule.guest_lines[1]
-    # Guest: shift preserved as literal.
-    assert "lsl #48" in rule.guest_lines[1]
-    # Host: derived expression inlined — no separate imm3.
-    assert "imm3" not in rule.host_lines[0]
-    expected = "movabs i64_reg1, ${(imm2 << 48) | imm1}"
+    assert "lsl #imm3" in rule.guest_lines[1]
+    # Host: derived expression uses immN for shift amount.
+    assert "imm4" not in rule.host_lines[0]
+    expected = "movabs i64_reg1, ${(imm2 << imm3) | imm1}"
     assert rule.host_lines[0] == expected, (
         f"\n  got: {rule.host_lines[0]}\n want: {expected}"
     )

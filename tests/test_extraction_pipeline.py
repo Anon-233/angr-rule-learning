@@ -538,4 +538,4 @@ def test_indexed_memory_rule_smoke(tmp_path: Path) -> None:
     assert diagnostics.get("surface_kinds", {}).get("memory", 0) > 0
     assert "addr64_" not in rules_text
     assert "i64_reg" in rules_text
-    assert "*4" in rules_text or "lsl #2" in rules_text, rules_text[:1000]
+    assert "lsl #imm" in rules_text or "*imm" in rules_text, rules_text[:1000]

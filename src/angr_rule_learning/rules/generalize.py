@@ -719,7 +719,6 @@ def _replace_immediates_ast(
             c = _imm_canonical(m, guest_arch)
             if _is_scale_immediate(line, m, guest_arch_n):
                 scale_shifts.add(int(c))
-                continue
             if _is_bit_position(line, m, guest_arch_n):
                 scale_shifts.add(int(c))
                 has_bit_position = True
@@ -736,7 +735,6 @@ def _replace_immediates_ast(
             c = _imm_canonical(m, host_arch)
             if _is_scale_immediate(line, m, host_arch_n):
                 scale_shifts.add(int(c))
-                continue
             if c in _RESERVED_LITERALS:
                 continue
             if c not in canonical_to_id:
@@ -765,8 +763,6 @@ def _replace_immediates_ast(
             line = inst.to_text()
 
             def _replacer(match: re.Match[str]) -> str:
-                if _is_scale_immediate(line, match, arch):
-                    return match.group(0)
                 c = _imm_canonical(match, arch)
                 if c in _RESERVED_LITERALS:
                     return match.group(0)
