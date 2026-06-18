@@ -89,6 +89,21 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     accesses: list[MemoryAccessExpectation] = []
     input_registers: list[tuple[str, str]] = []
 
+    # Reorder stack operands by address when both sides are homogeneous
+    # (all reads or all writes) and non-overlapping.  Without this,
+    # positional zip produces wrong bindings for stp→push;push pairs.
+    guest_collected, host_collected, reorder_detail = _reorder_stack_operands(
+        guest_collected, host_collected
+    )
+    if reorder_detail is not None:
+        return MemorySurface(
+            MemorySpec(),
+            skip_reason="unsupported_memory_surface",
+            skip_detail=reorder_detail,
+            guest_operands=guest_operands,
+            host_operands=host_operands,
+        )
+
     for index, (guest_item, host_item) in enumerate(
         zip(guest_collected, host_collected, strict=True)
     ):
@@ -175,6 +190,63 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
         guest_operands=guest_operands,
         host_operands=host_operands,
     )
+
+
+def _reorder_stack_operands(
+    guest: tuple[_CollectedMemoryOperand, ...],
+    host: tuple[_CollectedMemoryOperand, ...],
+) -> tuple[
+    tuple[_CollectedMemoryOperand, ...],
+    tuple[_CollectedMemoryOperand, ...],
+    str | None,
+]:
+    """Sort stack memory operands by address displacement when safe.
+
+    Returns ``(guest, host, None)`` on success or
+    ``((), (), detail_reason)`` when reordering cannot be performed safely.
+    """
+    if len(guest) <= 1:
+        return guest, host, None
+
+    def _all_stack_based(
+        ops: tuple[_CollectedMemoryOperand, ...],
+    ) -> bool:
+        return all(item.operand.address.base in _STACK_POINTERS for item in ops)
+
+    def _can_reorder(
+        ops: tuple[_CollectedMemoryOperand, ...],
+    ) -> bool:
+        """Check whether *ops* are safe to reorder by address."""
+        if not ops:
+            return True
+        first_kind = ops[0].operand.kind
+        for item in ops:
+            op = item.operand
+            if op.kind != first_kind:
+                return False
+        # Check for overlapping address ranges.
+        sorted_ops = sorted(ops, key=lambda x: x.operand.address.displacement)
+        for i in range(len(sorted_ops) - 1):
+            a = sorted_ops[i].operand
+            b = sorted_ops[i + 1].operand
+            if a.address.displacement + a.width > b.address.displacement:
+                return False  # overlap
+        return True
+
+    # Only reorder when both sides use stack-pointer base registers.
+    if not _all_stack_based(guest) or not _all_stack_based(host):
+        pass  # keep original order
+    elif not _can_reorder(guest) or not _can_reorder(host):
+        return (), (), "memory_address_order_conflict"
+    else:
+        guest = tuple(sorted(guest, key=lambda x: x.operand.address.displacement))
+        host = tuple(sorted(host, key=lambda x: x.operand.address.displacement))
+    return guest, host, None
+
+    # Both sides are safe: sort by ascending displacement.
+    guest_sorted = tuple(sorted(guest, key=lambda x: x.operand.address.displacement))
+    host_sorted = tuple(sorted(host, key=lambda x: x.operand.address.displacement))
+    return guest_sorted, host_sorted, None
 
 
 _STACK_POINTERS = frozenset({"sp", "wsp", "rsp", "esp"})
