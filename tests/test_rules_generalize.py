@@ -1,3 +1,5 @@
+import pytest
+
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -598,6 +600,41 @@ def test_validate_remaining_registers_raises() -> None:
         raise AssertionError("Expected _RuleSkip was not raised")
 
 
+def test_validate_detects_concrete_register_in_brackets() -> None:
+    """LitOp('[x1]') with 'x1' as known aarch64 register must raise _RuleSkip."""
+    inst = Instruction("ldr", (LitOp("i32_reg1"), LitOp("[x1]")))
+    with pytest.raises(_RuleSkip, match="unmapped_register_surface"):
+        _validate_no_remaining_registers((inst,), "aarch64")
+
+
+def test_validate_detects_concrete_register_in_complex_x86_address() -> None:
+    """LitOp('[rcx + rdx*4]') with rcx/rdx known must raise."""
+    inst = Instruction("mov", (LitOp("i32_reg1"), LitOp("[rcx + rdx*4]")))
+    with pytest.raises(_RuleSkip, match="unmapped_register_surface"):
+        _validate_no_remaining_registers((inst,), "x86-64")
+
+
+def test_validate_allows_parameterized_operand() -> None:
+    """LitOp('[i64_reg2]') must NOT raise."""
+    inst = Instruction("ldr", (LitOp("i32_reg1"), LitOp("[i64_reg2]")))
+    _validate_no_remaining_registers((inst,), "aarch64")  # no exception
+
+
+def test_validate_allows_sp_in_brackets() -> None:
+    """LitOp('[sp, #16]') with sp as allowed literal must NOT raise."""
+    inst = Instruction("ldr", (LitOp("i32_reg1"), LitOp("[sp, #16]")))
+    _validate_no_remaining_registers((inst,), "aarch64")  # no exception
+
+
+def test_validate_allows_parameterized_memory_with_kw() -> None:
+    """LitOp('dword ptr [i64_reg1 + i64_reg2*4]') must NOT raise."""
+    inst = Instruction(
+        "mov",
+        (LitOp("i32_reg1"), LitOp("dword ptr [i64_reg1 + i64_reg2*4]")),
+    )
+    _validate_no_remaining_registers((inst,), "x86-64")  # no exception
+
+
 def test_generalize_ast_replaces_registers() -> None:
     """AST generalization replaces LitOp operands with RegOp placeholders."""
     inst = Instruction(mnemonic="add", operands=(LitOp("w8"), LitOp("w0"), LitOp("w1")))
@@ -1140,4 +1177,84 @@ def test_indexed_scale_derives_from_guest_shift() -> None:
     assert "*${(1 << imm1)}" in host_line, f"unexpected host line: {host_line}"
     assert "*imm2" not in host_line, (
         f"host should not have independent imm2: {host_line}"
+    )
+
+
+def test_no_untyped_temporaries_in_output() -> None:
+    """All temporaries must carry type/width: i32_tmp1 not tmp1."""
+    # Use the RMW memory window test pattern that generates internal temps.
+    guest_ldr = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="ldr",
+        op_str="w9, [x1, #8]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("x1",),
+        write_registers=("w9",),
+    )
+    guest_add = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1004,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="add",
+        op_str="w8, w8, w9",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("w8", "w9"),
+        write_registers=("w8",),
+    )
+    host_add = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="add",
+        op_str="eax, dword ptr [rcx + 8]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        read_registers=("eax", "rcx"),
+        write_registers=("eax",),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (2, 1),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_ldr, guest_add)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_add,)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="rmw-temp32-no-untyped",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 2),
+        host=CodeFragment("x86-64", 0x2000, "05060708", 1),
+        input_registers=(("x1", "rcx"), ("w8", "eax")),
+        output_registers=(("w8", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1 + 8", "rcx + 8", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="rmw-temp32-no-untyped",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None
+    import re
+
+    untyped = re.compile(r"(?<![A-Za-z0-9_])tmp\d+")
+    for line in rule.guest_lines:
+        assert not untyped.search(line), f"guest line contains untyped tmp: {line!r}"
+    for line in rule.host_lines:
+        assert not untyped.search(line), f"host line contains untyped tmp: {line!r}"
+    # Also verify the temp IS typed correctly (i32 for w9).
+    assert "i32_tmp1" in rule.guest_lines[0], (
+        f"expected i32_tmp1 in guest: {rule.guest_lines}"
     )

@@ -157,11 +157,12 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     if _X86_SEGMENT_OVERRIDE_RE.search(right):
         return ()
     value_register = left.strip().lower()
-    width = (
-        4
-        if mnemonic in {"movsxd"} | _X86_RMW_MNEMONICS
-        else _x86_width(op_str, value_register)
-    )
+    if mnemonic == "movsxd":
+        width = 4
+    elif mnemonic in _X86_RMW_MNEMONICS:
+        width = _x86_width(op_str, value_register) or _x86_width(left, value_register)
+    else:
+        width = _x86_width(op_str, value_register)
     if width is None:
         return ()
     operand = _x86_operand("read", width, right_mem, value_register)

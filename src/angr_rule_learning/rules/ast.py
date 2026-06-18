@@ -47,12 +47,14 @@ class ImmOp:
 
 @dataclass(frozen=True)
 class TmpOp:
-    """Temporary register: ``tmp1``."""
+    """Typed temporary register: ``i32_tmp1``, ``i64_tmp1``."""
 
+    prefix: str  # "i8", "i16", "i32", "i64", "f32", "f64", "v128"
+    bits: int
     id: int
 
     def to_text(self) -> str:
-        return f"tmp{self.id}"
+        return f"{self.prefix}_tmp{self.id}"
 
 
 @dataclass(frozen=True)
@@ -186,10 +188,12 @@ class Instruction:
         if m:
             return LabelOp(id=int(m.group(2)), aarch64_hash=bool(m.group(1)))
 
-        # Temp
-        m = re.fullmatch(r"tmp(\d+)", text)
+        # Temp: i32_tmp1, i64_tmp1, etc.
+        m = re.fullmatch(r"(i\d+|f\d+|v\d+)_tmp(\d+)", text)
         if m:
-            return TmpOp(id=int(m.group(1)))
+            prefix = m.group(1)
+            bits = int(prefix[1:])
+            return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
 
         # Immediate with derivation
         m = re.fullmatch(r"\$\{\((\d+)\s*<<\s*(\d+)\)\}", text)
@@ -350,7 +354,7 @@ def _op_equal(a: Operand, b: Operand) -> bool:
             and a.neg == b.neg
         )
     if isinstance(a, TmpOp) and isinstance(b, TmpOp):
-        return True
+        return a.prefix == b.prefix and a.bits == b.bits
     if isinstance(a, LitOp) and isinstance(b, LitOp):
         return a.value == b.value
     if isinstance(a, LabelOp) and isinstance(b, LabelOp):
@@ -387,7 +391,8 @@ IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 def parse_placeholder(placeholder: str) -> RegOp | TmpOp:
     """Parse a placeholder string into its AST operand type.
 
-    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp, and ``tmp1`` → TmpOp.
+    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp, and
+    ``i32_tmp1``, ``i64_tmp1`` → TmpOp.
     """
     m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
     if m:
@@ -396,9 +401,11 @@ def parse_placeholder(placeholder: str) -> RegOp | TmpOp:
     m = re.fullmatch(r"(sp|fp)(\d+)", placeholder)
     if m:
         return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
-    m = re.fullmatch(r"tmp(\d+)", placeholder)
+    m = re.fullmatch(r"(i\d+|f\d+|v\d+)_tmp(\d+)", placeholder)
     if m:
-        return TmpOp(id=int(m.group(1)))
+        prefix = m.group(1)
+        bits = int(prefix[1:])
+        return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
     raise ValueError(f"unknown placeholder format: {placeholder!r}")
 
 
@@ -451,7 +458,7 @@ def labels_are_consistent(
 # ── Alpha-equivalence ───────────────────────────────────────────────────
 
 _REG_PLACEHOLDER_RE = re.compile(r"(i\d+)_reg(\d+)\b")
-_TMP_PLACEHOLDER_RE = re.compile(r"\btmp(\d+)\b")
+_TMP_PLACEHOLDER_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
 _LABEL_PLACEHOLDER_RE = re.compile(r"#?label(\d+)\b")
 
 
@@ -495,7 +502,7 @@ def _canonicalize_instruction_sequence(
 
     _REG_PAD_RE = re.compile(r"(i\d+)_reg(\d+)\b")
     _IMM_PAD_RE = re.compile(r"\bimm(\d+)\b")
-    _TMP_PAD_RE = re.compile(r"\btmp(\d+)\b")
+    _TMP_PAD_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
     _LABEL_PAD_RE = re.compile(r"#?label(\d+)\b")
 
     def _lookup_reg(key: tuple[object, ...]) -> int:
@@ -541,9 +548,11 @@ def _canonicalize_instruction_sequence(
             return f"imm{cid}"
 
         def _tmp_repl(m: re.Match[str]) -> str:
-            orig_id = int(m.group(1))
-            cid = _lookup_tmp((orig_id,))
-            return f"tmp{cid}"
+            prefix = m.group(1)
+            orig_id = int(m.group(2))
+            bits = int(prefix[1:])
+            cid = _lookup_tmp((prefix, bits, orig_id))
+            return f"{prefix}_tmp{cid}"
 
         def _label_repl(m: re.Match[str]) -> str:
             orig_id = int(m.group(1))
@@ -571,7 +580,7 @@ def _canonicalize_instruction_sequence(
                 cid = _lookup_imm((op.id, op.aarch64_hash, op.neg))
             return (1, cid)
         elif isinstance(op, TmpOp):
-            cid = _lookup_tmp((op.id,))
+            cid = _lookup_tmp((op.prefix, op.bits, op.id))
             return (2, cid)
         elif isinstance(op, LitOp):
             text = _canonicalize_lit_text(op.value)

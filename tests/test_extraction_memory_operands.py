@@ -239,3 +239,52 @@ def test_rejects_x86_rmw_write_to_memory() -> None:
     )
 
     assert operands == ()
+
+
+# ── RMW width tests ─────────────────────────────────────────────────────
+
+
+def test_rmw_byte_width() -> None:
+    """add al, byte ptr [rcx] -> width 1"""
+    operands = extract_memory_operands(_inst("x86-64", "add", "al, byte ptr [rcx]"))
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 1
+    assert operands[0].value_register == "al"
+    assert operands[0].address == AddressExpr(base="rcx")
+
+
+def test_rmw_word_width() -> None:
+    """sub ax, word ptr [rcx] -> width 2"""
+    operands = extract_memory_operands(_inst("x86-64", "sub", "ax, word ptr [rcx]"))
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 2
+    assert operands[0].value_register == "ax"
+
+
+def test_rmw_dword_width() -> None:
+    """xor eax, dword ptr [rcx] -> width 4"""
+    operands = extract_memory_operands(_inst("x86-64", "xor", "eax, dword ptr [rcx]"))
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 4
+    assert operands[0].value_register == "eax"
+
+
+def test_rmw_qword_width() -> None:
+    """imul rax, qword ptr [rcx] -> width 8"""
+    operands = extract_memory_operands(_inst("x86-64", "imul", "rax, qword ptr [rcx]"))
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 8
+    assert operands[0].value_register == "rax"
+
+
+def test_rmw_width_inferred_from_register() -> None:
+    """add rax, [rcx] -> width 8 (inferred from rax, no ptr keyword)"""
+    operands = extract_memory_operands(_inst("x86-64", "add", "rax, [rcx]"))
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 8
+    assert operands[0].value_register == "rax"

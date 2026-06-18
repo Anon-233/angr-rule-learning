@@ -949,7 +949,7 @@ def _annotate_dead_writes(
                 if (
                     reg not in output_regs
                     and reg not in first_write
-                    and not mapping.get(reg, "").startswith("tmp")
+                    and "_tmp" not in mapping.get(reg, "")
                 ):
                     first_write[reg] = idx
             for reg in inst.read_registers:
@@ -967,9 +967,11 @@ def _annotate_dead_writes(
         m = re.fullmatch(r"(sp|fp)(\d+)", placeholder)
         if m:
             return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
-        m = re.fullmatch(r"tmp(\d+)", placeholder)
+        m = re.fullmatch(r"(i\d+|f\d+|v\d+)_tmp(\d+)", placeholder)
         if m:
-            return TmpOp(id=int(m.group(1)))
+            prefix = m.group(1)
+            bits = int(prefix[1:])
+            return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
         raise ValueError(f"unknown placeholder format: {placeholder!r}")
 
     def _apply(
@@ -1158,6 +1160,13 @@ def _generalize_instructions_with_roles(
     return tuple(result)
 
 
+_PARAMETERIZED_TOKEN_RE = re.compile(
+    r"^(?:i\d+_reg\d+|sp\d+|fp\d+|i\d+_tmp\d+|imm\d+|label\d+)$"
+)
+_KEYWORD_TOKENS = frozenset({"dword", "word", "byte", "qword", "ptr", "lsl"})
+_TOKEN_RE = re.compile(r"\[|\]|0x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[-+*/#]")
+
+
 def _validate_no_remaining_registers(
     insts: tuple[Instruction, ...],
     arch: str,
@@ -1168,9 +1177,31 @@ def _validate_no_remaining_registers(
     for inst in insts:
         for op in inst.operands:
             if isinstance(op, (LitOp, RegTextOp)):
-                text = normalize_register_name(op.to_text())
-                if text in known and not is_allowed_literal_register(arch, text):
-                    raise _RuleSkip("unmapped_register_surface")
+                text = op.to_text()
+                # Tokenize: split into brackets, identifiers, numbers,
+                # hex literals, and operators.
+                tokens = _TOKEN_RE.findall(text)
+                for token in tokens:
+                    # Skip brackets and operators.
+                    if token in {"[", "]", "+", "-", "*", "/", "#"}:
+                        continue
+                    token_n = normalize_register_name(token)
+                    if token_n in _KEYWORD_TOKENS:
+                        continue
+                    if _PARAMETERIZED_TOKEN_RE.match(token_n):
+                        continue
+                    if is_allowed_literal_register(arch, token_n):
+                        continue
+                    if _RESERVED_LITERALS and token_n in _RESERVED_LITERALS:
+                        continue
+                    # Skip bare numeric tokens (decimal or hex).
+                    try:
+                        int(token_n, 0)
+                        continue
+                    except ValueError:
+                        pass
+                    if token_n in known:
+                        raise _RuleSkip("unmapped_register_surface")
 
 
 def _instruction_lines(
@@ -1183,12 +1214,15 @@ def _identify_internal_temps(
     window: WindowPair,
     candidate: VerificationCandidate,
 ) -> dict[str, str]:
-    """Map per-side internal temporary registers to tmpN placeholders.
+    """Map per-side internal temporary registers to typed tmpN placeholders.
 
     A register is an internal temp when it is **written** inside the
     window but does **not** appear as an output or input register of the
     candidate.  Literal registers (sp, xzr, …) and condition-code
     families are excluded.
+
+    Each temp carries type/width information (e.g. ``i32_tmp1``)
+    derived from the register's classification via ``_classify_for_rule``.
     """
     from angr_rule_learning.extraction.liveness import (
         family_for_register,
@@ -1230,7 +1264,9 @@ def _identify_internal_temps(
                 if is_condition_family(arch, family):
                     continue
                 if reg_n not in temps:
-                    temps[reg_n] = f"tmp{next_tmp}"
+                    reg_class = _classify_for_rule(arch, reg_n)
+                    placeholder = f"{reg_class.placeholder_prefix}_tmp{next_tmp}"
+                    temps[reg_n] = placeholder
                     next_tmp += 1
 
     return temps

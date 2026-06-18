@@ -335,8 +335,8 @@ def test_generalizes_internal_guest_temporary_for_rmw_memory_window() -> None:
 
     assert rule is not None
     assert rule.guest_lines == (
-        "ldr tmp1, [i64_reg2, #imm1]",
-        "add i32_reg1, i32_reg1, tmp1",
+        "ldr i32_tmp1, [i64_reg2, #imm1]",
+        "add i32_reg1, i32_reg1, i32_tmp1",
     )
     assert rule.host_lines == ("add i32_reg1, dword ptr [i64_reg2 + imm1]",)
 
