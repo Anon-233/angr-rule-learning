@@ -24,6 +24,10 @@ from angr_rule_learning.rules.generalize import (
 )
 from angr_rule_learning.verification.candidate import (
     CodeFragment,
+    MemoryAccessExpectation,
+    MemoryBinding,
+    MemorySlot,
+    MemorySpec,
     VerificationCandidate,
 )
 from angr_rule_learning.verification.report import CheckResult, VerificationReport
@@ -989,4 +993,151 @@ def test_dedup_keeps_both_add_variants():
 
     assert not instruction_sequences_alpha_equal(r1.rule.guest, r2.rule.guest), (
         "Variant guest sequences should not be alpha-equivalent"
+    )
+
+
+# ── Immediate derivation tests (Task 3) ───────────────────────────────────
+
+
+def test_rejects_unrelated_add_chain_as_derivation() -> None:
+    """Guest has eor #3; eor #5. Host has mov reg, 8. 3+5=8 is coincidental."""
+    guest_eor1 = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="eor",
+        op_str="w0, w0, #3",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("w0",),
+        read_registers=("w0",),
+    )
+    guest_eor2 = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1004,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="eor",
+        op_str="w0, w0, #5",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("w0",),
+        read_registers=("w0",),
+    )
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="eax, 8",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("eax",),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (2, 1),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_eor1, guest_eor2)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_mov,)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="eor-add-coincidental",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 2),
+        host=CodeFragment("x86-64", 0x2000, "010203", 1),
+        output_registers=(("w0", "eax"),),
+    )
+    report = VerificationReport(
+        candidate_id="eor-add-coincidental",
+        status="pass",
+        checks=(CheckResult("register", "pass", "w0", "eax"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unpaired_host_immediate", 0) >= 1
+
+
+def test_non_memory_rule_rejects_host_only_immediate() -> None:
+    """A pure register rule with host-only immediate must be skipped."""
+    pair = _window_pair(
+        (_inst("aarch64", 0x1000, "add", "w8, w8, #3"),),
+        (_inst("x86-64", 0x2000, "add", "eax, 5"),),
+    )
+    candidate = _candidate(
+        inputs=(("w8", "eax"),),
+        outputs=(("w8", "eax"),),
+    )
+    report = _passing_report(candidate.candidate_id)
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, pair, candidate, report)
+
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unpaired_host_immediate", 0) >= 1
+
+
+def test_indexed_scale_derives_from_guest_shift() -> None:
+    """Guest lsl #2, host *4 — host MUST derive as ${(1 << imm1)} not have
+    independent imm2."""
+    guest_ldr = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="ldr",
+        op_str="w0, [x1, x2, lsl #2]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("w0",),
+        read_registers=("x1", "x2"),
+    )
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="eax, dword ptr [rcx + rdx*4]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("eax",),
+        read_registers=("rcx", "rdx"),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (1, 1),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_ldr,)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_mov,)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="indexed-scale-derivation",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "010203", 1),
+        input_registers=(("x1", "rcx"), ("x2", "rdx")),
+        output_registers=(("w0", "eax"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "x1 + x2 * 4", "rcx + rdx * 4", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="indexed-scale-derivation",
+        status="pass",
+        checks=(CheckResult("memory", "pass", "mem0", "mem0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None
+    host_line = rule.host_lines[0]
+    # Host scale must derive from guest shift: *${(1 << imm1)} not *imm2.
+    assert "*${(1 << imm1)}" in host_line, f"unexpected host line: {host_line}"
+    assert "*imm2" not in host_line, (
+        f"host should not have independent imm2: {host_line}"
     )

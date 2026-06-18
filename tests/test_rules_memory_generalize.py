@@ -100,7 +100,7 @@ def test_generalizes_memory_displacement_with_shared_immediate() -> None:
     assert rule.host_lines == ("mov i32_reg1, dword ptr [i64_reg2 + imm1]",)
 
 
-def test_generalizes_indexed_memory_keeps_scale_literals() -> None:
+def test_generalizes_indexed_memory_scale_derives_from_guest_shift() -> None:
     candidate = VerificationCandidate(
         candidate_id="mem-load-indexed",
         guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
@@ -123,8 +123,14 @@ def test_generalizes_indexed_memory_keeps_scale_literals() -> None:
     )
 
     assert rule is not None
-    assert "ldr i32_reg1, [i64_reg2, i64_reg3, lsl #imm1]" in rule.guest_lines[0]
-    assert "mov i32_reg1, dword ptr [i64_reg2 + i64_reg3*imm2]" in rule.host_lines[0]
+    guest_line = rule.guest_lines[0]
+    host_line = rule.host_lines[0]
+    # Guest lsl shift is parameterised.
+    assert "lsl #imm1" in guest_line
+    # Host scale derives from guest shift: *${(1 << imm1)}, not a
+    # standalone *imm2.
+    assert "*${(1 << imm1)}" in host_line, f"unexpected host line: {host_line}"
+    assert "*imm2" not in host_line
     assert "addr64" not in "\n".join(rule.guest_lines + rule.host_lines)
 
 

@@ -730,20 +730,11 @@ def _replace_immediates_ast(
     value_by_id: dict[str, int] = {}
     next_id = 1
 
-    scale_shifts: set[int] = set()
-    implicit_ids: set[str] = set()
-    has_bit_position: bool = False
-
     # ---- Phase 1: Collection ----
     for inst in guest_insts:
         line = inst.to_text()
         for m in guest_pattern.finditer(line):
             c = _imm_canonical(m, guest_arch)
-            if _is_scale_immediate(line, m, guest_arch_n):
-                scale_shifts.add(int(c))
-            if _is_bit_position(line, m, guest_arch_n):
-                scale_shifts.add(int(c))
-                has_bit_position = True
             if c in _RESERVED_LITERALS:
                 continue
             if c not in canonical_to_id:
@@ -755,23 +746,12 @@ def _replace_immediates_ast(
         line = inst.to_text()
         for m in host_pattern.finditer(line):
             c = _imm_canonical(m, host_arch)
-            if _is_scale_immediate(line, m, host_arch_n):
-                scale_shifts.add(int(c))
             if c in _RESERVED_LITERALS:
                 continue
             if c not in canonical_to_id:
                 canonical_to_id[c] = next_id
                 next_id += 1
             value_by_id[str(canonical_to_id[c])] = int(c)
-
-    if has_bit_position:
-        _BASE_ONE = "1"
-        if _BASE_ONE not in canonical_to_id:
-            canonical_to_id[_BASE_ONE] = next_id
-            next_id += 1
-        implicit_id = str(canonical_to_id[_BASE_ONE])
-        value_by_id[implicit_id] = 1
-        implicit_ids.add(implicit_id)
 
     # ---- Phase 2: Replacement ----
     def _make_replacer(arch: str, prefix: str):
@@ -850,29 +830,10 @@ def _replace_immediates_ast(
         guest_arch=guest_arch_n,
         host_arch=host_arch_n,
         value_by_id=value_by_id,
-        scale_shifts=scale_shifts,
-        implicit_ids=implicit_ids,
     )
     host_result = derive_host_expressions(ctx)
 
     return guest_result, host_result
-
-
-def _is_scale_immediate(line: str, match: re.Match[str], arch: str) -> bool:
-    arch = normalize_arch_name(arch)
-    before = line[: match.start()].lower()
-    if arch == "aarch64":
-        return before.rstrip().endswith("lsl")
-    if arch == "x86-64":
-        return before.rstrip().endswith("*")
-
-
-def _is_bit_position(line: str, match: re.Match[str], arch: str) -> bool:
-    arch = normalize_arch_name(arch)
-    if arch == "aarch64":
-        mnemonic = line.strip().split()[0].lower()
-        return mnemonic in {"tbz", "tbnz"}
-    return False
 
 
 def _imm_canonical(match: re.Match[str], arch: str) -> str:
@@ -905,34 +866,20 @@ def _check_label_consistency_ast(
         raise _RuleSkip("mismatched_branch_targets")
 
 
-_AARCH64_FRAME_REGS = frozenset({"sp", "wsp", "x29", "fp"})
-_X86_64_FRAME_REGS = frozenset({"rsp", "esp", "sp", "rbp", "ebp", "bp"})
-
-
-def _has_frame_relative_binding(candidate: VerificationCandidate) -> bool:
-    for binding in candidate.memory.bindings:
-        try:
-            guest_expr = parse_address_binding(binding.guest_addr)
-            host_expr = parse_address_binding(binding.host_addr)
-        except ValueError:
-            continue
-        if (
-            guest_expr.base in _AARCH64_FRAME_REGS
-            and host_expr.base in _X86_64_FRAME_REGS
-        ):
-            return True
-    return False
-
-
 def _host_immediates_are_derivable(
     guest_insts: tuple[Instruction, ...],
     host_insts: tuple[Instruction, ...],
     candidate: VerificationCandidate,
 ) -> bool:
-    if not candidate.memory.bindings:
-        return True
-    if not _has_frame_relative_binding(candidate):
-        return True
+    """Return True when every host immediate is either shared with the guest or
+    has been expressed via a derivation strategy.
+
+    This check is universal — it applies to all rule types, not just
+    frame-relative memory rules.  ``collect_instruction_imm_ids`` already
+    handles derived ImmOps correctly: for a derived ImmOp it collects the
+    guest ``immN`` references from the derivation text rather than the
+    ImmOp's own host-only id.
+    """
     guest_imms = collect_instruction_imm_ids(guest_insts)
     host_imms = collect_instruction_imm_ids(host_insts)
     return host_imms <= guest_imms
