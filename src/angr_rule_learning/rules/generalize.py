@@ -188,9 +188,7 @@ def _build_skip_detail(
 class RuleGeneralizer:
     def __init__(self, diagnostics: RuleDiagnostics | None = None) -> None:
         self.diagnostics = diagnostics or RuleDiagnostics()
-        self._emitted_keys: list[
-            tuple[tuple[Instruction, ...], tuple[Instruction, ...]]
-        ] = []
+        self._emitted_fingerprints: list[tuple[object, ...]] = []
 
     def _record_skip(
         self,
@@ -283,16 +281,22 @@ class RuleGeneralizer:
             self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
             return None
 
-        # AST alpha-equivalence dedup
-        from angr_rule_learning.rules.ast import (
-            Rule as AstRule,
-            instruction_sequences_alpha_equal,
-        )
+        # AST alpha-equivalence dedup: compare full Rules, not separate
+        # guest/host sequences, so that guest↔host relationships are
+        # preserved across the comparison.
+        from angr_rule_learning.rules._fingerprint import build_rule_fingerprint
+        from angr_rule_learning.rules.ast import Rule as AstRule
 
-        for existing_guest, existing_host in self._emitted_keys:
-            if instruction_sequences_alpha_equal(
-                existing_guest, guest_insts
-            ) and instruction_sequences_alpha_equal(existing_host, host_insts):
+        candidate_fp = build_rule_fingerprint(
+            AstRule(
+                rule_id=0,
+                candidate_id="",
+                guest=guest_insts,
+                host=host_insts,
+            )
+        )
+        for existing_fp in self._emitted_fingerprints:
+            if candidate_fp == existing_fp:
                 self._record_skip(
                     candidate,
                     "duplicate_rule",
@@ -300,7 +304,7 @@ class RuleGeneralizer:
                     host_insts,
                 )
                 return None
-        self._emitted_keys.append((guest_insts, host_insts))
+        self._emitted_fingerprints.append(candidate_fp)
 
         rule = GeneratedRule(
             rule_id=rule_id,

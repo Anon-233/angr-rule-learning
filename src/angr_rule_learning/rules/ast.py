@@ -342,46 +342,6 @@ def _walk_rule(rule: Rule, visitor):
                 visitor(op)
 
 
-def _op_equal(a: Operand, b: Operand) -> bool:
-    if type(a) is not type(b):
-        return False
-    if isinstance(a, RegOp) and isinstance(b, RegOp):
-        return a.prefix == b.prefix and a.bits == b.bits
-    if isinstance(a, ImmOp) and isinstance(b, ImmOp):
-        return (
-            a.derived == b.derived
-            and a.aarch64_hash == b.aarch64_hash
-            and a.neg == b.neg
-        )
-    if isinstance(a, TmpOp) and isinstance(b, TmpOp):
-        return a.prefix == b.prefix and a.bits == b.bits
-    if isinstance(a, LitOp) and isinstance(b, LitOp):
-        return a.value == b.value
-    if isinstance(a, LabelOp) and isinstance(b, LabelOp):
-        return a.aarch64_hash == b.aarch64_hash
-    if isinstance(a, RegTextOp) and isinstance(b, RegTextOp):
-        return a.text == b.text
-    return False
-
-
-def _insts_equal(a: tuple[Instruction, ...], b: tuple[Instruction, ...]) -> bool:
-    if len(a) != len(b):
-        return False
-    for ia, ib in zip(a, b):
-        if ia.mnemonic != ib.mnemonic:
-            return False
-        if ia.meta != ib.meta:
-            return False
-        if ia.post_meta != ib.post_meta:
-            return False
-        if len(ia.operands) != len(ib.operands):
-            return False
-        for oa, ob in zip(ia.operands, ib.operands):
-            if not _op_equal(oa, ob):
-                return False
-    return True
-
-
 # ── Placeholder parsing and collection ─────────────────────────────────
 
 
@@ -457,186 +417,26 @@ def labels_are_consistent(
 
 # ── Alpha-equivalence ───────────────────────────────────────────────────
 
-_REG_PLACEHOLDER_RE = re.compile(r"(i\d+)_reg(\d+)\b")
-_TMP_PLACEHOLDER_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
-_LABEL_PLACEHOLDER_RE = re.compile(r"#?label(\d+)\b")
-
-
-def canonicalize_rule(rule: Rule) -> tuple[int, ...]:
-    """Return a canonical integer fingerprint that preserves placeholder
-    relationships across the entire *rule*.
-
-    Guest and host instructions share the same namespace maps so that
-    relationships between guest and host operands are preserved.  Two
-    rules that are the same modulo consistent placeholder renumbering
-    produce identical fingerprints.  Two rules where the same guest
-    register maps to different operand positions produce different
-    fingerprints.
-
-    Each namespace (registers, temps, immediates, labels) gets its own
-    canonical-ID map so that relationships are only compared within the
-    same kind, but guest and host share the same map per kind.
-    """
-    return _canonicalize_instruction_sequence(rule.guest + rule.host)
-
-
-def _canonicalize_instruction_sequence(
-    insts: tuple[Instruction, ...],
-) -> tuple[int, ...]:
-    """Return a flat integer fingerprint for a sequence of instructions.
-
-    Uses independent namespace maps so that two sequences produce identical
-    fingerprints when they are the same modulo consistent renumbering of
-    placeholder IDs.
-    """
-    # Map: (key) -> canonical_id for each namespace.
-    reg_map: dict[tuple[object, ...], int] = {}
-    tmp_map: dict[tuple[object, ...], int] = {}
-    imm_map: dict[tuple[object, ...], int] = {}
-    label_map: dict[tuple[object, ...], int] = {}
-
-    reg_next = 1
-    tmp_next = 1
-    imm_next = 1
-    label_next = 1
-
-    _REG_PAD_RE = re.compile(r"(i\d+)_reg(\d+)\b")
-    _IMM_PAD_RE = re.compile(r"\bimm(\d+)\b")
-    _TMP_PAD_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
-    _LABEL_PAD_RE = re.compile(r"#?label(\d+)\b")
-
-    def _lookup_reg(key: tuple[object, ...]) -> int:
-        nonlocal reg_next
-        if key not in reg_map:
-            reg_map[key] = reg_next
-            reg_next += 1
-        return reg_map[key]
-
-    def _lookup_tmp(key: tuple[object, ...]) -> int:
-        nonlocal tmp_next
-        if key not in tmp_map:
-            tmp_map[key] = tmp_next
-            tmp_next += 1
-        return tmp_map[key]
-
-    def _lookup_imm(key: tuple[object, ...]) -> int:
-        nonlocal imm_next
-        if key not in imm_map:
-            imm_map[key] = imm_next
-            imm_next += 1
-        return imm_map[key]
-
-    def _lookup_label(key: tuple[object, ...]) -> int:
-        nonlocal label_next
-        if key not in label_map:
-            label_map[key] = label_next
-            label_next += 1
-        return label_map[key]
-
-    def _canonicalize_lit_text(text: str) -> str:
-        """Replace placeholder IDs in text with canonical numbers."""
-
-        def _reg_repl(m: re.Match[str]) -> str:
-            prefix = m.group(1)
-            orig_id = int(m.group(2))
-            cid = _lookup_reg((prefix, orig_id))
-            return f"{prefix}_reg{cid}"
-
-        def _imm_repl(m: re.Match[str]) -> str:
-            orig_id = int(m.group(1))
-            cid = _lookup_imm(("inline", orig_id))
-            return f"imm{cid}"
-
-        def _tmp_repl(m: re.Match[str]) -> str:
-            prefix = m.group(1)
-            orig_id = int(m.group(2))
-            bits = int(prefix[1:])
-            cid = _lookup_tmp((prefix, bits, orig_id))
-            return f"{prefix}_tmp{cid}"
-
-        def _label_repl(m: re.Match[str]) -> str:
-            orig_id = int(m.group(1))
-            is_hash = m.group(0).startswith("#")
-            cid = _lookup_label((orig_id, is_hash))
-            prefix = "#" if is_hash else ""
-            return f"{prefix}label{cid}"
-
-        # label and reg before imm so `#imm1` is not mangled.
-        text = _LABEL_PAD_RE.sub(_label_repl, text)
-        text = _TMP_PAD_RE.sub(_tmp_repl, text)
-        text = _REG_PAD_RE.sub(_reg_repl, text)
-        text = _IMM_PAD_RE.sub(_imm_repl, text)
-        return text
-
-    def _canonicalize_operand(op: Operand) -> tuple[int, int, ...]:
-        if isinstance(op, RegOp):
-            cid = _lookup_reg((op.prefix, op.bits, op.id))
-            return (0, cid)
-        elif isinstance(op, ImmOp):
-            if op.derived is not None:
-                norm = _canonicalize_lit_text(op.derived)
-                cid = _lookup_imm(("derived", norm))
-            else:
-                cid = _lookup_imm((op.id, op.aarch64_hash, op.neg))
-            return (1, cid)
-        elif isinstance(op, TmpOp):
-            cid = _lookup_tmp((op.prefix, op.bits, op.id))
-            return (2, cid)
-        elif isinstance(op, LitOp):
-            text = _canonicalize_lit_text(op.value)
-            return (3, hash(text))
-        elif isinstance(op, LabelOp):
-            cid = _lookup_label((op.id, op.aarch64_hash))
-            return (4, cid)
-        elif isinstance(op, RegTextOp):
-            text = _canonicalize_lit_text(op.text)
-            return (5, hash(text))
-        else:
-            raise TypeError(f"unknown operand type: {type(op)!r}")
-
-    def _canonicalize_meta(meta: MetaOp) -> tuple[int, ...]:
-        kind_hash = hash(meta.kind)
-        sigs: list[int] = [kind_hash]
-        for r in meta.regs:
-            sigs.extend(_canonicalize_operand(r))
-        return tuple(sigs)
-
-    def _canonicalize_instruction(inst: Instruction) -> tuple[int, ...]:
-        mnemonic_hash = hash(inst.mnemonic)
-        sigs = [mnemonic_hash]
-        for op in inst.operands:
-            sigs.extend(_canonicalize_operand(op))
-        for m in inst.meta:
-            sigs.extend(_canonicalize_meta(m))
-        for m in inst.post_meta:
-            sigs.extend(_canonicalize_meta(m))
-        return tuple(sigs)
-
-    flat: list[int] = []
-    for inst in insts:
-        flat.extend(_canonicalize_instruction(inst))
-    return tuple(flat)
-
 
 def rule_alpha_equal(a: Rule, b: Rule) -> bool:
     """Return True if *a* and *b* are alpha-equivalent.
 
-    Two rules are alpha-equivalent when they differ only by consistent
-    renaming of placeholder IDs (registers, immediates, temporaries,
-    labels) but preserve all relationships between placeholders.
+    Two rules are structurally identical but for consistent placeholder
+    renumbering.  The fingerprint preserves: Guest/Host boundaries,
+    instruction ordering, operand types and their alias relationships,
+    metadata (save/restore) placement, and embedded placeholder
+    references within ``LitOp``, ``RegTextOp``, and derived expressions.
     """
-    return canonicalize_rule(a) == canonicalize_rule(b)
+    from angr_rule_learning.rules._fingerprint import build_rule_fingerprint
+
+    return build_rule_fingerprint(a) == build_rule_fingerprint(b)
 
 
 def instruction_sequences_alpha_equal(
     a: tuple[Instruction, ...],
     b: tuple[Instruction, ...],
 ) -> bool:
-    """Return True if two instruction sequences are alpha-equivalent.
+    """Return True if two instruction sequences are alpha-equivalent."""
+    from angr_rule_learning.rules._fingerprint import build_sequence_fingerprint
 
-    Compares the sequences directly, using independent namespace maps so
-    that only the relative structure within each sequence matters.
-    """
-    return _canonicalize_instruction_sequence(a) == _canonicalize_instruction_sequence(
-        b
-    )
+    return build_sequence_fingerprint(a) == build_sequence_fingerprint(b)

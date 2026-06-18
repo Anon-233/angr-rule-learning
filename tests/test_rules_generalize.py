@@ -846,9 +846,9 @@ def test_immediate_replacement_preserves_metadata() -> None:
     assert g_result[0].post_meta == restore_post
 
 
-def test_insts_equal_compares_post_meta() -> None:
-    """_insts_equal considers post_meta in structural comparison."""
-    from angr_rule_learning.rules.ast import _insts_equal
+def test_post_meta_preserved_in_alpha_equivalence() -> None:
+    """Alpha-equivalence distinguishes sequences by post_meta presence."""
+    from angr_rule_learning.rules.ast import instruction_sequences_alpha_equal
 
     a = (
         Instruction(
@@ -865,8 +865,8 @@ def test_insts_equal_compares_post_meta() -> None:
         ),
     )
     c = (Instruction("mov", (RegOp("i32", 32, 1), LitOp("0"))),)
-    assert _insts_equal(a, b)
-    assert not _insts_equal(a, c)
+    assert instruction_sequences_alpha_equal(a, b)
+    assert not instruction_sequences_alpha_equal(a, c)
 
 
 # ── Alpha-equivalence tests ─────────────────────────────────────────────
