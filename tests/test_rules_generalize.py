@@ -1751,6 +1751,189 @@ def test_fixed_role_mov_ecx_ecx_without_producer_is_rejected() -> None:
     assert diagnostics.skip_reasons.get("unbound_fixed_role_register", 0) >= 1
 
 
+def test_fixed_role_ecx_as_input_is_rejected() -> None:
+    """w1↔ecx as candidate input: ecx is in the fixed-role family so
+    it cannot serve as provenance source without an explicit producer."""
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="ecx, ecx",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("ecx",),
+        read_registers=("ecx",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov, host_shl)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "ecx")), outputs=(("w0", "eax"),)
+    )
+    diagnostics = RuleDiagnostics()
+    rule = RuleGeneralizer(diagnostics).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unbound_fixed_role_register", 0) >= 1
+
+
+def test_fixed_role_add_ecx_esi_no_old_source_is_rejected() -> None:
+    """add ecx, esi reads old ecx; no prior producer → reject."""
+    host_add = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="add",
+        op_str="ecx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("ecx", "rflags"),
+        read_registers=("ecx", "esi"),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 2),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_add, host_shl)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "esi")), outputs=(("w0", "eax"),)
+    )
+    diagnostics = RuleDiagnostics()
+    rule = RuleGeneralizer(diagnostics).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unbound_fixed_role_register", 0) >= 1
+
+
+def test_fixed_role_cross_family_chain_accepted() -> None:
+    """mov edx,esi; mov ecx,edx; shl ...,cl: cross-family (rsi→rdx→rcx)
+    chain is accepted because esi is a mapped non-fixed input."""
+    host_mov_edx = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="edx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("edx",),
+        read_registers=("esi",),
+    )
+    host_mov_ecx = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="mov",
+        op_str="ecx, edx",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("ecx",),
+        read_registers=("edx",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2006,
+        size=3,
+        code_bytes=b"\x07\x08\x09",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 3),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "s",
+        (1, 3),
+        InstructionWindow(
+            "s",
+            "guest",
+            (
+                _inst(
+                    "aarch64",
+                    0x1000,
+                    "lsl",
+                    "w0, w0, w1",
+                    write_registers=("w0",),
+                    read_registers=("w0", "w1"),
+                ),
+            ),
+        ),
+        InstructionWindow("s", "host", (host_mov_edx, host_mov_ecx, host_shl)),
+    )
+    candidate = _candidate(
+        inputs=(("w0", "eax"), ("w1", "esi")), outputs=(("w0", "eax"),)
+    )
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, window, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    host_text = "\n".join(rule.host_lines)
+    assert "cl" in host_text
+    assert "i32_reg2" in host_text
+
+
 def test_no_untyped_temporaries_in_output() -> None:
     """All temporaries must carry type/width: i32_tmp1 not tmp1."""
     # Use the RMW memory window test pattern that generates internal temps.
