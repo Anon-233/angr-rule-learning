@@ -352,7 +352,12 @@ def test_generalizer_coalesces_host_pre_and_post_carriers_by_guest_family() -> N
     assert rule.host_lines == ("lea i32_reg1, [i32_reg3 + i32_reg2]",)
 
 
-def test_generalizer_does_not_coalesce_by_host_carrier_alone() -> None:
+def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> None:
+    """When a guest register (w8) appears in both output and input pairs
+    with *different* host registers (eax for output, ecx for input),
+    the input role gets a separate placeholder so the distinct guest
+    source operand (w0, paired with eax) can safely share the output's
+    placeholder without conflating w8's two roles."""
     diagnostics = RuleDiagnostics()
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w8, w0, w8"),),
@@ -370,8 +375,9 @@ def test_generalizer_does_not_coalesce_by_host_carrier_alone() -> None:
         _passing_report(candidate.candidate_id),
     )
 
-    assert rule is None
-    assert diagnostics.skip_reasons["unsupported_rule_shape"] == 1
+    assert rule is not None
+    assert rule.guest_lines == ("add i32_reg1, i32_reg1, i32_reg2",)
+    assert rule.host_lines == ("add i32_reg1, i32_reg2",)
 
 
 def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
@@ -396,7 +402,11 @@ def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None
     assert rule.host_lines == ("sub sp64, imm1",)
 
 
-def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
+def test_generalizer_handles_input_reusing_output_host_register() -> None:
+    """When a guest input register maps to a host register that already
+    has a placeholder from an output pair, the input should inherit the
+    same placeholder.  Combined with role-split detection this produces
+    a correct destructive-host rule."""
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)
     window = _window_pair(
@@ -409,8 +419,10 @@ def test_generalizer_rejects_conflicting_physical_register_mapping() -> None:
     )
     report = _passing_report(candidate.candidate_id)
 
-    assert generalizer.generate(1, window, candidate, report) is None
-    assert diagnostics.skip_reasons["unsupported_rule_shape"] == 1
+    rule = generalizer.generate(1, window, candidate, report)
+    assert rule is not None
+    assert rule.guest_lines == ("add i32_reg1, i32_reg1, i32_reg2",)
+    assert rule.host_lines == ("add i32_reg1, i32_reg2",)
 
 
 def test_splits_guest_register_when_output_and_input_pair_differently() -> None:

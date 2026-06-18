@@ -468,6 +468,8 @@ def _build_placeholder_map(
             existing = guest_existing
         elif guest_existing is not None and host_existing is None:
             existing = guest_existing
+        elif host_existing is not None and guest_existing is None:
+            existing = host_existing
         else:
             raise _RuleSkip("unsupported_rule_shape")
 
