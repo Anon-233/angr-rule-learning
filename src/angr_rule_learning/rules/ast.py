@@ -114,19 +114,23 @@ class Instruction:
     mnemonic: str
     operands: tuple[Operand, ...]
     meta: tuple[MetaOp, ...] = ()
+    post_meta: tuple[MetaOp, ...] = ()
 
     _PUNCT_RE: ClassVar[re.Pattern[str]] = re.compile(r"([\[\],#+*\-])")
 
     def to_text(self) -> str:
+        parts: list[str] = []
+        for m in self.meta:
+            parts.append(m.to_text())
         if not self.operands:
             line = self.mnemonic
         else:
             ops = ", ".join(op.to_text() for op in self.operands)
             line = f"{self.mnemonic} {ops}"
-        if self.meta:
-            meta_lines = [m.to_text() for m in self.meta]
-            return "\n".join([*meta_lines, line])
-        return line
+        parts.append(line)
+        for m in self.post_meta:
+            parts.append(m.to_text())
+        return "\n".join(parts)
 
     @classmethod
     def from_text(cls, line: str) -> "Instruction":
@@ -139,7 +143,7 @@ class Instruction:
         mnemonic = tokens[0]
         ops_text = tokens[1] if len(tokens) > 1 else ""
         operands = tuple(cls._parse_operands(ops_text))
-        return cls(mnemonic=mnemonic, operands=operands)
+        return cls(mnemonic=mnemonic, operands=operands, post_meta=())
 
     @classmethod
     def _parse_operands(cls, text: str) -> list[Operand]:
@@ -314,6 +318,7 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
             mnemonic=inst.mnemonic,
             operands=tuple(_sub(op) for op in inst.operands),
             meta=inst.meta,
+            post_meta=inst.post_meta,
         )
 
     return Rule(
@@ -333,7 +338,7 @@ def _walk_rule(rule: Rule, visitor):
     for inst in rule.guest + rule.host:
         for op in inst.operands:
             visitor(op)
-        for meta in inst.meta:
+        for meta in inst.meta + inst.post_meta:
             for op in meta.regs:
                 visitor(op)
 
@@ -367,6 +372,8 @@ def _insts_equal(a: tuple[Instruction, ...], b: tuple[Instruction, ...]) -> bool
         if ia.mnemonic != ib.mnemonic:
             return False
         if ia.meta != ib.meta:
+            return False
+        if ia.post_meta != ib.post_meta:
             return False
         if len(ia.operands) != len(ib.operands):
             return False

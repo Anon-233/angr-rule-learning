@@ -651,3 +651,177 @@ def test_is_branch_instruction():
     )
     assert _is_branch_instruction(Instruction("je", (LitOp("0x1234"),)), "x86-64")
     assert not _is_branch_instruction(Instruction("add", (LitOp("w0"),)), "aarch64")
+
+
+# ── post_meta / metadata execution order tests ──────────────────────────
+
+
+def test_to_text_renders_post_meta_after_instruction() -> None:
+    """post_meta lines appear after the instruction line, meta before it."""
+    inst = Instruction(
+        mnemonic="cmp",
+        operands=(RegOp("i32", 32, 1), LitOp("0")),
+        meta=(MetaOp(kind="save", regs=(RegOp("i32", 32, 1),)),),
+        post_meta=(MetaOp(kind="restore", regs=(RegOp("i32", 32, 1),)),),
+    )
+    text = inst.to_text()
+    lines = text.split("\n")
+    assert lines == [
+        "save i32_reg1",
+        "cmp i32_reg1, 0",
+        "restore i32_reg1",
+    ]
+
+
+def test_to_text_no_extra_newline_with_only_instruction() -> None:
+    """An instruction with no meta or post_meta produces a single line."""
+    inst = Instruction("add", (RegOp("i32", 32, 1), RegOp("i32", 32, 2)))
+    assert inst.to_text() == "add i32_reg1, i32_reg2"
+
+
+def test_post_meta_preserved_through_instruction_constructor() -> None:
+    """Reconstructing an Instruction forwards post_meta."""
+    original = Instruction(
+        mnemonic="mov",
+        operands=(RegOp("i32", 32, 1), LitOp("0")),
+        post_meta=(MetaOp(kind="restore", regs=(RegOp("i32", 32, 1),)),),
+    )
+    rebuilt = Instruction(
+        mnemonic=original.mnemonic,
+        operands=original.operands,
+        meta=original.meta,
+        post_meta=original.post_meta,
+    )
+    assert rebuilt.post_meta == original.post_meta
+    assert rebuilt.to_text() == original.to_text()
+
+
+def test_single_dead_write_restore_on_post_meta() -> None:
+    """When a dead-write register is written but never read, the restore
+    goes on post_meta of the write instruction itself."""
+    # The write register ("w8"/"eax") is paired in the input mapping but NOT
+    # in the output mapping — that makes it a dead write (its value is
+    # overwritten and never used as output).
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "mov",
+                "w8, w0",
+                write_registers=("w8",),
+                read_registers=("w0",),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "mov",
+                "eax, edi",
+                write_registers=("eax",),
+                read_registers=("edi",),
+            ),
+        ),
+    )
+    # w8/eax in inputs (so it's mapped) but not outputs (so it's dead)
+    candidate = _candidate(
+        inputs=(("w0", "edi"), ("w8", "eax")),
+        outputs=(),
+    )
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    # The host should have the mov instruction with save on meta
+    # and restore on post_meta of the same instruction.
+    host_insts = rule.rule.host
+    assert len(host_insts) == 1
+    # save on meta
+    assert any(m.kind == "save" for m in host_insts[0].meta)
+    # restore on post_meta (not on meta)
+    assert any(m.kind == "restore" for m in host_insts[0].post_meta)
+    assert not any(m.kind == "restore" for m in host_insts[0].meta)
+
+
+def test_host_lines_are_flat_no_embedded_newlines() -> None:
+    """GeneratedRule.host_lines returns individual lines with no embedded newlines."""
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "mov",
+                "w8, w0",
+                write_registers=("w8",),
+                read_registers=("w0",),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "mov",
+                "eax, edi",
+                write_registers=("eax",),
+                read_registers=("edi",),
+            ),
+        ),
+    )
+    candidate = _candidate(inputs=(("w0", "edi"), ("w8", "eax")), outputs=())
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+    assert rule is not None
+    for line in rule.host_lines:
+        assert "\n" not in line, f"host_line has embedded newline: {line!r}"
+    for line in rule.guest_lines:
+        assert "\n" not in line, f"guest_line has embedded newline: {line!r}"
+
+
+def test_immediate_replacement_preserves_metadata() -> None:
+    """_replace_immediates_ast preserves meta and post_meta on instructions
+    that don't have operand changes."""
+    from angr_rule_learning.rules.generalize import _replace_immediates_ast
+
+    save_meta = (MetaOp(kind="save", regs=(RegOp("i32", 32, 1),)),)
+    restore_post = (MetaOp(kind="restore", regs=(RegOp("i32", 32, 1),)),)
+    inst = Instruction(
+        mnemonic="and",
+        operands=(RegOp("i32", 32, 1), LitOp("1")),
+        meta=save_meta,
+        post_meta=restore_post,
+    )
+    guest_insts: tuple[Instruction, ...] = (inst,)
+    host_insts: tuple[Instruction, ...] = (
+        Instruction("and", (RegOp("i32", 32, 1), LitOp("1"))),
+    )
+    g_result, h_result = _replace_immediates_ast(
+        guest_insts, "aarch64", host_insts, "x86-64"
+    )
+    assert len(g_result) == 1
+    assert g_result[0].meta == save_meta
+    assert g_result[0].post_meta == restore_post
+
+
+def test_insts_equal_compares_post_meta() -> None:
+    """_insts_equal considers post_meta in structural comparison."""
+    from angr_rule_learning.rules.ast import _insts_equal
+
+    a = (
+        Instruction(
+            "mov",
+            (RegOp("i32", 32, 1), LitOp("0")),
+            post_meta=(MetaOp(kind="restore", regs=(RegOp("i32", 32, 1),)),),
+        ),
+    )
+    b = (
+        Instruction(
+            "mov",
+            (RegOp("i32", 32, 1), LitOp("0")),
+            post_meta=(MetaOp(kind="restore", regs=(RegOp("i32", 32, 1),)),),
+        ),
+    )
+    c = (Instruction("mov", (RegOp("i32", 32, 1), LitOp("0"))),)
+    assert _insts_equal(a, b)
+    assert not _insts_equal(a, c)

@@ -12,7 +12,9 @@
 
 ## Review Baseline
 
-Review range: `fa7c67c..42245db`.
+Execution baseline: current `main` at `e5a7956`. Original review range: `fa7c67c..42245db`.
+
+Commit `e5a7956` additionally parameterizes AArch64 `lsl #N` and x86 `*N` scale operands. Preserve that feature, but do not emit independent Guest/Host scale placeholders. For indexed addressing, the host multiplier must be derived from the guest shift as `1 << shift`.
 
 Known-good command status before fixes:
 
@@ -52,21 +54,7 @@ The required order is `save -> and -> cmp -> restore -> je`.
 
 - [ ] **Step 1: Add a failing final-output regression test**
 
-Construct the existing `tbz -> and/cmp/je` rule through `RuleGeneralizer.generate()` and assert the complete host sequence:
-
-```python
-assert rule is not None
-assert rule.host_lines == (
-    "save i32_reg1\nand i32_reg1, ${(1 << 0)}",
-    "cmp i32_reg1, 0\nrestore i32_reg1",
-    "je label1",
-)
-assert rule.rule.to_text().index("cmp i32_reg1, 0") < rule.rule.to_text().index(
-    "restore i32_reg1"
-)
-```
-
-Prefer changing `GeneratedRule.host_lines` in Task 1 so it returns actual rendered lines rather than strings containing embedded newlines. If that API is corrected immediately, assert this clearer contract instead:
+Construct the existing `tbz -> and/cmp/je` rule through `RuleGeneralizer.generate()`. Change `GeneratedRule.guest_lines` and `host_lines` to flatten rendered instructions with `splitlines()`, so each tuple item is exactly one assembly or metadata line. Assert the complete host sequence:
 
 ```python
 assert rule.host_lines == (
@@ -76,6 +64,7 @@ assert rule.host_lines == (
     "restore i32_reg1",
     "je label1",
 )
+assert all("\n" not in line for line in rule.host_lines)
 ```
 
 - [ ] **Step 2: Run the regression test and confirm the current order fails**
@@ -192,7 +181,7 @@ uv run pytest tests/test_rules_generalize.py -k "alpha or alias or renumber" -vv
 Implement `rule_fingerprint(guest, host)` in `rules/ast.py`. Traverse guest then host in deterministic instruction/operand order. Maintain independent canonical-ID maps for:
 
 - integer/float/vector register placeholders, keyed by `(prefix, bits, original_id)`;
-- temporary placeholders, keyed by `(kind, bits, original_id)` after Task 4;
+- temporary placeholders, keyed by the current `original_id`; Task 4 must extend this key to `(kind, bits, original_id)` when typed temporaries are introduced;
 - immediate placeholders;
 - label placeholders.
 
@@ -246,6 +235,7 @@ Add these cases:
 2. `eor #1; eor #2` versus host `xor 3` must not infer OR/add solely because the concrete values match.
 3. A non-memory rule with guest `imm1` and unresolved host `imm2` must be skipped with `unpaired_host_immediate`.
 4. Existing `mov + movk -> movabs` and `tbz/tbnz -> mask` tests must continue to pass.
+5. Indexed memory `[base, index, lsl #2]` versus `[base + index*4]` must emit a guest shift placeholder and derive the host scale from it; it must not emit an independent host-only `immN`.
 
 - [ ] **Step 2: Confirm the failures**
 
@@ -264,7 +254,8 @@ DerivationStrategy = Callable[[DerivationContext, str], str | None]
 Implement only:
 
 - `derive_tbz_mask`: require guest `tbz`/`tbnz`, use its bit-position operand, and require a compatible host `and` mask path;
-- `derive_movk_constant`: require the guest `mov`/`movk` construction and compatible host `movabs`, preserving each literal shift from the guest instructions.
+- `derive_movk_constant`: require the guest `mov`/`movk` construction and compatible host `movabs`; when the `lsl` amount is parameterized, reference that guest shift placeholder in the derived expression;
+- `derive_index_scale`: require a paired AArch64 indexed memory operand using `lsl #immN` and x86 indexed memory using `*immM`; replace the host scale with `${(1 << immN)}`.
 
 Do not add generic add/sub/OR derivation in this repair. Unsupported shapes must remain unpaired and be skipped.
 
@@ -337,6 +328,8 @@ class TmpOp:
 Avoid importing `RegisterKind` from `rules.registers` if that creates a cycle; define the narrow literal type in `ast.py` or a small shared type module.
 
 Update `parse_placeholder()`, text parsing kept for external/test compatibility, fingerprinting, and all temporary regexes to support `i32_tmp1`, `i64_tmp1`, `f32_tmp1`, and `v128_tmp1`.
+
+Update the Task 2 fingerprint namespace for temporaries from `original_id` to `(kind, bits, original_id)` and rerun the alpha-equivalence tests.
 
 - [ ] **Step 4: Classify the concrete temporary register**
 
@@ -413,6 +406,8 @@ git commit -m "Fix RMW widths and compound register validation"
 - Modify: `docs/architecture.md`
 - Modify: `docs/rule-generalization.md`
 - Modify: `docs/rule-format.md`
+- Modify: `src/angr_rule_learning/extraction/pipeline.py`
+- Test: `tests/test_extraction_pipeline.py`
 - Test: full suite and end-to-end scripts
 
 - [ ] **Step 1: Update architecture documentation**
@@ -425,11 +420,13 @@ Make these concrete corrections:
 - document pre/post metadata ordering;
 - document relationship-preserving alpha-equivalence and consolidation;
 - state that x86 memory-source arithmetic is supported for `add/sub/and/or/xor/imul`, while memory-destination RMW remains unsupported;
-- state that immediate derivation is limited to explicit `tbz/tbnz` and `mov/movk` templates.
+- state that immediate derivation is limited to explicit `tbz/tbnz`, `mov/movk`, and indexed-address scale templates.
 
 - [ ] **Step 2: Update rule format and generalization documentation**
 
 Document typed temporaries as `i32_tmpN`, `i64_tmpN`, `f32_tmpN`, or `v128_tmpN`; remove all normative `tmpN` examples. Correct the stale statement that immediates are always literal and list `unpaired_host_immediate` as a universal rejection condition.
+
+Document scale placeholders explicitly: AArch64 shift amounts are bindable Guest immediates, while the corresponding x86 multiplier is a derived expression `1 << shift`, not an independent Host placeholder.
 
 - [ ] **Step 3: Link the detailed rule-format document from README**
 
@@ -466,19 +463,22 @@ Acceptance requirements:
 - no untyped `tmpN` appears;
 - no concrete non-literal register leaks into rules;
 - every host immediate placeholder is present on Guest or inside an approved derived expression referencing Guest placeholders;
+- indexed memory rules derive the x86 multiplier from the AArch64 shift and contain no independent host-only scale placeholder;
 - both add operand-relationship variants are retained unless an explicit, tested semantic commutativity normalization is introduced;
 - `rules_diagnostics.json` counts match the final emitted rule file after consolidation.
 
-- [ ] **Step 6: Fix post-consolidation diagnostics if acceptance exposes a mismatch**
+- [ ] **Step 6: Fix post-consolidation diagnostics**
 
-If `consolidate_rules()` removes rules, update diagnostics so `rules_emitted` equals the number written. Record removals under a stable reason such as `subsumed_rule`; ensure `rules_considered == rules_emitted + rules_skipped` remains true.
+Update diagnostics so `rules_emitted` always equals the number written after `consolidate_rules()`. Record each removal under the stable reason `subsumed_rule`; ensure `rules_considered == rules_emitted + rules_skipped` remains true.
 
 Add a pipeline test containing one literal rule subsumed by a parameterized rule and assert both the file count and diagnostics count.
 
 - [ ] **Step 7: Commit documentation and final integration**
 
 ```bash
-git add README.md docs/architecture.md docs/rule-generalization.md docs/rule-format.md tests src
+git add README.md docs/architecture.md docs/rule-generalization.md docs/rule-format.md \
+  docs/superpowers/plans/2026-06-18-post-ast-review-fixes.md \
+  src/angr_rule_learning/extraction/pipeline.py tests/test_extraction_pipeline.py
 git commit -m "Document sound AST rule generation"
 git status --short
 ```

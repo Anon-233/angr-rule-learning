@@ -46,11 +46,19 @@ class GeneratedRule:
 
     @property
     def guest_lines(self) -> tuple[str, ...]:
-        return tuple(inst.to_text() for inst in self.rule.guest)
+        result: list[str] = []
+        for inst in self.rule.guest:
+            for line in inst.to_text().split("\n"):
+                result.append(line)
+        return tuple(result)
 
     @property
     def host_lines(self) -> tuple[str, ...]:
-        return tuple(inst.to_text() for inst in self.rule.host)
+        result: list[str] = []
+        for inst in self.rule.host:
+            for line in inst.to_text().split("\n"):
+                result.append(line)
+        return tuple(result)
 
     @classmethod
     def from_text_lines(
@@ -144,11 +152,19 @@ def _build_skip_detail(
     guest_insts: tuple[Instruction, ...],
     host_insts: tuple[Instruction, ...],
 ) -> RuleSkipDetail:
+    guest_lines_flat: list[str] = []
+    for i in guest_insts:
+        for line in i.to_text().split("\n"):
+            guest_lines_flat.append(line)
+    host_lines_flat: list[str] = []
+    for i in host_insts:
+        for line in i.to_text().split("\n"):
+            host_lines_flat.append(line)
     return RuleSkipDetail(
         candidate_id=candidate.candidate_id,
         reason=reason,
-        guest_lines=tuple(i.to_text() for i in guest_insts),
-        host_lines=tuple(i.to_text() for i in host_insts),
+        guest_lines=tuple(guest_lines_flat),
+        host_lines=tuple(host_lines_flat),
         input_registers=candidate.input_registers,
         output_registers=candidate.output_registers,
         memory_bindings=tuple(
@@ -656,7 +672,10 @@ def _replace_labels_ast(
                     id=guest_label_ids[gidx], aarch64_hash=is_aarch64
                 )
                 inst = AstInstruction(
-                    mnemonic=inst.mnemonic, operands=tuple(new_ops), meta=inst.meta
+                    mnemonic=inst.mnemonic,
+                    operands=tuple(new_ops),
+                    meta=inst.meta,
+                    post_meta=inst.post_meta,
                 )
                 gidx += 1
         guest_result.append(inst)
@@ -675,7 +694,10 @@ def _replace_labels_ast(
                     id=host_label_ids[hidx], aarch64_hash=is_aarch64
                 )
                 inst = AstInstruction(
-                    mnemonic=inst.mnemonic, operands=tuple(new_ops), meta=inst.meta
+                    mnemonic=inst.mnemonic,
+                    operands=tuple(new_ops),
+                    meta=inst.meta,
+                    post_meta=inst.post_meta,
                 )
                 hidx += 1
         host_result.append(inst)
@@ -752,30 +774,70 @@ def _replace_immediates_ast(
         implicit_ids.add(implicit_id)
 
     # ---- Phase 2: Replacement ----
+    def _make_replacer(arch: str, prefix: str):
+        def _replacer(match: re.Match[str]) -> str:
+            c = _imm_canonical(match, arch)
+            if c in _RESERVED_LITERALS:
+                return match.group(0)
+            val = int(c)
+            if val < 0:
+                if normalize_arch_name(arch) == "aarch64":
+                    return f"#-imm{canonical_to_id[c]}"
+                else:
+                    return f"- imm{canonical_to_id[c]}"
+            return f"{prefix}imm{canonical_to_id[c]}"
+
+        return _replacer
+
+    def _replace_operand(op: Operand, pattern: re.Pattern[str], replacer) -> Operand:
+        """Apply immediate regex substitution to a single operand's text,
+        rebuilding typed operands where possible."""
+        from angr_rule_learning.rules.ast import (
+            ImmOp,
+            LitOp,
+            RegTextOp,
+        )
+
+        text = op.to_text()
+        new_text = pattern.sub(replacer, text)
+        if new_text == text:
+            return op
+
+        # Try to re-parse the replaced text as a typed operand.
+        # The Instruction._parse_operand static method handles this.
+        parsed = AstInstruction._parse_operand(new_text)
+        if isinstance(parsed, ImmOp):
+            # Transfer ids; the parsed ImmOp may have a new id — trust the
+            # replacer's assignment (the ImmOp's id field reflects the last
+            # match's numbering, which is what we want).
+            return parsed
+        if isinstance(op, LitOp):
+            return LitOp(value=new_text)
+        if isinstance(op, RegTextOp):
+            return RegTextOp(text=new_text)
+        # Fallback: keep the parsed form if it changed type
+        return parsed
+
     def _replace_side(
         insts: tuple[Instruction, ...],
         pattern: re.Pattern[str],
         arch: str,
         prefix: str,
     ) -> tuple[Instruction, ...]:
+        replacer = _make_replacer(arch, prefix)
         result: list[Instruction] = []
         for inst in insts:
-            line = inst.to_text()
-
-            def _replacer(match: re.Match[str]) -> str:
-                c = _imm_canonical(match, arch)
-                if c in _RESERVED_LITERALS:
-                    return match.group(0)
-                val = int(c)
-                if val < 0:
-                    if normalize_arch_name(arch) == "aarch64":
-                        return f"#-imm{canonical_to_id[c]}"
-                    else:
-                        return f"- imm{canonical_to_id[c]}"
-                return f"{prefix}imm{canonical_to_id[c]}"
-
-            new_line = pattern.sub(_replacer, line)
-            result.append(AstInstruction.from_text(new_line))
+            new_operands = tuple(
+                _replace_operand(op, pattern, replacer) for op in inst.operands
+            )
+            if new_operands != inst.operands:
+                inst = AstInstruction(
+                    mnemonic=inst.mnemonic,
+                    operands=new_operands,
+                    meta=inst.meta,
+                    post_meta=inst.post_meta,
+                )
+            result.append(inst)
         return tuple(result)
 
     guest_result = _replace_side(guest_insts, guest_pattern, guest_arch_n, "#")
@@ -972,28 +1034,44 @@ def _annotate_dead_writes(
         first_write, last_read = _dead_write_info(instructions)
         if not first_write:
             return insts
-        save_reg_ops = tuple(
-            _text_to_regop(mapping.get(r, r))
-            for r, idx in sorted(first_write.items(), key=lambda x: x[1])
-        )
+
+        # Compute last_access index for each dead register: the last read,
+        # or the first write itself if never subsequently read.
+        last_access: dict[str, int] = {}
+        for reg, fw_idx in first_write.items():
+            last_access[reg] = last_read.get(reg, fw_idx)
+
         result: list[Instruction] = []
-        first_inst = AstInstruction(
-            mnemonic=insts[0].mnemonic,
-            operands=insts[0].operands,
-            meta=(MetaOp(kind="save", regs=save_reg_ops),),
-        )
-        result.append(first_inst)
-        for idx, inst in enumerate(insts[1:], start=1):
-            restore_now = tuple(
+        for idx, inst in enumerate(insts):
+            new_meta = inst.meta
+            new_post_meta = inst.post_meta
+
+            # attach save to the first dead-write instruction
+            first_writes_here = tuple(
                 _text_to_regop(mapping.get(r, r))
-                for r, last_idx in last_read.items()
-                if last_idx == idx
+                for r, fw_idx in first_write.items()
+                if fw_idx == idx
             )
-            if restore_now:
+            if first_writes_here:
+                new_meta = new_meta + (MetaOp(kind="save", regs=first_writes_here),)
+
+            # attach restore to the last-access instruction's post_meta
+            restores_here = tuple(
+                _text_to_regop(mapping.get(r, r))
+                for r, la_idx in last_access.items()
+                if la_idx == idx
+            )
+            if restores_here:
+                new_post_meta = new_post_meta + (
+                    MetaOp(kind="restore", regs=restores_here),
+                )
+
+            if new_meta != inst.meta or new_post_meta != inst.post_meta:
                 inst = AstInstruction(
                     mnemonic=inst.mnemonic,
                     operands=inst.operands,
-                    meta=inst.meta + (MetaOp(kind="restore", regs=restore_now),),
+                    meta=new_meta,
+                    post_meta=new_post_meta,
                 )
             result.append(inst)
         return tuple(result)
@@ -1119,7 +1197,12 @@ def _generalize_instructions_with_roles(
                 new_operands.append(op)
 
         result.append(
-            AstInstruction(mnemonic=parsed.mnemonic, operands=tuple(new_operands))
+            AstInstruction(
+                mnemonic=parsed.mnemonic,
+                operands=tuple(new_operands),
+                meta=inst.meta,
+                post_meta=inst.post_meta,
+            )
         )
 
     # Step 3: Validate.

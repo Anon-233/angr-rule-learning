@@ -112,6 +112,7 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                 mnemonic=inst.mnemonic,
                 operands=tuple(new_operands),
                 meta=inst.meta,
+                post_meta=inst.post_meta,
             )
         )
     return tuple(result)
