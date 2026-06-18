@@ -1365,6 +1365,167 @@ def test_indexed_scale_derives_from_guest_shift() -> None:
     )
 
 
+def test_scale_derivation_uses_span_not_operand_search() -> None:
+    """When the same immediate value appears as both *scale and +displacement
+    in a host memory operand, only the *-adjacent occurrence is derivable.
+    The unproven displacement occurrence returns None."""
+    from angr_rule_learning.rules.derivation import (
+        DerivationContext,
+        _derive_index_scale,
+    )
+    from angr_rule_learning.rules.ast import Instruction as AstInst
+
+    # Guest has lsl #imm1 where imm1=2 (shift), value = 1<<2 = 4.
+    # After immediate replacement Phase 1 the guest text already has immN.
+    guest_inst = AstInst.from_text("ldr w0, [x1, x2, lsl #imm1]")
+    # Host has imm2 *scale (=4) and imm2 displacement (=4) — same value,
+    # same immId.  The text is already post-Phase-1 with placeholders.
+    host_inst = AstInst.from_text("mov eax, dword ptr [rcx + rdx*imm2 + imm2]")
+
+    ctx = DerivationContext(
+        guest_insts=(guest_inst,),
+        host_insts=(host_inst,),
+        guest_arch="aarch64",
+        host_arch="x86-64",
+        value_by_id={"1": 2, "2": 4},
+    )
+
+    # Span is relative to the operand text, not the full instruction.
+    operand_text = host_inst.operands[1].to_text()
+    # Find the span of the *-adjacent "imm2".
+    scale_start = operand_text.index("*imm2") + 1  # after "*"
+    scale_span = (scale_start, scale_start + 4)
+
+    # Scale occurrence adjacent to "*" — should derive.
+    result = _derive_index_scale(ctx, "2", 0, 1, scale_span)
+    assert result is not None
+    assert "(1 << imm1)" in result
+
+    # Find the span of the displacement "imm2" (not adjacent to "*").
+    disp_start = operand_text.index("+ imm2") + 2  # after "+ "
+    disp_span = (disp_start, disp_start + 4)
+
+    # Displacement occurrence NOT adjacent to "*" — should return None.
+    result_disp = _derive_index_scale(ctx, "2", 0, 1, disp_span)
+    assert result_disp is None
+
+
+def test_fixed_role_cl_rejected_without_rcx_producer() -> None:
+    """cl is a fixed-role register.  Without a host instruction that
+    writes to the RCX family the Guest→Host binding is invisible in the
+    emitted rule — the rule must be rejected."""
+    guest_lsl = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="lsl",
+        op_str="w0, w0, w1",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("w0",),
+        read_registers=("w0", "w1"),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (1, 1),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_lsl,)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_shl,)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="shift-no-producer",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "010203", 1),
+        input_registers=(("w0", "eax"), ("w1", "cl")),
+        output_registers=(("w0", "eax"),),
+    )
+    report = _passing_report(candidate.candidate_id)
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is None
+    # Rejected because cl has no RCX-family producer in the Host window.
+    assert diagnostics.skip_reasons.get("unpaired_host_immediate", 0) >= 1
+
+
+def test_fixed_role_cl_allowed_with_rcx_producer() -> None:
+    """When the Host window has mov ecx, ... before shl ..., cl,
+    the Guest→Host binding is explicit and the rule is valid."""
+    guest_lsl = ExtractedInstruction(
+        arch="aarch64",
+        address=0x1000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="lsl",
+        op_str="w0, w0, w1",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("w0",),
+        read_registers=("w0", "w1"),
+    )
+    host_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="ecx, esi",
+        function="f",
+        source=SourceLocation("sample.c", 2),
+        write_registers=("ecx",),
+        read_registers=("esi",),
+    )
+    host_shl = ExtractedInstruction(
+        arch="x86-64",
+        address=0x2003,
+        size=3,
+        code_bytes=b"\x04\x05\x06",
+        mnemonic="shl",
+        op_str="eax, cl",
+        function="f",
+        source=SourceLocation("sample.c", 3),
+        write_registers=("eax",),
+        read_registers=("eax", "cl"),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (1, 2),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_lsl,)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_mov, host_shl)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="shift-with-producer",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "010203040506", 2),
+        input_registers=(("w0", "eax"), ("w1", "esi")),
+        output_registers=(("w0", "eax"),),
+    )
+    report = _passing_report(candidate.candidate_id)
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(1, window, candidate, report)
+
+    assert rule is not None
+    # mov ecx, esi writes RCX family → ecx becomes an internal temp
+    # (i32_tmp1), providing the producer that justifies the cl literal.
+    # i32_reg2 (for w1/esi) is the source of the mov.
+    host_text = "\n".join(rule.host_lines)
+    assert "cl" in host_text  # fixed-role literal preserved
+    assert "i32_reg2" in host_text  # guest input traceable in host
+
+
 def test_no_untyped_temporaries_in_output() -> None:
     """All temporaries must carry type/width: i32_tmp1 not tmp1."""
     # Use the RMW memory window test pattern that generates internal temps.

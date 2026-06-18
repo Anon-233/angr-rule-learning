@@ -365,7 +365,7 @@ def test_memory_surface_reports_kind_and_width_details() -> None:
 def test_memory_surface_reports_unparsed_access_detail() -> None:
     surface = infer_memory_surface(
         _pair(
-            (_inst("aarch64", 0x1000, "ldp", "x0, x1, [x2]"),),
+            (_inst("aarch64", 0x1000, "ldr", "q0, [x8]"),),
             (_inst("x86-64", 0x2000, "mov", "rax, qword ptr [rcx]"),),
         )
     )

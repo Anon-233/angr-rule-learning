@@ -225,6 +225,7 @@ class RuleGeneralizer:
             mapping, role_split = _build_placeholder_map(
                 candidate, guest_arch, host_arch
             )
+            _require_fixed_role_producers(window, candidate)
             internal_temps = _identify_internal_temps(window, candidate)
             mapping.update(internal_temps)
             guest_insts = _instructions_to_ast(window.guest.instructions)
@@ -337,6 +338,35 @@ def _memory_binding_register_pairs(
             raise _RuleSkip("unsupported_rule_shape")
         pairs.extend(zip(guest_regs, host_regs, strict=True))
     return tuple(pairs)
+
+
+def _require_fixed_role_producers(
+    window: WindowPair,
+    candidate: VerificationCandidate,
+) -> None:
+    """Verify every fixed-role host input register has a visible producer
+    in the Host window.
+
+    Fixed-role registers (e.g. ``cl`` for shift counts) are emitted as
+    literals in the rule output.  Without a host-side instruction that
+    writes to the register family the Guest→Host binding is invisible
+    in the emitted rule text and the translation is ambiguous.
+    """
+    host_arch = candidate.host.arch
+    for _guest_reg, host_reg in candidate.input_registers:
+        if not is_fixed_role_register(host_arch, host_reg):
+            continue
+        host_family = family_for_register(host_arch, host_reg)
+        has_producer = False
+        for inst in window.host.instructions:
+            for w in inst.write_registers:
+                if family_for_register(host_arch, w) == host_family:
+                    has_producer = True
+                    break
+            if has_producer:
+                break
+        if not has_producer:
+            raise _RuleSkip("unpaired_host_immediate")
 
 
 def _build_placeholder_map(

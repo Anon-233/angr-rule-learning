@@ -74,11 +74,7 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
     if not host_only:
         return ctx.host_insts
 
-    strategies: list[DerivationStrategy] = [
-        _derive_tbz_mask,
-        _derive_movk_constant,
-        _derive_index_scale,
-    ]
+    strategies = _STRATEGIES.get((ctx.guest_arch, ctx.host_arch), [])
 
     result: list[Instruction] = []
     for host_idx, inst in enumerate(ctx.host_insts):
@@ -284,11 +280,10 @@ def _derive_index_scale(
     host_op = host_inst.operands[op_idx]
     operand_text = host_op.to_text()
 
-    # Verify this immN appears in a *immN (scale) context, not as a
-    # standalone displacement.
-    imm_str = f"imm{imm_id}"
-    scale_pattern = re.compile(rf"\*{re.escape(imm_str)}\b")
-    if not scale_pattern.search(operand_text):
+    # Verify that the character immediately before the match span is "*",
+    # confirming this occurrence is a scale factor, not a displacement.
+    start, _end = span
+    if start == 0 or operand_text[start - 1] != "*":
         return None
 
     # Find guest lsl #immN operands.
@@ -308,3 +303,17 @@ def _derive_index_scale(
                         return f"(1 << imm{candidate_id})"
 
     return None
+
+
+# ── Strategy registry ──────────────────────────────────────────────────
+
+# Strategies registered per (guest_arch, host_arch) pair.
+# The derivation framework is ISA-agnostic; each ISA pair contributes
+# its own strategies that understand the relevant instruction patterns.
+_STRATEGIES: dict[tuple[str, str], list[DerivationStrategy]] = {
+    ("aarch64", "x86-64"): [
+        _derive_tbz_mask,
+        _derive_movk_constant,
+        _derive_index_scale,
+    ],
+}

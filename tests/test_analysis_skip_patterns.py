@@ -81,7 +81,7 @@ def _pair(
 def test_aggregator_records_unparsed_instruction_pattern() -> None:
     aggregator = SkipPatternAggregator(max_examples=2)
     pair = _pair(
-        (_inst("aarch64", "ldp", "x0, x1, [x2]"),),
+        (_inst("aarch64", "ldr", "q0, [x8]"),),
         (_inst("x86-64", "mov", "rax, qword ptr [rcx]"),),
     )
 
@@ -90,10 +90,10 @@ def test_aggregator_records_unparsed_instruction_pattern() -> None:
 
     detail = payload["details"]["unparsed_memory_access"]
     assert detail["total"] == 1
-    assert detail["by_arch_mnemonic"]["aarch64:ldp"] == 1
+    assert detail["by_arch_mnemonic"]["aarch64:ldr"] == 1
     assert detail["top_instruction_patterns"][0]["count"] >= 1
     assert detail["top_instruction_patterns"][0]["arch"] == "aarch64"
-    assert detail["top_instruction_patterns"][0]["mnemonic"] == "ldp"
+    assert detail["top_instruction_patterns"][0]["mnemonic"] == "ldr"
     assert detail["top_instruction_patterns"][0]["examples"][0]["function"] == "sample"
 
 
@@ -130,7 +130,7 @@ def test_analyzer_reports_selected_skip_details_from_regions(tmp_path: Path) -> 
         source_file="sample.c",
         source_lines=(7,),
         guest_instructions=(
-            _inst("aarch64", "ldp", "x0, x1, [x2]", address=0x1000),
+            _inst("aarch64", "ldr", "q0, [x8]", address=0x1000),
             _inst("aarch64", "str", "w0, [sp, #12]", address=0x1004),
         ),
         host_instructions=(_inst("x86-64", "mov", "eax, edi", address=0x2000),),
@@ -217,7 +217,7 @@ def test_unparsed_only_counts_truly_unparseable_instructions() -> None:
     """Supported instructions like 'mov eax, dword ptr [rcx]' must not
     appear in unparsed_memory_access patterns."""
     pair = _pair(
-        (_inst("aarch64", "ldp", "x0, x1, [x2]"),),
+        (_inst("aarch64", "ldr", "q0, [x8]"),),
         (_inst("x86-64", "mov", "eax, dword ptr [rcx]"),),
     )
 
@@ -229,7 +229,7 @@ def test_unparsed_only_counts_truly_unparseable_instructions() -> None:
     assert detail["total"] == 1
 
     am = detail["by_arch_mnemonic"]
-    assert "aarch64:ldp" in am
+    assert "aarch64:ldr" in am
     assert "x86-64:mov" not in am, (
         f"supported x86-64 mov must not appear in unparsed patterns, got {am}"
     )

@@ -37,7 +37,7 @@ _AARCH64_MEM_RE = re.compile(
 
 _AARCH64_PAIR_PRE_OR_OFFSET_RE = re.compile(
     r"^(?P<rt1>[a-z0-9]+)\s*,\s*(?P<rt2>[a-z0-9]+)\s*,\s*"
-    r"(?P<mem>\[(?P<base>[a-z0-9]+)\s*,\s*#(?P<offset>-?(?:0x[0-9a-fA-F]+|\d+))\])(?P<writeback>!)?$",
+    r"(?P<mem>\[(?P<base>[a-z0-9]+)(?:\s*,\s*#(?P<offset>-?(?:0x[0-9a-fA-F]+|\d+)))?\])(?P<writeback>!)?$",
     re.IGNORECASE,
 )
 
@@ -142,19 +142,24 @@ def _extract_aarch64_pair(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ..
     operands.
     """
     is_store = mnemonic.startswith("st")
+    is_nontemporal = mnemonic in {"stnp", "ldnp"}
 
     # Try pre-index / offset form first: stp rt1, rt2, [base, #simm][!]
     match = _AARCH64_PAIR_PRE_OR_OFFSET_RE.match(op_str)
     if match is not None:
+        has_writeback = bool(match.group("writeback"))
+        if is_nontemporal and has_writeback:
+            return ()  # ldnp/stnp do not support writeback
         rt1 = match.group("rt1").lower()
         rt2 = match.group("rt2").lower()
         base = match.group("base").lower()
-        offset = _parse_displacement(match.group("offset"), "+")
+        offset_str = match.group("offset")
+        offset = _parse_displacement(offset_str, "+") if offset_str else 0
         width = _aarch64_register_width(rt1)
         if width is None:
             return ()
         kind: MemoryKind = "write" if is_store else "read"
-        text1 = f"[{base}, #{offset}]"
+        text1 = f"[{base}, #{offset}]" if offset_str else f"[{base}]"
         text2 = f"[{base}, #{offset + width}]"
         return (
             MemoryOperand(
@@ -176,6 +181,8 @@ def _extract_aarch64_pair(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ..
     # Try post-index form: ldp rt1, rt2, [base], #simm
     match = _AARCH64_PAIR_POST_RE.match(op_str)
     if match is not None:
+        if is_nontemporal:
+            return ()  # ldnp/stnp do not support post-index
         rt1 = match.group("rt1").lower()
         rt2 = match.group("rt2").lower()
         base = match.group("base").lower()
@@ -262,7 +269,7 @@ def _extract_x86_64_push_pop(mnemonic: str, op_str: str) -> tuple[MemoryOperand,
         match = _X86_PUSH_POP_REG_RE.match(op_str)
         if match is not None:
             reg = match.group("reg").lower()
-            width = _x86_reg_width(reg)
+            width = _x86_push_pop_width(reg)
             if width is None:
                 return ()
             return (
@@ -292,7 +299,7 @@ def _extract_x86_64_push_pop(mnemonic: str, op_str: str) -> tuple[MemoryOperand,
         match = _X86_PUSH_POP_REG_RE.match(op_str)
         if match is not None:
             reg = match.group("reg").lower()
-            width = _x86_reg_width(reg)
+            width = _x86_push_pop_width(reg)
             if width is None:
                 return ()
             return (
@@ -310,23 +317,34 @@ def _extract_x86_64_push_pop(mnemonic: str, op_str: str) -> tuple[MemoryOperand,
 def _x86_reg_width(register: str) -> int | None:
     """Return memory access width implied by an x86-64 register name."""
     reg = register.strip().lower()
-    if reg.startswith("r") and len(reg) >= 3:
+    if re.fullmatch(r"r(?:1[0-5]|[89]|[a-d]x|[sb]p|[sd]i)", reg):
         return 8
-    if reg.startswith("e"):
+    if re.fullmatch(r"e(?:[a-d]x|[sb]p|[sd]i)|r(?:1[0-5]|[89])d", reg):
         return 4
-    if reg.endswith("w"):
+    if re.fullmatch(r"(?:[a-d]x|[sb]p|[sd]i)|r(?:1[0-5]|[89])w", reg):
         return 2
-    if reg.endswith("b") or reg in {
-        "al",
-        "ah",
-        "bl",
-        "bh",
-        "cl",
-        "ch",
-        "dl",
-        "dh",
-    }:
+    if re.fullmatch(
+        r"(?:[a-d][lh])|(?:[a-d]x|[sb]p|[sd]i)l|r(?:1[0-5]|[89])b"
+        r"|al|ah|bl|bh|cl|ch|dl|dh",
+        reg,
+    ):
         return 1
+    return None
+
+
+def _x86_push_pop_width(register: str) -> int | None:
+    """Return memory access width for a push/pop register operand.
+
+    In 64-bit mode only 64-bit (default) and 16-bit (operand-size
+    override prefix) register pushes are valid.  Returns ``None`` for
+    32-bit and 8-bit register names, which are not encodable as
+    push/pop register operands in 64-bit mode.
+    """
+    reg = register.strip().lower()
+    if re.fullmatch(r"r(?:1[0-5]|[89]|[a-d]x|[sb]p|[sd]i)", reg):
+        return 8
+    if re.fullmatch(r"(?:[a-d]x|[bcd]x|si|di|bp|sp)|r(?:1[0-5]|[89])w", reg):
+        return 2
     return None
 
 

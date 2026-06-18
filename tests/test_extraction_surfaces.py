@@ -556,10 +556,10 @@ def test_surface_inferer_records_memory_skip_detail() -> None:
             _mem_inst(
                 "aarch64",
                 0x1000,
-                ("x2",),
-                ("x0", "x1"),
-                mnemonic="ldp",
-                op_str="x0, x1, [x2]",
+                ("x1",),
+                ("x0",),
+                mnemonic="ldr",
+                op_str="w0, [x1, w2, uxtw #2]",
             ),
         ),
         (

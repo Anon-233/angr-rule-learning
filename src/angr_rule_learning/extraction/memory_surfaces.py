@@ -11,7 +11,7 @@ from angr_rule_learning.extraction.memory_operands import (
     _X86_PUSH_IMM_RE,
     _X86_PUSH_POP_REG_RE,
     _parse_displacement,
-    _x86_reg_width,
+    _x86_push_pop_width,
     extract_memory_operands,
     has_any_memory_access,
 )
@@ -206,7 +206,7 @@ def _x86_sp_delta(mnemonic: str, op_str: str) -> int:
         match = _X86_PUSH_POP_REG_RE.search(op_str)
         if match:
             reg = match.group("reg").lower()
-            width = _x86_reg_width(reg)
+            width = _x86_push_pop_width(reg)
             return -(width or 8)
         match = _X86_PUSH_IMM_RE.search(op_str)
         if match:
@@ -216,7 +216,7 @@ def _x86_sp_delta(mnemonic: str, op_str: str) -> int:
         match = _X86_PUSH_POP_REG_RE.search(op_str)
         if match:
             reg = match.group("reg").lower()
-            width = _x86_reg_width(reg)
+            width = _x86_push_pop_width(reg)
             return width or 8
         return 0
     if mnemonic in {"add", "sub"}:
@@ -229,11 +229,14 @@ def _x86_sp_delta(mnemonic: str, op_str: str) -> int:
 
 def _aarch64_sp_delta(mnemonic: str, op_str: str) -> int:
     if mnemonic in {"stp", "stnp"}:
+        # ldnp/stnp do not support writeback (rejected at extraction).
         match = _AARCH64_PAIR_PRE_OR_OFFSET_RE.match(op_str)
         if match and match.group("writeback"):
-            return _parse_displacement(match.group("offset"), "+")
+            offset_str = match.group("offset")
+            return _parse_displacement(offset_str, "+") if offset_str else 0
         return 0
     if mnemonic in {"ldp", "ldnp"}:
+        # Non-temporal post-index is rejected at extraction.
         match = _AARCH64_PAIR_POST_RE.match(op_str)
         if match:
             return _parse_displacement(match.group("offset"), "+")

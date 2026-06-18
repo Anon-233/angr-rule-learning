@@ -338,22 +338,49 @@ def test_parses_push_imm_as_memory_write() -> None:
     assert operands[0].value_immediate == "0x18"
 
 
-def test_push_pop_width_from_register() -> None:
-    """push eax -> width 4 (32-bit register)"""
-    operands = extract_memory_operands(_inst("x86-64", "push", "eax"))
+def test_push_16bit_width() -> None:
+    """push r8w -> width 2 (16-bit operand-size override)"""
+    operands = extract_memory_operands(_inst("x86-64", "push", "r8w"))
     assert len(operands) == 1
-    assert operands[0].width == 4
-    assert operands[0].address.displacement == -4
-    assert operands[0].value_register == "eax"
+    assert operands[0].width == 2
+    assert operands[0].address.displacement == -2
+    assert operands[0].value_register == "r8w"
 
 
-def test_pop_32bit_width() -> None:
-    """pop edi -> width 4"""
-    operands = extract_memory_operands(_inst("x86-64", "pop", "edi"))
+def test_pop_16bit_width() -> None:
+    """pop r9w -> width 2"""
+    operands = extract_memory_operands(_inst("x86-64", "pop", "r9w"))
     assert len(operands) == 1
     assert operands[0].kind == "read"
-    assert operands[0].width == 4
-    assert operands[0].value_register == "edi"
+    assert operands[0].width == 2
+    assert operands[0].value_register == "r9w"
+
+
+def test_push_r8_64bit_register() -> None:
+    """push r8 -> width 8 (64-bit extended GPR)"""
+    operands = extract_memory_operands(_inst("x86-64", "push", "r8"))
+    assert len(operands) == 1
+    assert operands[0].width == 8
+    assert operands[0].value_register == "r8"
+
+
+def test_push_eax_rejected_in_64bit_mode() -> None:
+    """32-bit register pushes are not encodable in 64-bit mode."""
+    assert extract_memory_operands(_inst("x86-64", "push", "eax")) == ()
+
+
+def test_pop_edi_rejected_in_64bit_mode() -> None:
+    """32-bit register pops are not encodable in 64-bit mode."""
+    assert extract_memory_operands(_inst("x86-64", "pop", "edi")) == ()
+
+
+def test_push_r8d_rejected_in_64bit_mode() -> None:
+    assert extract_memory_operands(_inst("x86-64", "push", "r8d")) == ()
+
+
+def test_push_r8b_rejected_in_64bit_mode() -> None:
+    """8-bit register pushes are not encodable in 64-bit mode."""
+    assert extract_memory_operands(_inst("x86-64", "push", "r8b")) == ()
 
 
 # ── stp / ldp tests ─────────────────────────────────────────────────────
@@ -527,3 +554,79 @@ def test_adjust_for_sp_delta_zero_is_noop() -> None:
     )
     adjusted = _adjust_for_sp_delta(op, 0)
     assert adjusted is op  # unchanged
+
+
+# ── pair / stack zero-displacement tests ────────────────────────────────
+
+
+def test_parses_stp_zero_offset() -> None:
+    """stp with no explicit offset (encoding offset=0)."""
+    operands = extract_memory_operands(_inst("aarch64", "stp", "x0, x1, [sp]"))
+    assert len(operands) == 2
+    assert operands[0].address == AddressExpr(base="sp")
+    assert operands[1].address == AddressExpr(base="sp", displacement=8)
+
+
+def test_rejects_stnp_writeback() -> None:
+    """stnp does not support pre-index writeback."""
+    assert (
+        extract_memory_operands(_inst("aarch64", "stnp", "x0, x1, [sp, #0x10]!")) == ()
+    )
+
+
+def test_rejects_ldnp_writeback() -> None:
+    """ldnp does not support post-index."""
+    assert (
+        extract_memory_operands(_inst("aarch64", "ldnp", "x0, x1, [sp], #0x10")) == ()
+    )
+
+
+def test_ldnp_offset_form_is_parsed() -> None:
+    """ldnp offset form (no writeback) is valid."""
+    operands = extract_memory_operands(_inst("aarch64", "ldnp", "x0, x1, [x2, #0x20]"))
+    assert len(operands) == 2
+    assert operands[0].kind == "read"
+
+
+# ── multi-instruction SP delta tests ────────────────────────────────────
+
+
+def test_sp_delta_stp_writeback_adjusts_subsequent_str() -> None:
+    """After stp [sp, #-0x10]!, subsequent str [sp, #8] addresses are
+    adjusted to account for the -0x10 sp change."""
+    # str x0, [sp, #8] after sp was decremented by 0x10
+    op = MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="sp", displacement=8),
+        text="[sp, #8]",
+        value_register="x0",
+    )
+    adjusted = _adjust_for_sp_delta(op, -0x10)
+    assert adjusted.address.displacement == -8  # 8 + (-0x10)
+
+
+def test_sp_delta_ldp_post_index_adjusts_subsequent_ldr() -> None:
+    """After ldp [sp], #0x10, subsequent ldr [sp, #8] gets adjusted."""
+    op = MemoryOperand(
+        kind="read",
+        width=8,
+        address=AddressExpr(base="sp", displacement=8),
+        text="[sp, #8]",
+        value_register="x0",
+    )
+    adjusted = _adjust_for_sp_delta(op, 0x10)
+    assert adjusted.address.displacement == 0x18  # 8 + 0x10
+
+
+def test_double_push_sp_deltas_accumulate() -> None:
+    """push rbp; push r15: second push sees cumulative sp_delta of -8."""
+    op = MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="rsp", displacement=-8),
+        text="[rsp]",
+        value_register="r15",
+    )
+    adjusted = _adjust_for_sp_delta(op, -8)
+    assert adjusted.address.displacement == -16  # -8 + (-8)
