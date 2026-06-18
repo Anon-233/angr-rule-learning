@@ -446,3 +446,314 @@ def test_verifier_rejects_inconsistent_frame_relative_layout() -> None:
     report = SemanticVerifier().verify(candidate)
 
     assert report.status in {"fail", "unsupported"}
+
+
+# ── semantic-slot matching with real machine code ───────────────────────
+
+# stp x0, x1, [sp, #-0x10]!
+_STP_X0_X1_SP_PRE = "e007bfa9"
+# push rsi; push rdi
+_PUSH_RSI_RDI = "5657"
+# ldp x0, x1, [sp], #0x10
+_LDP_X0_X1_SP_POST = "e007c1a8"
+# pop rsi; pop rdi
+_POP_RSI_RDI = "5e5f"
+
+
+def test_stp_pre_index_push_push_passes_by_slot() -> None:
+    """stp x0,x1,[sp,#-0x10]! ↔ push rsi;push rdi.
+
+    After reorder by address: x0@sp-16↔rdi@rsp-16, x1@sp-8↔rsi@rsp-8."""
+    candidate = VerificationCandidate(
+        candidate_id="stp-push-slot",
+        guest=CodeFragment("aarch64", 0x10000, _STP_X0_X1_SP_PRE, 1),
+        host=CodeFragment("x86-64", 0x8048000, _PUSH_RSI_RDI, 2),
+        input_registers=(("x0", "rdi"), ("x1", "rsi")),
+        output_registers=(("sp", "rsp"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 8), MemorySlot("mem1", 8)),
+            bindings=(
+                MemoryBinding("mem0", "sp - 16", "rsp - 16", "write"),
+                MemoryBinding("mem1", "sp - 8", "rsp - 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 8),
+                MemoryAccessExpectation("mem1", "write", 8),
+            ),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass", (
+        f"unexpected status {report.status}: {report.checks}"
+    )
+
+
+def test_ldp_post_index_pop_pop_passes_by_slot() -> None:
+    """ldp x0,x1,[sp],#0x10 ↔ pop rsi;pop rdi.
+
+    After slot-based reorder: x0@sp↔rsi@rsp, x1@sp+8↔rdi@rsp+8."""
+    candidate = VerificationCandidate(
+        candidate_id="ldp-pop-slot",
+        guest=CodeFragment("aarch64", 0x10000, _LDP_X0_X1_SP_POST, 1),
+        host=CodeFragment("x86-64", 0x8048000, _POP_RSI_RDI, 2),
+        output_registers=(("x0", "rsi"), ("x1", "rdi"), ("sp", "rsp")),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 8), MemorySlot("mem1", 8)),
+            bindings=(
+                MemoryBinding("mem0", "sp", "rsp", "read"),
+                MemoryBinding("mem1", "sp + 8", "rsp + 8", "read"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "read", 8),
+                MemoryAccessExpectation("mem1", "read", 8),
+            ),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass", (
+        f"unexpected status {report.status}: {report.checks}"
+    )
+
+
+# ── multi-event memory slot fallback ───────────────────────────────────
+
+
+def test_multi_slot_stp_push_pass_has_full_coverage() -> None:
+    """The 2-slot stp->push test exercises ordered->slot fallback.
+    Verifies that all memory checks are present (no partial result)."""
+    candidate = VerificationCandidate(
+        candidate_id="multi-slot-full-coverage",
+        guest=CodeFragment("aarch64", 0x10000, _STP_X0_X1_SP_PRE, 1),
+        host=CodeFragment("x86-64", 0x8048000, _PUSH_RSI_RDI, 2),
+        input_registers=(("x0", "rdi"), ("x1", "rsi")),
+        output_registers=(("sp", "rsp"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 8), MemorySlot("mem1", 8)),
+            bindings=(
+                MemoryBinding("mem0", "sp - 16", "rsp - 16", "write"),
+                MemoryBinding("mem1", "sp - 8", "rsp - 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 8),
+                MemoryAccessExpectation("mem1", "write", 8),
+            ),
+        ),
+    )
+    report = SemanticVerifier().verify(candidate)
+    assert report.status == "pass"
+    mem_checks = [c for c in report.checks if c.kind == "memory"]
+    assert len(mem_checks) == 2
+    assert all(c.status == "pass" for c in mem_checks)
+
+
+class _MockState:
+    def __init__(self):
+        self.solver = self
+        self.constraints = ()
+
+    def eval(self, expr):
+        if hasattr(expr, "args") and len(expr.args) > 0:
+            return expr.args[0]
+        return 0
+
+
+def test_three_slot_swapped_passes_by_slot_match() -> None:
+    """Guest events: mem0, mem1, mem2 in order.
+    Host events:  mem0, mem2, mem1 (swapped).
+    Ordered: pair 0 matches, pair 1 addr mismatch → slot fallback → 3 pass."""
+    import claripy
+    from angr_rule_learning.verification.context import CheckContext
+    from angr_rule_learning.verification.memory import MemoryEvent, MemoryLayout
+    from angr_rule_learning.verification.memory_checks import check_memory_events
+
+    bases = {"mem0": 0x1000, "mem1": 0x2000, "mem2": 0x3000}
+    layout = MemoryLayout(bases)
+    state = _MockState()
+
+    cand = VerificationCandidate(
+        candidate_id="3slot-swap",
+        guest=CodeFragment("aarch64", 0x10000, "0000", 1),
+        host=CodeFragment("x86-64", 0x20000, "0000", 1),
+        memory=MemorySpec(
+            slots=(
+                MemorySlot("mem0", 8),
+                MemorySlot("mem1", 8),
+                MemorySlot("mem2", 8),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 8),
+                MemoryAccessExpectation("mem1", "write", 8),
+                MemoryAccessExpectation("mem2", "write", 8),
+            ),
+            bindings=(
+                MemoryBinding("mem0", "x0", "rcx", "write"),
+                MemoryBinding("mem1", "x1", "rdx", "write"),
+                MemoryBinding("mem2", "x2", "r8", "write"),
+            ),
+        ),
+    )
+    ctx = CheckContext(
+        candidate=cand,
+        guest_state=state,
+        host_state=state,
+        symbols={},
+        memory_layout=layout,
+        memory_events=(
+            # Guest: mem0, mem1, mem2 in order.
+            MemoryEvent(
+                "guest",
+                "write",
+                claripy.BVV(0x1000, 64),
+                claripy.BVV(1, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "guest",
+                "write",
+                claripy.BVV(0x2000, 64),
+                claripy.BVV(2, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "guest",
+                "write",
+                claripy.BVV(0x3000, 64),
+                claripy.BVV(3, 64),
+                8,
+                "Iend_LE",
+            ),
+            # Host: mem0, mem2, mem1 — swapped.
+            MemoryEvent(
+                "host",
+                "write",
+                claripy.BVV(0x1000, 64),
+                claripy.BVV(1, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "host",
+                "write",
+                claripy.BVV(0x3000, 64),
+                claripy.BVV(3, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "host",
+                "write",
+                claripy.BVV(0x2000, 64),
+                claripy.BVV(2, 64),
+                8,
+                "Iend_LE",
+            ),
+        ),
+    )
+    checks = check_memory_events(ctx)
+    mem_checks = [c for c in checks if c.kind == "memory"]
+    assert len(mem_checks) == 3
+    assert all(c.status == "pass" for c in mem_checks)
+
+
+def test_three_slot_swapped_value_mismatch_fails() -> None:
+    """Same setup but host mem1 value changed.  Slot match re-pairs
+    correctly but value check on the mismatched slot must fail."""
+    import claripy
+    from angr_rule_learning.verification.context import CheckContext
+    from angr_rule_learning.verification.memory import MemoryEvent, MemoryLayout
+    from angr_rule_learning.verification.memory_checks import check_memory_events
+
+    bases = {"mem0": 0x1000, "mem1": 0x2000, "mem2": 0x3000}
+    layout = MemoryLayout(bases)
+    state = _MockState()
+
+    cand = VerificationCandidate(
+        candidate_id="3slot-vmismatch",
+        guest=CodeFragment("aarch64", 0x10000, "0000", 1),
+        host=CodeFragment("x86-64", 0x20000, "0000", 1),
+        memory=MemorySpec(
+            slots=(
+                MemorySlot("mem0", 8),
+                MemorySlot("mem1", 8),
+                MemorySlot("mem2", 8),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 8),
+                MemoryAccessExpectation("mem1", "write", 8),
+                MemoryAccessExpectation("mem2", "write", 8),
+            ),
+            bindings=(
+                MemoryBinding("mem0", "x0", "rcx", "write"),
+                MemoryBinding("mem1", "x1", "rdx", "write"),
+                MemoryBinding("mem2", "x2", "r8", "write"),
+            ),
+        ),
+    )
+    ctx = CheckContext(
+        candidate=cand,
+        guest_state=state,
+        host_state=state,
+        symbols={},
+        memory_layout=layout,
+        memory_events=(
+            MemoryEvent(
+                "guest",
+                "write",
+                claripy.BVV(0x1000, 64),
+                claripy.BVV(1, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "guest",
+                "write",
+                claripy.BVV(0x2000, 64),
+                claripy.BVV(2, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "guest",
+                "write",
+                claripy.BVV(0x3000, 64),
+                claripy.BVV(3, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "host",
+                "write",
+                claripy.BVV(0x1000, 64),
+                claripy.BVV(1, 64),
+                8,
+                "Iend_LE",
+            ),
+            MemoryEvent(
+                "host",
+                "write",
+                claripy.BVV(0x3000, 64),
+                claripy.BVV(3, 64),
+                8,
+                "Iend_LE",
+            ),
+            # Host mem1 has wrong value (999 instead of 2).
+            MemoryEvent(
+                "host",
+                "write",
+                claripy.BVV(0x2000, 64),
+                claripy.BVV(999, 64),
+                8,
+                "Iend_LE",
+            ),
+        ),
+    )
+    checks = check_memory_events(ctx)
+    assert any(
+        c.reason == "memory_write_value_mismatch" and c.status == "fail" for c in checks
+    )

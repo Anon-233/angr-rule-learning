@@ -225,9 +225,15 @@ class RuleGeneralizer:
             mapping, role_split = _build_placeholder_map(
                 candidate, guest_arch, host_arch
             )
-            _require_fixed_role_producers(window, candidate)
+            fixed_producers, fixed_sources = _require_fixed_role_producers(
+                window, candidate
+            )
             internal_temps = _identify_internal_temps(window, candidate)
             mapping.update(internal_temps)
+            # Fixed-role producer targets must retain their register-family
+            # identity (e.g. ecx→cl); override any temp placeholders.
+            for reg in fixed_producers:
+                mapping[reg] = reg
             guest_insts = _instructions_to_ast(window.guest.instructions)
             host_insts = _instructions_to_ast(window.host.instructions)
             guest_insts = _generalize_instructions_with_roles(
@@ -236,6 +242,7 @@ class RuleGeneralizer:
                 mapping,
                 role_split,
                 guest_arch,
+                allowed_literals=fixed_producers,
             )
             host_insts = _generalize_instructions_with_roles(
                 host_insts,
@@ -243,7 +250,10 @@ class RuleGeneralizer:
                 mapping,
                 role_split,
                 host_arch,
+                allowed_literals=fixed_producers,
             )
+            # Verify each provenance source placeholder appears in Host AST.
+            _verify_fixed_role_sources_in_host(host_insts, fixed_sources, mapping)
             # Annotate dead writes via MetaOp on AST, then apply label/immediate
             # replacement directly on AST.
             guest_insts, host_insts = _annotate_dead_writes(
@@ -340,33 +350,268 @@ def _memory_binding_register_pairs(
     return tuple(pairs)
 
 
+def _x86_reg_bit_range(reg: str) -> tuple[int, int] | None:
+    """Return ``(low_bit, high_bit)`` for an x86-64 register, or ``None``."""
+    reg = normalize_register_name(reg)
+    mapping: dict[str, tuple[int, int]] = {
+        # 64-bit
+        "rax": (0, 63),
+        "rbx": (0, 63),
+        "rcx": (0, 63),
+        "rdx": (0, 63),
+        "rsi": (0, 63),
+        "rdi": (0, 63),
+        "rbp": (0, 63),
+        "rsp": (0, 63),
+        "r8": (0, 63),
+        "r9": (0, 63),
+        "r10": (0, 63),
+        "r11": (0, 63),
+        "r12": (0, 63),
+        "r13": (0, 63),
+        "r14": (0, 63),
+        "r15": (0, 63),
+        # 32-bit
+        "eax": (0, 31),
+        "ebx": (0, 31),
+        "ecx": (0, 31),
+        "edx": (0, 31),
+        "esi": (0, 31),
+        "edi": (0, 31),
+        "ebp": (0, 31),
+        "esp": (0, 31),
+        "r8d": (0, 31),
+        "r9d": (0, 31),
+        "r10d": (0, 31),
+        "r11d": (0, 31),
+        "r12d": (0, 31),
+        "r13d": (0, 31),
+        "r14d": (0, 31),
+        "r15d": (0, 31),
+        # 16-bit
+        "ax": (0, 15),
+        "bx": (0, 15),
+        "cx": (0, 15),
+        "dx": (0, 15),
+        "si": (0, 15),
+        "di": (0, 15),
+        "bp": (0, 15),
+        "sp": (0, 15),
+        "r8w": (0, 15),
+        "r9w": (0, 15),
+        "r10w": (0, 15),
+        "r11w": (0, 15),
+        "r12w": (0, 15),
+        "r13w": (0, 15),
+        "r14w": (0, 15),
+        "r15w": (0, 15),
+        # 8-bit low
+        "al": (0, 7),
+        "bl": (0, 7),
+        "cl": (0, 7),
+        "dl": (0, 7),
+        "spl": (0, 7),
+        "bpl": (0, 7),
+        "sil": (0, 7),
+        "dil": (0, 7),
+        "r8b": (0, 7),
+        "r9b": (0, 7),
+        "r10b": (0, 7),
+        "r11b": (0, 7),
+        "r12b": (0, 7),
+        "r13b": (0, 7),
+        "r14b": (0, 7),
+        "r15b": (0, 7),
+        # 8-bit high (only on classic registers)
+        "ah": (8, 15),
+        "bh": (8, 15),
+        "ch": (8, 15),
+        "dh": (8, 15),
+    }
+    return mapping.get(reg)
+
+
+def _writer_covers_consumer(writer: str, consumer: str) -> bool:
+    """Return True if *writer* covers *consumer*: same register family AND
+    the writer's bit range fully contains the consumer's bit range."""
+    w_range = _x86_reg_bit_range(writer)
+    c_range = _x86_reg_bit_range(consumer)
+    if w_range is None or c_range is None:
+        return False
+    if family_for_register("x86-64", writer) != family_for_register("x86-64", consumer):
+        return False
+    return w_range[0] <= c_range[0] and w_range[1] >= c_range[1]
+
+
+def _fixed_family_for_arch(arch: str) -> str | None:
+    """Return the canonical family name for fixed-role registers on *arch*,
+    or ``None`` if the architecture defines no fixed-role registers."""
+    if normalize_arch_name(arch) == "x86-64":
+        return "rcx"
+    return None
+
+
+def _save_restore_form(arch: str, reg: str) -> str:
+    """Normalise a fixed-role-family register to its widest form for
+    save/restore annotations.  ``ecx``/``cx``/``cl`` → ``rcx``."""
+    reg_n = normalize_register_name(reg)
+    fixed_family = _fixed_family_for_arch(arch)
+    if fixed_family is not None and family_for_register(
+        arch, reg_n
+    ) == family_for_register(arch, fixed_family):
+        # Return the 64-bit family head.
+        return fixed_family
+    return reg_n
+
+
+def _collect_fixed_role_sources(
+    reg: str,
+    before_idx: int,
+    window: WindowPair,
+    host_arch: str,
+    host_inputs: frozenset[str],
+    *,
+    visited: frozenset[tuple[str, int]] = frozenset(),
+) -> frozenset[str]:
+    """Return the set of external input registers that feed into *reg*
+    at instruction index *before_idx*.
+
+    Each element of the returned set is a register name that appears in
+    *host_inputs*.  Raises ``_RuleSkip("unbound_fixed_role_register")``
+    if any dependency cannot be resolved to a mapped input.
+    """
+    reg_n = normalize_register_name(reg)
+    reg_family = family_for_register(host_arch, reg_n)
+    state = (reg_n, before_idx)
+    if state in visited:
+        raise _RuleSkip("unbound_fixed_role_register")
+    visited = visited | {state}
+
+    # Search backward for the nearest covering writer FIRST.
+    for prev_idx in range(before_idx - 1, -1, -1):
+        prev_inst = window.host.instructions[prev_idx]
+        for w in prev_inst.write_registers:
+            w_n = normalize_register_name(w)
+            if not _writer_covers_consumer(w_n, reg_n):
+                continue
+            # Found a writer.  Resolve ALL of its read dependencies.
+            all_sources: set[str] = set()
+            for src in prev_inst.read_registers:
+                src_n = normalize_register_name(src)
+                sources = _collect_fixed_role_sources(
+                    src_n,
+                    prev_idx,
+                    window,
+                    host_arch,
+                    host_inputs,
+                    visited=visited,
+                )
+                all_sources.update(sources)
+            if all_sources:
+                return frozenset(all_sources)
+            raise _RuleSkip("unbound_fixed_role_register")
+
+    # No backward writer found.  Only at this point can an external
+    # input serve as a provenance source, and only if it is NOT in
+    # a fixed-role register family.
+    in_fixed_family = is_fixed_role_register(host_arch, reg_n) or (
+        _fixed_family_for_arch(host_arch) is not None
+        and reg_family == _fixed_family_for_arch(host_arch)
+    )
+    if reg_n in host_inputs and not in_fixed_family:
+        return frozenset({reg_n})
+
+    raise _RuleSkip("unbound_fixed_role_register")
+
+
 def _require_fixed_role_producers(
     window: WindowPair,
     candidate: VerificationCandidate,
-) -> None:
-    """Verify every fixed-role host input register has a visible producer
-    in the Host window.
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Verify fixed-role provenance and return ``(producers, sources)``.
 
-    Fixed-role registers (e.g. ``cl`` for shift counts) are emitted as
-    literals in the rule output.  Without a host-side instruction that
-    writes to the register family the Guest→Host binding is invisible
-    in the emitted rule text and the translation is ambiguous.
+    *producers* are register names to keep as literals.
+    *sources* are external input registers whose placeholders must
+    appear in the emitted Host rule.
     """
     host_arch = candidate.host.arch
-    for _guest_reg, host_reg in candidate.input_registers:
-        if not is_fixed_role_register(host_arch, host_reg):
-            continue
-        host_family = family_for_register(host_arch, host_reg)
-        has_producer = False
-        for inst in window.host.instructions:
-            for w in inst.write_registers:
-                if family_for_register(host_arch, w) == host_family:
-                    has_producer = True
+    host_inputs = frozenset(
+        normalize_register_name(hr) for _gr, hr in candidate.input_registers
+    )
+    producers: set[str] = set()
+    all_sources: set[str] = set()
+
+    for inst_idx, inst in enumerate(window.host.instructions):
+        for read_reg in inst.read_registers:
+            read_n = normalize_register_name(read_reg)
+            if not is_fixed_role_register(host_arch, read_n):
+                continue
+
+            # Find backward reaching definition.
+            has_producer = False
+            for prev_idx in range(inst_idx - 1, -1, -1):
+                prev_inst = window.host.instructions[prev_idx]
+                for w in prev_inst.write_registers:
+                    w_n = normalize_register_name(w)
+                    if _writer_covers_consumer(w_n, read_n):
+                        has_producer = True
+                        producers.add(w_n)
+                        # Collect ALL external sources.
+                        deps = _collect_fixed_role_sources(
+                            w_n,
+                            prev_idx + 1,
+                            window,
+                            host_arch,
+                            host_inputs,
+                        )
+                        all_sources.update(deps)
+                        break
+                if has_producer:
                     break
-            if has_producer:
-                break
-        if not has_producer:
-            raise _RuleSkip("unpaired_host_immediate")
+
+            if not has_producer:
+                raise _RuleSkip("unbound_fixed_role_register")
+
+    return frozenset(producers), frozenset(all_sources)
+
+
+def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
+    """Return the set of placeholder strings appearing in *insts*, collected
+    from typed operands and tokenised compound operand text."""
+    from angr_rule_learning.rules.ast import LitOp, RegOp, RegTextOp, TmpOp
+
+    result: set[str] = set()
+    for inst in insts:
+        for op in inst.operands:
+            if isinstance(op, (RegOp, TmpOp)):
+                result.add(op.to_text())
+            elif isinstance(op, (LitOp, RegTextOp)):
+                text = op.to_text()
+                for token in _TOKEN_RE.findall(text):
+                    if _PARAMETERIZED_TOKEN_RE.match(token):
+                        result.add(token)
+    return frozenset(result)
+
+
+def _verify_fixed_role_sources_in_host(
+    host_insts: tuple[Instruction, ...],
+    sources: frozenset[str],
+    mapping: dict[str, str],
+) -> None:
+    """Verify that every provenance source's placeholder appears in the
+    Host AST using exact token matching.  Missing mapping or placeholder
+    causes rejection."""
+    source_placeholders: set[str] = set()
+    for s in sources:
+        ph = mapping.get(normalize_register_name(s))
+        if ph is None:
+            raise _RuleSkip("unbound_fixed_role_register")
+        source_placeholders.add(ph)
+
+    host_tokens = _collect_ast_placeholders(host_insts)
+    for ph in source_placeholders:
+        if ph not in host_tokens:
+            raise _RuleSkip("unbound_fixed_role_register")
 
 
 def _build_placeholder_map(
@@ -1047,7 +1292,7 @@ def _annotate_dead_writes(
         return first_write, last_access
 
     def _text_to_regop(placeholder: str) -> Operand:
-        from angr_rule_learning.rules.ast import RegOp, TmpOp
+        from angr_rule_learning.rules.ast import LitOp, RegOp, TmpOp
 
         m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
         if m:
@@ -1061,6 +1306,19 @@ def _annotate_dead_writes(
             prefix = m.group(1)
             bits = int(prefix[1:])
             return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
+        # Fixed-role producer targets (validated by
+        # _require_fixed_role_producers) are kept as literal register
+        # names.  For save/restore, normalise to the widest family
+        # register so that save rcx / restore rcx preserves the full
+        # register even when the instruction writes a sub-register.
+        # Only accept names that are known register tokens on some arch.
+        if re.fullmatch(r"[a-z][a-z0-9]+", placeholder, re.IGNORECASE):
+            if any(
+                placeholder in known_register_tokens(arch)
+                for arch in ("aarch64", "x86-64")
+            ):
+                normalized = _save_restore_form(host_arch, placeholder)
+                return LitOp(value=normalized)
         raise ValueError(f"unknown placeholder format: {placeholder!r}")
 
     def _apply(
@@ -1130,6 +1388,8 @@ def _generalize_instructions_with_roles(
     mapping: dict[str, str],
     role_split: dict[str, tuple[str, str]],
     arch: str,
+    *,
+    allowed_literals: frozenset[str] = frozenset(),
 ) -> tuple[Instruction, ...]:
     """Replace physical register operands in AST instructions with typed placeholders.
 
@@ -1238,7 +1498,9 @@ def _generalize_instructions_with_roles(
         )
 
     # Step 3: Validate.
-    _validate_no_remaining_registers(tuple(result), arch)
+    _validate_no_remaining_registers(
+        tuple(result), arch, allowed_literals=allowed_literals
+    )
 
     return tuple(result)
 
@@ -1253,6 +1515,8 @@ _TOKEN_RE = re.compile(r"\[|\]|0x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[-+*
 def _validate_no_remaining_registers(
     insts: tuple[Instruction, ...],
     arch: str,
+    *,
+    allowed_literals: frozenset[str] = frozenset(),
 ) -> None:
     from angr_rule_learning.rules.ast import LitOp, RegTextOp
 
@@ -1281,6 +1545,10 @@ def _validate_no_remaining_registers(
                     # are emitted as literals and should not trigger
                     # unmapped-register errors.
                     if is_fixed_role_register(arch, token_n):
+                        continue
+                    # Fixed-role producer targets (e.g. ecx that feeds cl)
+                    # are kept as literals to preserve register-family identity.
+                    if token_n in allowed_literals:
                         continue
                     # Skip bare numeric tokens (decimal or hex).
                     try:

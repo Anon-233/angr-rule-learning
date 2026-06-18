@@ -198,6 +198,14 @@ with `save`/`restore` — they are introduced specifically to hold transient
 values and their lifespan is implicitly bounded by the side that defines
 them.
 
+**Fixed-role register save/restore normalization.**  When a fixed-role
+consumer (e.g. cl for shift counts) has a producer that writes a
+sub-register (ecx, cx), the save/restore annotations
+use the widest family register (rcx) to preserve the full physical
+register.  The instruction text retains the original sub-register name
+(e.g. mov ecx, i32_reg2; shl i32_reg1, cl with save rcx /
+restore rcx annotations).
+
 ## Semantic Contract
 
 A rule describes an equivalence: if the guest and host share the same

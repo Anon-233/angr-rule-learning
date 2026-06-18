@@ -505,3 +505,104 @@ def test_infers_sign_extension_load_surface() -> None:
     assert surface.spec.accesses[0].kind == "read"
     assert surface.spec.accesses[0].width == 4
     assert surface.input_registers == (("x1", "rcx"), ("x2", "rdx"))
+
+
+# ── stack reordering tests ──────────────────────────────────────────────
+
+
+def test_stp_pre_index_matches_push_push_by_address() -> None:
+    """stp x0, x1, [sp, #-0x10]! (2 writes: x0@sp-16, x1@sp-8)
+    should pair with push rsi; push rdi by address order:
+    x0@-16 ↔ rdi@-16, x1@-8 ↔ rsi@-8."""
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "stp", "x0, x1, [sp, #-0x10]!"),),
+            (
+                _inst("x86-64", 0x2000, "push", "rsi"),
+                _inst("x86-64", 0x2001, "push", "rdi"),
+            ),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert len(surface.spec.slots) == 2
+    assert surface.spec.accesses[0].kind == "write"
+    # After reordering by address: guest[0](sp-16) ↔ host[1](rsp-16=rdi)
+    assert surface.input_registers == (("x0", "rdi"), ("x1", "rsi"))
+
+
+def test_ldp_post_index_matches_pop_pop_by_address() -> None:
+    """ldp x0, x1, [sp], #0x10 (2 reads: x0@sp, x1@sp+8)
+    should pair with pop rsi; pop rdi by effective address:
+    x0@sp ↔ rdi@rsp, x1@sp+8 ↔ rsi@rsp+8."""
+    surface = infer_memory_surface(
+        _pair(
+            (_inst("aarch64", 0x1000, "ldp", "x0, x1, [sp], #0x10"),),
+            (
+                _inst("x86-64", 0x2000, "pop", "rsi"),
+                _inst("x86-64", 0x2001, "pop", "rdi"),
+            ),
+        )
+    )
+
+    assert surface.skip_reason is None
+    assert len(surface.spec.slots) == 2
+    assert surface.spec.accesses[0].kind == "read"
+    # Bindings: after reorder by address, slot0=guest[0]↔host[1], slot1=guest[1]↔host[0]
+    assert surface.spec.bindings[0].guest_addr == "sp"
+    assert surface.spec.bindings[1].guest_addr == "sp + 8"
+    assert surface.spec.bindings[0].host_addr == "rsp"
+    assert surface.spec.bindings[1].host_addr == "rsp + 8"
+
+
+def test_overlapping_stack_operands_return_unsupported() -> None:
+    """Overlapping address ranges on the same side cannot be safely reordered."""
+    # Non-overlapping: x0@sp-16 (8 bytes: -16..-9) and x1@sp-8 (8 bytes: -8..-1)
+    surface = infer_memory_surface(
+        _pair(
+            (
+                _inst("aarch64", 0x1000, "str", "x0, [sp, #-16]"),
+                _inst("aarch64", 0x1004, "str", "x1, [sp, #-8]"),
+            ),
+            (
+                _inst("x86-64", 0x2000, "push", "rsi"),
+                _inst("x86-64", 0x2001, "push", "rdi"),
+            ),
+        )
+    )
+    assert surface.skip_reason is None
+
+    # Overlapping: 4-byte writes at sp+4 (bytes 4-7) and sp+6 (bytes 6-9)
+    surface2 = infer_memory_surface(
+        _pair(
+            (
+                _inst("aarch64", 0x1000, "str", "w0, [sp, #4]"),
+                _inst("aarch64", 0x1004, "str", "w1, [sp, #6]"),
+            ),
+            (
+                _inst("x86-64", 0x2000, "mov", "dword ptr [rsp - 4], esi"),
+                _inst("x86-64", 0x2005, "mov", "dword ptr [rsp - 2], edi"),
+            ),
+        )
+    )
+    assert surface2.skip_reason == "unsupported_memory_surface"
+    assert surface2.skip_detail == "memory_address_order_conflict"
+
+
+def test_original_order_preserved_for_non_stack_bases() -> None:
+    """Operands with non-stack base registers keep original order."""
+    surface = infer_memory_surface(
+        _pair(
+            (
+                _inst("aarch64", 0x1000, "ldr", "w0, [x1]"),
+                _inst("aarch64", 0x1004, "ldr", "w1, [x2]"),
+            ),
+            (
+                _inst("x86-64", 0x2000, "mov", "eax, dword ptr [rcx]"),
+                _inst("x86-64", 0x2003, "mov", "ebx, dword ptr [rdx]"),
+            ),
+        )
+    )
+    assert surface.skip_reason is None
+    # Order preserved: guest[0]↔host[0], guest[1]↔host[1]
+    assert surface.input_registers == (("x1", "rcx"), ("x2", "rdx"))
