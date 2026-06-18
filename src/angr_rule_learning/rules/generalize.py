@@ -277,16 +277,16 @@ class RuleGeneralizer:
             self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
             return None
 
-        # AST structural dedup
+        # AST alpha-equivalence dedup
         from angr_rule_learning.rules.ast import (
             Rule as AstRule,
-            _insts_equal,
+            instruction_sequences_alpha_equal,
         )
 
         for existing_guest, existing_host in self._emitted_keys:
-            if _insts_equal(existing_guest, guest_insts) and _insts_equal(
-                existing_host, host_insts
-            ):
+            if instruction_sequences_alpha_equal(
+                existing_guest, guest_insts
+            ) and instruction_sequences_alpha_equal(existing_host, host_insts):
                 self._record_skip(
                     candidate,
                     "duplicate_rule",
@@ -953,8 +953,8 @@ def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
 
     from angr_rule_learning.rules.ast import (
         collect_imm_ids,
+        rule_alpha_equal,
         substitute_imm,
-        structurally_equal,
     )
 
     subsumed_ids: set[int] = set()
@@ -968,7 +968,7 @@ def consolidate_rules(rules: list[GeneratedRule]) -> list[GeneratedRule]:
             for imm_id in b_imms:
                 for literal_val in sorted(_RESERVED_LITERALS, key=len, reverse=True):
                     subbed = substitute_imm(rule_b.rule, imm_id, literal_val)
-                    if structurally_equal(subbed, rule_a.rule):
+                    if rule_alpha_equal(subbed, rule_a.rule):
                         subsumed_ids.add(rule_a.rule_id)
                         break
                 if rule_a.rule_id in subsumed_ids:

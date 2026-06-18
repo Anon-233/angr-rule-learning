@@ -825,3 +825,168 @@ def test_insts_equal_compares_post_meta() -> None:
     c = (Instruction("mov", (RegOp("i32", 32, 1), LitOp("0"))),)
     assert _insts_equal(a, b)
     assert not _insts_equal(a, c)
+
+
+# ── Alpha-equivalence tests ─────────────────────────────────────────────
+
+
+def test_alpha_equal_same_structure_different_numbering():
+    """Two rules with consistent renumbering must compare equal."""
+    from angr_rule_learning.rules.ast import Rule, rule_alpha_equal
+
+    a = Rule(
+        1,
+        "a",
+        guest=(
+            Instruction(
+                "add",
+                (RegOp("i32", 32, 1), RegOp("i32", 32, 2), RegOp("i32", 32, 3)),
+            ),
+        ),
+        host=(
+            Instruction(
+                "lea",
+                (RegOp("i32", 32, 1), LitOp("[i32_reg2 + i32_reg3]")),
+            ),
+        ),
+    )
+    b = Rule(
+        2,
+        "b",
+        guest=(
+            Instruction(
+                "add",
+                (RegOp("i32", 32, 10), RegOp("i32", 32, 20), RegOp("i32", 32, 30)),
+            ),
+        ),
+        host=(
+            Instruction(
+                "lea",
+                (RegOp("i32", 32, 10), LitOp("[i32_reg20 + i32_reg30]")),
+            ),
+        ),
+    )
+    assert rule_alpha_equal(a, b)
+
+
+def test_alpha_not_equal_different_alias_structure():
+    """add reg1, reg1, reg2 vs add reg1, reg2, reg1 must NOT compare equal."""
+    from angr_rule_learning.rules.ast import (
+        instruction_sequences_alpha_equal,
+    )
+
+    a_insts = (
+        Instruction(
+            "add",
+            (RegOp("i32", 32, 1), RegOp("i32", 32, 1), RegOp("i32", 32, 2)),
+        ),
+    )
+    b_insts = (
+        Instruction(
+            "add",
+            (RegOp("i32", 32, 1), RegOp("i32", 32, 2), RegOp("i32", 32, 1)),
+        ),
+    )
+    assert not instruction_sequences_alpha_equal(a_insts, b_insts)
+
+
+def test_alpha_not_equal_different_immediate_binding():
+    """Guest has imm1, host has imm2 not derivable from guest -- structures differ."""
+    from angr_rule_learning.rules.ast import Rule, rule_alpha_equal
+
+    a = Rule(
+        1,
+        "a",
+        guest=(Instruction("add", (RegOp("i32", 32, 1), ImmOp(id=1))),),
+        host=(Instruction("add", (RegOp("i32", 32, 1), ImmOp(id=1))),),
+    )
+    b = Rule(
+        2,
+        "b",
+        guest=(Instruction("add", (RegOp("i32", 32, 1), ImmOp(id=1))),),
+        host=(Instruction("add", (RegOp("i32", 32, 1), ImmOp(id=2))),),
+    )
+    assert not rule_alpha_equal(a, b)
+
+
+def test_dedup_keeps_both_add_variants():
+    r"""add reg1, reg1, reg2 and add reg1, reg2, reg1 must both be emitted."""
+    # Variant 1: add w8, w8, w0  -->  add i32_reg1, i32_reg1, i32_reg2
+    add_v1 = _inst(
+        "aarch64",
+        0x1000,
+        "add",
+        "w8, w8, w0",
+        write_registers=("w8",),
+        read_registers=("w8", "w0"),
+    )
+    pair1 = _window_pair(
+        (add_v1,),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "lea",
+                "eax, [eax + edi]",
+                write_registers=("eax",),
+                read_registers=("eax", "edi"),
+            ),
+        ),
+    )
+    candidate1 = _candidate(
+        inputs=(("w8", "eax"), ("w0", "edi")),
+        outputs=(("w8", "eax"),),
+    )
+
+    # Variant 2: add w8, w0, w8  -->  add i32_reg1, i32_reg2, i32_reg1
+    add_v2 = _inst(
+        "aarch64",
+        0x1000,
+        "add",
+        "w8, w0, w8",
+        write_registers=("w8",),
+        read_registers=("w0", "w8"),
+    )
+    pair2 = _window_pair(
+        (add_v2,),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "lea",
+                "eax, [edi + eax]",
+                write_registers=("eax",),
+                read_registers=("edi", "eax"),
+            ),
+        ),
+    )
+    candidate2 = _candidate(
+        inputs=(("w8", "eax"), ("w0", "edi")),
+        outputs=(("w8", "eax"),),
+    )
+
+    # Separate generalizers so internal dedup state doesn't interfere.
+    gen1 = RuleGeneralizer(RuleDiagnostics())
+    gen2 = RuleGeneralizer(RuleDiagnostics())
+
+    r1 = gen1.generate(
+        1,
+        pair1,
+        candidate1,
+        _passing_report(candidate1.candidate_id),
+    )
+    r2 = gen2.generate(
+        2,
+        pair2,
+        candidate2,
+        _passing_report(candidate2.candidate_id),
+    )
+
+    assert r1 is not None, "First variant should be emitted"
+    assert r2 is not None, "Second variant should be emitted"
+
+    from angr_rule_learning.rules.ast import instruction_sequences_alpha_equal
+
+    assert not instruction_sequences_alpha_equal(r1.rule.guest, r2.rule.guest), (
+        "Variant guest sequences should not be alpha-equivalent"
+    )
