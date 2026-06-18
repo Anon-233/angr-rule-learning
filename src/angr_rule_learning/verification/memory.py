@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import angr
 import claripy
 
+from angr_rule_learning.arch.registers import is_compatible_frame_base_pair
 from angr_rule_learning.verification.addressing import (
     AddressExpr,
     parse_address_binding,
@@ -51,16 +52,17 @@ def validate_alias_declarations(candidate: VerificationCandidate) -> None:
 
 _INDEX_WITNESS = 3
 
-_AARCH64_FRAME_REGS = {"sp", "wsp", "x29", "fp"}
-_X86_64_FRAME_REGS = {"rsp", "esp", "sp", "rbp", "ebp", "bp"}
 
-
-def _is_frame_register_pair(guest_reg: str | None, host_reg: str | None) -> bool:
-    if guest_reg is None or host_reg is None:
-        return False
-    return (
-        guest_reg.lower() in _AARCH64_FRAME_REGS
-        and host_reg.lower() in _X86_64_FRAME_REGS
+def _is_frame_register_pair(
+    candidate: VerificationCandidate,
+    guest_reg: str | None,
+    host_reg: str | None,
+) -> bool:
+    return is_compatible_frame_base_pair(
+        candidate.guest.arch,
+        guest_reg,
+        candidate.host.arch,
+        host_reg,
     )
 
 
@@ -99,7 +101,7 @@ def _initialize_memory_registers(
         guest_index_val = assigned.get(guest_expr.index, 0) if guest_expr.index else 0
         host_index_val = assigned.get(host_expr.index, 0) if host_expr.index else 0
 
-        if _is_frame_register_pair(guest_expr.base, host_expr.base):
+        if _is_frame_register_pair(candidate, guest_expr.base, host_expr.base):
             guest_base_val = guest_expr.solve_base_for_slot(base, guest_index_val)
             host_base_val = host_expr.solve_base_for_slot(base, host_index_val)
             offset = host_base_val - guest_base_val
@@ -311,7 +313,7 @@ def _collect_frame_groups(
     for binding in candidate.memory.bindings:
         guest_expr = parse_address_binding(binding.guest_addr)
         host_expr = parse_address_binding(binding.host_addr)
-        if _is_frame_register_pair(guest_expr.base, host_expr.base):
+        if _is_frame_register_pair(candidate, guest_expr.base, host_expr.base):
             key = (guest_expr.base, host_expr.base)
             groups.setdefault(key, []).append((binding.slot, guest_expr, host_expr))
     return groups

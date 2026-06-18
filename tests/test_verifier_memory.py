@@ -364,6 +364,40 @@ def test_verifier_accepts_frame_relative_store_with_different_base_offsets() -> 
     assert report.status == "pass"
 
 
+def test_verifier_accepts_reverse_two_slot_frame_relative_stores() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="reverse-frame-two-store32",
+        guest=CodeFragment(
+            "x86-64",
+            0x8048000,
+            X86_64_MOV_RBP_MINUS4_EDI_MOV_RBP_MINUS8_ESI,
+            2,
+        ),
+        host=CodeFragment(
+            "aarch64",
+            0x10000,
+            AARCH64_STR_W0_SP12_STR_W1_SP8,
+            2,
+        ),
+        input_registers=(("edi", "w0"), ("esi", "w1")),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4), MemorySlot("mem1", 4)),
+            bindings=(
+                MemoryBinding("mem0", "rbp - 4", "sp + 12", "write"),
+                MemoryBinding("mem1", "rbp - 8", "sp + 8", "write"),
+            ),
+            accesses=(
+                MemoryAccessExpectation("mem0", "write", 4),
+                MemoryAccessExpectation("mem1", "write", 4),
+            ),
+        ),
+    )
+
+    report = SemanticVerifier().verify(candidate)
+
+    assert report.status == "pass", report
+
+
 def test_verifier_accepts_consistent_two_slot_frame_relative_stores() -> None:
     candidate = VerificationCandidate(
         candidate_id="frame-two-store32",
