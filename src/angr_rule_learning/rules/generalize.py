@@ -11,6 +11,7 @@ from angr_rule_learning.arch.registers import (
     register_bit_range,
     register_family,
 )
+from angr_rule_learning.arch.registry import canonical_arch_name
 from angr_rule_learning.extraction.models import ExtractedInstruction, WindowPair
 from angr_rule_learning.extraction.liveness import family_for_register
 from angr_rule_learning.rules.ast import (
@@ -731,12 +732,7 @@ _X86_64_BRANCH_MNEMONICS = frozenset({"jmp", "call", "ret"})
 
 
 def normalize_arch_name(arch: str) -> str:
-    normalized = arch.strip().lower()
-    if normalized in {"amd64", "x86_64"}:
-        return "x86-64"
-    if normalized == "arm64":
-        return "aarch64"
-    return normalized
+    return canonical_arch_name(arch)
 
 
 def _is_branch_instruction(inst: Instruction, arch: str) -> bool:
@@ -931,8 +927,15 @@ def _replace_immediates_ast(
 
     guest_arch_n = normalize_arch_name(guest_arch)
     host_arch_n = normalize_arch_name(host_arch)
-    guest_pattern = _AARCH64_IMM_RE if guest_arch_n == "aarch64" else _X86_64_IMM_RE
-    host_pattern = _AARCH64_IMM_RE if host_arch_n == "aarch64" else _X86_64_IMM_RE
+    patterns = {
+        "aarch64": _AARCH64_IMM_RE,
+        "x86-64": _X86_64_IMM_RE,
+    }
+    try:
+        guest_pattern = patterns[guest_arch_n]
+        host_pattern = patterns[host_arch_n]
+    except KeyError as exc:
+        raise _RuleSkip("unsupported_rule_shape") from exc
 
     canonical_to_id: dict[str, int] = {}
     value_by_id: dict[str, int] = {}
@@ -1028,8 +1031,19 @@ def _replace_immediates_ast(
             result.append(inst)
         return tuple(result)
 
-    guest_result = _replace_side(guest_insts, guest_pattern, guest_arch_n, "#")
-    host_result = _replace_side(host_insts, host_pattern, host_arch_n, "")
+    prefixes = {"aarch64": "#", "x86-64": ""}
+    guest_result = _replace_side(
+        guest_insts,
+        guest_pattern,
+        guest_arch_n,
+        prefixes[guest_arch_n],
+    )
+    host_result = _replace_side(
+        host_insts,
+        host_pattern,
+        host_arch_n,
+        prefixes[host_arch_n],
+    )
 
     # ---- Phase 3: Derivation ----
     ctx = DerivationContext(

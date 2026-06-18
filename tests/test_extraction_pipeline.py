@@ -148,6 +148,68 @@ def test_extract_cli_smoke(tmp_path: Path) -> None:
     )
 
 
+def test_reverse_architecture_pipeline_emits_verified_rules(tmp_path: Path) -> None:
+    if shutil.which("clang") is None:
+        return
+    source = Path(__file__).resolve().parents[1] / "samples" / "sources" / "smoke_int.c"
+    candidates_output = tmp_path / "candidates.jsonl"
+    diagnostics_output = tmp_path / "diagnostics.json"
+    rules_output = tmp_path / "rules.txt"
+    rules_diagnostics_output = tmp_path / "rules-diagnostics.json"
+    try:
+        result = ExtractionPipeline().run(
+            ExtractionConfig(
+                source=source,
+                work_dir=tmp_path / "work",
+                guest_arch="x86-64",
+                host_arch="aarch64",
+            ),
+            candidates_output=candidates_output,
+            diagnostics_output=diagnostics_output,
+            verify=True,
+            rules_output=rules_output,
+            rules_diagnostics_output=rules_diagnostics_output,
+        )
+    except RuntimeError as exc:
+        if "error: unable to create target" in str(exc).lower():
+            return
+        if "cannot find clang" in str(exc).lower():
+            return
+        raise
+
+    assert result.candidates
+    assert all(candidate.guest.arch == "x86-64" for candidate in result.candidates)
+    assert all(candidate.host.arch == "aarch64" for candidate in result.candidates)
+    assert result.diagnostics.windows_verified_pass > 0
+    assert result.rules
+    assert all(report.status != "error" for report in result.reports)
+
+    guest_immediates = [
+        operand
+        for generated in result.rules
+        for instruction in generated.rule.guest
+        for operand in instruction.operands
+        if isinstance(operand, ImmOp)
+    ]
+    host_immediates = [
+        operand
+        for generated in result.rules
+        for instruction in generated.rule.host
+        for operand in instruction.operands
+        if isinstance(operand, ImmOp)
+    ]
+    assert guest_immediates
+    assert host_immediates
+    assert all(not operand.aarch64_hash for operand in guest_immediates)
+    assert all(operand.aarch64_hash for operand in host_immediates)
+
+    rules = rules_output.read_text(encoding="utf-8")
+    assert ".Guest:\n" in rules
+    assert ".Host:\n" in rules
+    rule_diagnostics = json.loads(rules_diagnostics_output.read_text(encoding="utf-8"))
+    assert rule_diagnostics["rules_emitted"] > 0
+
+
 class _FakePassingVerifier:
     def verify_many(self, candidates):
         return [

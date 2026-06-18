@@ -5,6 +5,7 @@ from angr_rule_learning.arch.registers import (
     fixed_role_preserve_register,
     is_compatible_frame_base_pair,
     is_fixed_role_register,
+    is_stack_pointer,
     register_bit_range,
     register_family,
 )
@@ -55,3 +56,7 @@ def test_frame_base_compatibility_is_symmetric() -> None:
 
 def test_frame_base_compatibility_requires_equal_address_widths() -> None:
     assert not is_compatible_frame_base_pair("aarch64", "sp", "x86-64", "ebp")
+
+
+def test_missing_address_base_is_not_a_stack_pointer() -> None:
+    assert not is_stack_pointer("x86-64", None)

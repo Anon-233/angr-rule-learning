@@ -98,6 +98,9 @@ uv run angr-rule-learning extract samples/sources/smoke_int.c \
 
 The CLI is a thin wrapper around `ExtractionPipeline` and `BatchVerifier`.
 Pipeline code should call the Python API directly.
+`extract` and `diagnose-skips` accept `--guest-arch` and `--host-arch`;
+the defaults are `aarch64` and `x86-64`, and the full extraction path also
+supports the reverse `x86-64` to `aarch64` direction.
 
 ## Documentation
 
@@ -116,7 +119,7 @@ Pipeline code should call the Python API directly.
 
 ```text
 src/angr_rule_learning/
-  arch/          architecture-name and flag helpers
+  arch/          architecture identities, register capabilities, and flags
   io/            JSON/JSONL readers, writers, and schema conversion
   smt/           shared bit-vector width utilities
   verification/  verifier models, execution, checks, reports, and batching

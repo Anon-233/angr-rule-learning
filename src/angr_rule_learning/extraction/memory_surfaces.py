@@ -3,7 +3,11 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from angr_rule_learning.arch.registers import is_compatible_frame_base_pair
+from angr_rule_learning.arch.registers import (
+    is_compatible_frame_base_pair,
+    is_stack_pointer,
+)
+from angr_rule_learning.arch.registry import canonical_arch_name
 from angr_rule_learning.extraction.liveness import family_for_register
 from angr_rule_learning.extraction.memory_operands import (
     MemoryOperand,
@@ -217,7 +221,13 @@ def _reorder_stack_operands(
     def _all_stack_based(
         ops: tuple[_CollectedMemoryOperand, ...],
     ) -> bool:
-        return all(item.operand.address.base in _STACK_POINTERS for item in ops)
+        return all(
+            is_stack_pointer(
+                item.instruction.arch,
+                item.operand.address.base,
+            )
+            for item in ops
+        )
 
     def _can_reorder(
         ops: tuple[_CollectedMemoryOperand, ...],
@@ -250,8 +260,6 @@ def _reorder_stack_operands(
     return guest, host, None
 
 
-_STACK_POINTERS = frozenset({"sp", "wsp", "rsp", "esp"})
-
 _AARCH64_SP_ADDSUB_RE = re.compile(
     r"^sp\s*,\s*sp\s*,\s*#(?P<imm>(?:0x[0-9a-fA-F]+|\d+))$",
     re.IGNORECASE,
@@ -264,7 +272,7 @@ _X86_SP_ADDSUB_RE = re.compile(
 
 def _instruction_sp_delta(inst: ExtractedInstruction) -> int:
     """Return the net change in the stack pointer caused by *inst*."""
-    arch = inst.arch.strip().lower()
+    arch = canonical_arch_name(inst.arch)
     mnemonic = inst.mnemonic.strip().lower()
     op_str = inst.op_str.strip()
     if arch == "x86-64":
@@ -322,10 +330,14 @@ def _aarch64_sp_delta(mnemonic: str, op_str: str) -> int:
     return 0
 
 
-def _adjust_for_sp_delta(op: MemoryOperand, delta: int) -> MemoryOperand:
+def _adjust_for_sp_delta(
+    op: MemoryOperand,
+    delta: int,
+    arch: str,
+) -> MemoryOperand:
     """If *op* uses a stack-pointer base register, adjust its displacement
     by the cumulative *delta* from preceding instructions."""
-    if delta == 0 or op.address.base not in _STACK_POINTERS:
+    if delta == 0 or not is_stack_pointer(arch, op.address.base):
         return op
     return MemoryOperand(
         kind=op.kind,
@@ -347,7 +359,7 @@ def _collect(window: InstructionWindow) -> tuple[_CollectedMemoryOperand, ...]:
     sp_delta = 0
     for instruction in window.instructions:
         for operand in extract_memory_operands(instruction):
-            adjusted = _adjust_for_sp_delta(operand, sp_delta)
+            adjusted = _adjust_for_sp_delta(operand, sp_delta, instruction.arch)
             operands.append(_CollectedMemoryOperand(instruction, adjusted))
         sp_delta += _instruction_sp_delta(instruction)
     return tuple(operands)

@@ -25,6 +25,7 @@ from angr_rule_learning.rules.generalize import (
     _RuleSkip,
     _generalize_instructions_with_roles,
     _instructions_to_ast,
+    _replace_immediates_ast,
     _validate_no_remaining_registers,
     consolidate_rules,
 )
@@ -43,6 +44,18 @@ def test_immop_neg_serializes_as_hash_minus_imm() -> None:
     assert ImmOp(id=1, neg=True, aarch64_hash=True).to_text() == "#-imm1"
     assert ImmOp(id=2, neg=True, aarch64_hash=False).to_text() == "-imm2"
     assert ImmOp(id=3, neg=False, aarch64_hash=True).to_text() == "#imm3"
+
+
+def test_reverse_immediate_syntax_follows_each_architecture() -> None:
+    guest, host = _replace_immediates_ast(
+        (Instruction("add", (LitOp("eax"), LitOp("7"))),),
+        "x86-64",
+        (Instruction("add", (LitOp("w0"), LitOp("w0"), LitOp("#7"))),),
+        "aarch64",
+    )
+
+    assert guest[0].to_text() == "add eax, imm1"
+    assert host[0].to_text() == "add w0, w0, #imm1"
 
 
 def test_writer_coverage_uses_explicit_architecture() -> None:

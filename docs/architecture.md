@@ -33,6 +33,12 @@ debug information, builds alignment regions, mines bounded semantic windows,
 infers verifier surfaces, and emits candidate JSONL compatible with the
 existing verifier boundary.
 
+Guest and host are pipeline roles, not architecture aliases. The `extract`
+and `diagnose-skips` commands accept `--guest-arch` and `--host-arch`; their
+defaults remain `aarch64` and `x86-64` for compatibility. The complete
+source-to-rule path is tested in both AArch64-to-x86-64 and
+x86-64-to-AArch64 directions.
+
 With `--verify --rules-output`, the pipeline also runs verification and
 produces plain text rules with typed register placeholders. The existing CLI
 accepts candidate JSON/JSONL directly so verifier work can proceed
@@ -45,6 +51,7 @@ src/angr_rule_learning/
   cli.py
   arch/
     registry.py
+    registers.py
     flags.py
   io/
     readers.py
@@ -92,8 +99,10 @@ src/angr_rule_learning/
 
 The package boundaries are:
 
-- `arch`: maps project architecture names to angr names and extracts
-  architecture-specific flag expressions.
+- `arch`: owns canonical architecture names, angr and clang identifiers,
+  register families and bit ranges, stack/frame roles, fixed register roles,
+  and architecture-specific flag expressions. Capability APIs receive an
+  architecture explicitly and contain no guest/host policy.
 - `io`: converts strict JSON dictionaries into typed verifier models and writes
   report/summary JSON.
 - `smt`: holds shared bit-vector width helpers used by relation checks.
@@ -133,6 +142,27 @@ single C source
   -> plain text rules + rule diagnostics
 ```
 
+### Architecture Capability Boundary
+
+ISA-specific behavior is necessary, but it is selected from the architecture
+attached to each fragment or instruction. `arch.registry` normalizes aliases
+and supplies toolchain identifiers. `arch.registers` supplies shared register
+families, bit ranges, frame roles, and fixed-role information to extraction,
+verification, and rule generation. Those packages must not maintain separate
+Guest=AArch64 or Host=x86-64 register tables.
+
+Cross-ISA frame pairing is symmetric: both registers must be recognized frame
+bases by their respective architectures and have equal address width. A pair
+such as AArch64 `sp` and x86-64 `rbp` therefore receives the same treatment
+when the pipeline direction is reversed.
+
+Directionality remains valid where it describes translation rather than an
+ISA capability. Fixed-role producer provenance is checked on the actual Host
+fragment because generated Host code must establish that physical register.
+Immediate derivation templates remain registered by
+`(guest_arch, host_arch)` because those transformations are not generally
+invertible.
+
 ### Memory Surface Inference
 
 The extractor explicitly distinguishes "no memory access" from "memory access
@@ -156,14 +186,13 @@ broad categories that hide actionable causes, the pipeline also emits
 counts should match the corresponding coarse reason when every skip path in
 that category reports a detail.
 
-Frame-relative stack memory is treated specially. When AArch64 stack/frame
-registers (`sp`, `x29`, `fp`) align with x86-64 stack/frame registers (`rsp`,
-`rbp` and narrower aliases), extraction does not model the base registers as
-equal input values. Instead, memory bindings carry the effective address
+Frame-relative stack memory is treated specially. When two architecture-owned
+frame bases of equal width align, extraction does not model the base registers
+as equal input values. Instead, memory bindings carry the effective address
 expressions and the verifier assigns frame base witnesses that make consistent
 slots alias across ISAs. This preserves normal equality semantics for ordinary
 address registers while allowing common `sp + offset` versus `rbp - offset`
-stack-slot rules to verify.
+stack-slot rules to verify in either translation direction.
 
 Store-immediate surfaces are rejected at extraction time. Until the verifier
 supports explicit immediate value bindings, a store pair where either side
@@ -278,6 +307,11 @@ instruction-aware templates registered per ``(guest_arch, host_arch)`` pair
 in ``derivation._STRATEGIES``.  The derivation framework itself is
 ISA-agnostic.
 
+Immediate token syntax is selected independently for each side from its actual
+architecture. Reversing the pipeline therefore emits x86-64 `immN` operands
+on the Guest side and AArch64 `#immN` operands on the Host side; syntax is not
+inferred from the Guest/Host role.
+
 Current templates for ``("aarch64", "x86-64")``:
 
 - **tbz/tbnz mask**: host mask derived as `(1 << immN)` from the guest
@@ -298,7 +332,7 @@ condition, not limited to frame-relative memory rules).
 
 Some ISA-specific registers serve architecturally fixed roles (e.g. ``cl``
 is the only valid shift-count register on x86-64).  Such registers are
-classified via ``is_fixed_role_register()`` in ``registers.py`` and are
+classified via ``is_fixed_role_register()`` in ``arch/registers.py`` and are
 emitted as literals in rule output.
 
 For correctness, every fixed-role register *read* must have a visible
@@ -319,6 +353,12 @@ input; any untraceable dependency causes rejection.
 widest family register (e.g. ``save rcx`` / ``restore rcx``) to
 correctly preserve the full physical register, even when the instruction
 text writes a sub-register (``ecx``, ``cx``, ``cl``).
+
+The family and covering bit range are queried using the candidate's Host
+architecture. A fixed-role register on the Guest side is identified using the
+Guest architecture; until the rule format can bind that literal to a generic
+Host value, this shape is rejected as unsupported rather than emitted with an
+unbound placeholder.
 
 ## Candidate Boundary
 

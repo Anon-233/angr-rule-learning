@@ -528,7 +528,7 @@ def test_adjust_for_sp_delta_modifies_rsp_based_operand() -> None:
         text="[rsp]",
         value_register="rbp",
     )
-    adjusted = _adjust_for_sp_delta(op, -16)
+    adjusted = _adjust_for_sp_delta(op, -16, "x86-64")
     assert adjusted.address.displacement == -24  # -8 + (-16)
 
 
@@ -540,7 +540,7 @@ def test_adjust_for_sp_delta_ignores_non_stack_bases() -> None:
         text="[x0, #16]",
         value_register="w1",
     )
-    adjusted = _adjust_for_sp_delta(op, -8)
+    adjusted = _adjust_for_sp_delta(op, -8, "aarch64")
     assert adjusted is op  # unchanged
 
 
@@ -552,7 +552,7 @@ def test_adjust_for_sp_delta_zero_is_noop() -> None:
         text="[rsp]",
         value_register="rbp",
     )
-    adjusted = _adjust_for_sp_delta(op, 0)
+    adjusted = _adjust_for_sp_delta(op, 0, "x86-64")
     assert adjusted is op  # unchanged
 
 
@@ -602,7 +602,7 @@ def test_sp_delta_stp_writeback_adjusts_subsequent_str() -> None:
         text="[sp, #8]",
         value_register="x0",
     )
-    adjusted = _adjust_for_sp_delta(op, -0x10)
+    adjusted = _adjust_for_sp_delta(op, -0x10, "aarch64")
     assert adjusted.address.displacement == -8  # 8 + (-0x10)
 
 
@@ -615,7 +615,7 @@ def test_sp_delta_ldp_post_index_adjusts_subsequent_ldr() -> None:
         text="[sp, #8]",
         value_register="x0",
     )
-    adjusted = _adjust_for_sp_delta(op, 0x10)
+    adjusted = _adjust_for_sp_delta(op, 0x10, "aarch64")
     assert adjusted.address.displacement == 0x18  # 8 + 0x10
 
 
@@ -628,5 +628,5 @@ def test_double_push_sp_deltas_accumulate() -> None:
         text="[rsp]",
         value_register="r15",
     )
-    adjusted = _adjust_for_sp_delta(op, -8)
+    adjusted = _adjust_for_sp_delta(op, -8, "x86-64")
     assert adjusted.address.displacement == -16  # -8 + (-8)

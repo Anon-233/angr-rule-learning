@@ -170,42 +170,46 @@ def register_bit_range(arch: str, register: str) -> tuple[int, int] | None:
     return None
 
 
-def stack_pointer_width(arch: str, register: str) -> int | None:
+def stack_pointer_width(arch: str, register: str | None) -> int | None:
+    if register is None:
+        return None
     canonical = canonical_arch_name(arch)
     return _STACK_POINTER_WIDTHS.get(canonical, {}).get(
         normalize_register_name(register)
     )
 
 
-def frame_pointer_width(arch: str, register: str) -> int | None:
+def frame_pointer_width(arch: str, register: str | None) -> int | None:
+    if register is None:
+        return None
     canonical = canonical_arch_name(arch)
     return _FRAME_POINTER_WIDTHS.get(canonical, {}).get(
         normalize_register_name(register)
     )
 
 
-def frame_base_width(arch: str, register: str) -> int | None:
+def frame_base_width(arch: str, register: str | None) -> int | None:
     return stack_pointer_width(arch, register) or frame_pointer_width(arch, register)
 
 
-def is_stack_pointer(arch: str, register: str) -> bool:
+def is_stack_pointer(arch: str, register: str | None) -> bool:
     return stack_pointer_width(arch, register) is not None
 
 
-def is_frame_pointer(arch: str, register: str) -> bool:
+def is_frame_pointer(arch: str, register: str | None) -> bool:
     return frame_pointer_width(arch, register) is not None
 
 
-def is_frame_base(arch: str, register: str) -> bool:
+def is_frame_base(arch: str, register: str | None) -> bool:
     return frame_base_width(arch, register) is not None
 
 
-def stack_pointer_placeholder(arch: str, register: str) -> str | None:
+def stack_pointer_placeholder(arch: str, register: str | None) -> str | None:
     width = stack_pointer_width(arch, register)
     return None if width is None else f"sp{width}"
 
 
-def frame_pointer_placeholder(arch: str, register: str) -> str | None:
+def frame_pointer_placeholder(arch: str, register: str | None) -> str | None:
     width = frame_pointer_width(arch, register)
     return None if width is None else f"fp{width}"
 
