@@ -550,13 +550,6 @@ def test_multi_slot_stp_push_pass_has_full_coverage() -> None:
     assert all(c.status == "pass" for c in mem_checks)
 
 
-def _mock_solver_eval(val):
-    """Return concrete value so slot matching can evaluate addresses."""
-    if hasattr(val, "args") and len(val.args) > 0:
-        return val.args[0]
-    return 0
-
-
 class _MockState:
     def __init__(self):
         self.solver = self
@@ -566,11 +559,6 @@ class _MockState:
         if hasattr(expr, "args") and len(expr.args) > 0:
             return expr.args[0]
         return 0
-
-
-class _MockSolver:
-    def eval(self, expr):
-        return _mock_solver_eval(expr)
 
 
 def test_three_slot_swapped_passes_by_slot_match() -> None:
