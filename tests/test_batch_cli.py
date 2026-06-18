@@ -244,3 +244,66 @@ def test_extract_cli_rejects_rules_diagnostics_without_verify(tmp_path) -> None:
         )
 
     assert excinfo.value.code == 2
+
+
+def test_extract_cli_propagates_architecture_direction(tmp_path, monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(self, config, **kwargs) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr("angr_rule_learning.cli.ExtractionPipeline.run", fake_run)
+    source = tmp_path / "sample.c"
+    source.write_text("int f(void) { return 1; }\n", encoding="utf-8")
+
+    main(
+        [
+            "extract",
+            str(source),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--output",
+            str(tmp_path / "candidates.jsonl"),
+            "--diagnostics",
+            str(tmp_path / "diagnostics.json"),
+            "--guest-arch",
+            "x86_64",
+            "--host-arch",
+            "arm64",
+        ]
+    )
+
+    assert captured["config"].guest_arch == "x86-64"
+    assert captured["config"].host_arch == "aarch64"
+
+
+def test_diagnose_cli_propagates_architecture_direction(tmp_path, monkeypatch) -> None:
+    captured = {}
+
+    def fake_analyze(self, config):
+        captured["config"] = config
+        return {}
+
+    monkeypatch.setattr(
+        "angr_rule_learning.cli.SkipPatternAnalyzer.analyze", fake_analyze
+    )
+    source = tmp_path / "sample.c"
+    source.write_text("int f(void) { return 1; }\n", encoding="utf-8")
+
+    main(
+        [
+            "diagnose-skips",
+            str(source),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--output",
+            str(tmp_path / "patterns.json"),
+            "--guest-arch",
+            "x86-64",
+            "--host-arch",
+            "aarch64",
+        ]
+    )
+
+    assert captured["config"].guest_arch == "x86-64"
+    assert captured["config"].host_arch == "aarch64"

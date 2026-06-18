@@ -5,16 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 
+from angr_rule_learning.arch.registry import clang_target
 from angr_rule_learning.extraction.config import ExtractionConfig
 
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
-
-
-TARGETS = {
-    "aarch64": "aarch64-linux-gnu",
-    "x86-64": "x86_64-linux-gnu",
-}
 
 
 @dataclass(frozen=True)
@@ -60,10 +55,7 @@ class ClangBuildDriver:
         arch: str,
         output: Path,
     ) -> list[str]:
-        try:
-            target = TARGETS[arch]
-        except KeyError as exc:
-            raise ValueError(f"unsupported extraction target: {arch}") from exc
+        target = clang_target(arch)
         return [
             config.compile_options.clang,
             "-target",

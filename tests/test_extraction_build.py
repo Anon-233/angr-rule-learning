@@ -39,6 +39,25 @@ def test_build_driver_invokes_clang_for_guest_and_host(tmp_path: Path) -> None:
     assert "-c" in runner.commands[0]
 
 
+def test_build_driver_supports_reverse_architecture_direction(tmp_path: Path) -> None:
+    source = tmp_path / "sample.c"
+    source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")
+    runner = RecordingRunner()
+    config = ExtractionConfig(
+        source=source,
+        work_dir=tmp_path / "out",
+        guest_arch="x86_64",
+        host_arch="arm64",
+    )
+
+    artifacts = ClangBuildDriver(runner=runner).build(config)
+
+    assert artifacts.guest_object.name == "guest-x86-64.o"
+    assert artifacts.host_object.name == "host-aarch64.o"
+    assert runner.commands[0][:3] == ["clang", "-target", "x86_64-linux-gnu"]
+    assert runner.commands[1][:3] == ["clang", "-target", "aarch64-linux-gnu"]
+
+
 def test_build_driver_uses_configured_compile_options(tmp_path: Path) -> None:
     source = tmp_path / "sample.c"
     source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")

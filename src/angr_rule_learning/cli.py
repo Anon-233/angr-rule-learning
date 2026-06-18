@@ -16,6 +16,11 @@ from angr_rule_learning.io.writers import write_reports_jsonl, write_summary_jso
 from angr_rule_learning.verification.batch import BatchVerifier
 
 
+def _add_architecture_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--guest-arch", default="aarch64")
+    parser.add_argument("--host-arch", default="x86-64")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="angr-rule-learning")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -42,6 +47,7 @@ def main(argv: list[str] | None = None) -> None:
     extract_parser.add_argument("--rules-output", type=Path)
     extract_parser.add_argument("--rules-diagnostics", type=Path)
     extract_parser.add_argument("--rules-debug-diagnostics", type=Path)
+    _add_architecture_arguments(extract_parser)
 
     diagnose_parser = subparsers.add_parser(
         "diagnose-skips",
@@ -54,6 +60,7 @@ def main(argv: list[str] | None = None) -> None:
     diagnose_parser.add_argument("--optimization", default="0")
     diagnose_parser.add_argument("--guest-max-window", type=int, default=2)
     diagnose_parser.add_argument("--host-max-window", type=int, default=3)
+    _add_architecture_arguments(diagnose_parser)
 
     args = parser.parse_args(argv)
     if args.command == "verify":
@@ -75,6 +82,8 @@ def main(argv: list[str] | None = None) -> None:
         config = ExtractionConfig(
             source=args.source,
             work_dir=args.work_dir,
+            guest_arch=args.guest_arch,
+            host_arch=args.host_arch,
             compile_options=CompileOptions(
                 clang=args.clang,
                 optimization=args.optimization,
@@ -97,6 +106,8 @@ def main(argv: list[str] | None = None) -> None:
         config = ExtractionConfig(
             source=args.source,
             work_dir=args.work_dir,
+            guest_arch=args.guest_arch,
+            host_arch=args.host_arch,
             compile_options=CompileOptions(
                 clang=args.clang,
                 optimization=args.optimization,

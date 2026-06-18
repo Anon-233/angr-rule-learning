@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from angr_rule_learning.arch.registry import canonical_arch_name
+
 
 @dataclass(frozen=True)
 class WindowLimits:
@@ -62,3 +64,7 @@ class ExtractionConfig:
     host_arch: str = "x86-64"
     compile_options: CompileOptions = field(default_factory=CompileOptions)
     window_limits: WindowLimits = field(default_factory=WindowLimits)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "guest_arch", canonical_arch_name(self.guest_arch))
+        object.__setattr__(self, "host_arch", canonical_arch_name(self.host_arch))
