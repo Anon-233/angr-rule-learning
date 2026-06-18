@@ -2,6 +2,10 @@ from angr_rule_learning.extraction.memory_operands import (
     MemoryOperand,
     extract_memory_operands,
 )
+from angr_rule_learning.extraction.memory_surfaces import (
+    _adjust_for_sp_delta,
+    _instruction_sp_delta,
+)
 from angr_rule_learning.extraction.models import ExtractedInstruction
 from angr_rule_learning.verification.addressing import AddressExpr
 
@@ -87,8 +91,10 @@ def test_parses_x86_64_mov_store_with_negative_offset() -> None:
 
 
 def test_unsupported_memory_forms_return_empty_tuple() -> None:
-    assert extract_memory_operands(_inst("x86-64", "push", "rax")) == ()
-    assert extract_memory_operands(_inst("aarch64", "ldp", "x0, x1, [sp]")) == ()
+    assert extract_memory_operands(_inst("x86-64", "pusha", " ")) == ()
+    assert (
+        extract_memory_operands(_inst("aarch64", "ldr", "w0, [x1, w2, uxtw #2]")) == ()
+    )
 
 
 def test_rejects_aarch64_post_index_addressing() -> None:
@@ -288,3 +294,236 @@ def test_rmw_width_inferred_from_register() -> None:
     assert operands[0].kind == "read"
     assert operands[0].width == 8
     assert operands[0].value_register == "rax"
+
+
+# ── push / pop tests ────────────────────────────────────────────────────
+
+
+def test_parses_push_reg_as_memory_write() -> None:
+    operands = extract_memory_operands(_inst("x86-64", "push", "rbp"))
+
+    assert operands == (
+        MemoryOperand(
+            kind="write",
+            width=8,
+            address=AddressExpr(base="rsp", displacement=-8),
+            text="[rsp]",
+            value_register="rbp",
+        ),
+    )
+
+
+def test_parses_pop_reg_as_memory_read() -> None:
+    operands = extract_memory_operands(_inst("x86-64", "pop", "r15"))
+
+    assert operands == (
+        MemoryOperand(
+            kind="read",
+            width=8,
+            address=AddressExpr(base="rsp"),
+            text="[rsp]",
+            value_register="r15",
+        ),
+    )
+
+
+def test_parses_push_imm_as_memory_write() -> None:
+    operands = extract_memory_operands(_inst("x86-64", "push", "0x18"))
+
+    assert len(operands) == 1
+    assert operands[0].kind == "write"
+    assert operands[0].width == 8
+    assert operands[0].address == AddressExpr(base="rsp", displacement=-8)
+    assert operands[0].value_register is None
+    assert operands[0].value_immediate == "0x18"
+
+
+def test_push_pop_width_from_register() -> None:
+    """push eax -> width 4 (32-bit register)"""
+    operands = extract_memory_operands(_inst("x86-64", "push", "eax"))
+    assert len(operands) == 1
+    assert operands[0].width == 4
+    assert operands[0].address.displacement == -4
+    assert operands[0].value_register == "eax"
+
+
+def test_pop_32bit_width() -> None:
+    """pop edi -> width 4"""
+    operands = extract_memory_operands(_inst("x86-64", "pop", "edi"))
+    assert len(operands) == 1
+    assert operands[0].kind == "read"
+    assert operands[0].width == 4
+    assert operands[0].value_register == "edi"
+
+
+# ── stp / ldp tests ─────────────────────────────────────────────────────
+
+
+def test_parses_stp_offset_as_two_writes() -> None:
+    operands = extract_memory_operands(_inst("aarch64", "stp", "x20, x19, [sp, #0x40]"))
+
+    assert len(operands) == 2
+    assert operands[0] == MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="sp", displacement=0x40),
+        text="[sp, #64]",
+        value_register="x20",
+    )
+    assert operands[1] == MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="sp", displacement=0x48),
+        text="[sp, #72]",
+        value_register="x19",
+    )
+
+
+def test_parses_stp_pre_index_as_two_writes() -> None:
+    operands = extract_memory_operands(
+        _inst("aarch64", "stp", "x29, x30, [sp, #-0x10]!")
+    )
+
+    assert len(operands) == 2
+    assert operands[0] == MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="sp", displacement=-0x10),
+        text="[sp, #-16]",
+        value_register="x29",
+    )
+    assert operands[1] == MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="sp", displacement=-8),
+        text="[sp, #-8]",
+        value_register="x30",
+    )
+
+
+def test_parses_ldp_post_index_as_two_reads() -> None:
+    operands = extract_memory_operands(_inst("aarch64", "ldp", "x29, x30, [sp], #0x10"))
+
+    assert len(operands) == 2
+    assert operands[0] == MemoryOperand(
+        kind="read",
+        width=8,
+        address=AddressExpr(base="sp"),
+        text="[sp]",
+        value_register="x29",
+    )
+    assert operands[1] == MemoryOperand(
+        kind="read",
+        width=8,
+        address=AddressExpr(base="sp", displacement=8),
+        text="[sp, #8]",
+        value_register="x30",
+    )
+
+
+def test_parses_ldnp_offset_as_two_reads() -> None:
+    operands = extract_memory_operands(_inst("aarch64", "ldnp", "x0, x1, [x2, #0x20]"))
+
+    assert len(operands) == 2
+    assert operands[0].kind == "read"
+    assert operands[0].width == 8
+    assert operands[1].kind == "read"
+
+
+def test_stp_w_register_uses_4_byte_width() -> None:
+    """stp with w registers should produce 4-byte operands."""
+    operands = extract_memory_operands(_inst("aarch64", "stp", "w8, w9, [sp, #8]"))
+
+    assert len(operands) == 2
+    assert operands[0].width == 4
+    assert operands[0].value_register == "w8"
+    assert operands[1].address == AddressExpr(base="sp", displacement=12)
+
+
+# ── sp delta tracking tests ──────────────────────────────────────────────
+
+
+def test_push_has_negative_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("x86-64", "push", "rbp")) == -8
+
+
+def test_pop_has_positive_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("x86-64", "pop", "r14")) == 8
+
+
+def test_push_imm_has_negative_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("x86-64", "push", "0x18")) == -8
+
+
+def test_stp_pre_index_has_negative_sp_delta() -> None:
+    assert (
+        _instruction_sp_delta(_inst("aarch64", "stp", "x29, x30, [sp, #-0x10]!"))
+        == -0x10
+    )
+
+
+def test_stp_offset_no_writeback_has_zero_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("aarch64", "stp", "x20, x19, [sp, #0x40]")) == 0
+
+
+def test_ldp_post_index_has_positive_sp_delta() -> None:
+    assert (
+        _instruction_sp_delta(_inst("aarch64", "ldp", "x29, x30, [sp], #0x10")) == 0x10
+    )
+
+
+def test_ldp_offset_no_writeback_has_zero_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("aarch64", "ldp", "x20, x19, [sp, #0x40]")) == 0
+
+
+def test_x86_add_rsp_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("x86-64", "add", "rsp, 0x18")) == 0x18
+
+
+def test_x86_sub_rsp_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("x86-64", "sub", "rsp, 0x18")) == -0x18
+
+
+def test_aarch64_sub_sp_sp_delta() -> None:
+    assert _instruction_sp_delta(_inst("aarch64", "sub", "sp, sp, #0x50")) == -0x50
+
+
+def test_non_sp_instruction_has_zero_delta() -> None:
+    assert _instruction_sp_delta(_inst("x86-64", "mov", "eax, ebx")) == 0
+    assert _instruction_sp_delta(_inst("aarch64", "add", "w0, w1, w2")) == 0
+
+
+def test_adjust_for_sp_delta_modifies_rsp_based_operand() -> None:
+    op = MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="rsp", displacement=-8),
+        text="[rsp]",
+        value_register="rbp",
+    )
+    adjusted = _adjust_for_sp_delta(op, -16)
+    assert adjusted.address.displacement == -24  # -8 + (-16)
+
+
+def test_adjust_for_sp_delta_ignores_non_stack_bases() -> None:
+    op = MemoryOperand(
+        kind="read",
+        width=4,
+        address=AddressExpr(base="x0", displacement=16),
+        text="[x0, #16]",
+        value_register="w1",
+    )
+    adjusted = _adjust_for_sp_delta(op, -8)
+    assert adjusted is op  # unchanged
+
+
+def test_adjust_for_sp_delta_zero_is_noop() -> None:
+    op = MemoryOperand(
+        kind="write",
+        width=8,
+        address=AddressExpr(base="rsp", displacement=-8),
+        text="[rsp]",
+        value_register="rbp",
+    )
+    adjusted = _adjust_for_sp_delta(op, 0)
+    assert adjusted is op  # unchanged

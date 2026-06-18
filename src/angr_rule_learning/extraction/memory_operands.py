@@ -35,6 +35,18 @@ _AARCH64_MEM_RE = re.compile(
     re.IGNORECASE,
 )
 
+_AARCH64_PAIR_PRE_OR_OFFSET_RE = re.compile(
+    r"^(?P<rt1>[a-z0-9]+)\s*,\s*(?P<rt2>[a-z0-9]+)\s*,\s*"
+    r"(?P<mem>\[(?P<base>[a-z0-9]+)\s*,\s*#(?P<offset>-?(?:0x[0-9a-fA-F]+|\d+))\])(?P<writeback>!)?$",
+    re.IGNORECASE,
+)
+
+_AARCH64_PAIR_POST_RE = re.compile(
+    r"^(?P<rt1>[a-z0-9]+)\s*,\s*(?P<rt2>[a-z0-9]+)\s*,\s*"
+    r"(?P<mem>\[(?P<base>[a-z0-9]+)\]),\s*#(?P<offset>-?(?:0x[0-9a-fA-F]+|\d+))$",
+    re.IGNORECASE,
+)
+
 _AARCH64_INDEX_MEM_RE = re.compile(
     rf"^{_AARCH64_VALUE_RE}\s*,\s*"
     rf"(?P<mem>\[{_AARCH64_BASE_RE}\s*,\s*{_AARCH64_INDEX_RE}"
@@ -46,6 +58,9 @@ _X86_BRACKET_RE = re.compile(r"(?P<mem>\[[^\]]+\])", re.IGNORECASE)
 _X86_SEGMENT_OVERRIDE_RE = re.compile(r"(?:cs|ds|es|fs|gs|ss)\s*:\s*\[", re.IGNORECASE)
 
 _X86_RMW_MNEMONICS = frozenset({"add", "sub", "and", "or", "xor", "imul"})
+
+_X86_PUSH_POP_REG_RE = re.compile(r"^(?P<reg>[a-z][a-z0-9]+)$", re.IGNORECASE)
+_X86_PUSH_IMM_RE = re.compile(r"^(?P<imm>(?:0x[0-9a-fA-F]+|\d+))$", re.IGNORECASE)
 
 _X86_REGISTER_TOKEN_RE = re.compile(
     r"^(?:r(?:[0-9]+|[abcd]x|[sb]p|[sd]i)|e(?:[abcd]x|[sb]p|[sd]i)|"
@@ -75,6 +90,8 @@ def extract_memory_operands(
 
 
 def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
+    if mnemonic in {"ldp", "stp", "ldnp", "stnp"}:
+        return _extract_aarch64_pair(mnemonic, op_str)
     if mnemonic not in {"ldr", "ldur", "ldrsw", "str", "stur"}:
         return ()
     # Try displacement form first: [base, #disp] or [base]
@@ -120,7 +137,77 @@ def _extract_aarch64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
     )
 
 
+def _extract_aarch64_pair(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
+    """Parse ``stp``/``ldp`` (and non-temporal variants) as paired memory
+    operands.
+    """
+    is_store = mnemonic.startswith("st")
+
+    # Try pre-index / offset form first: stp rt1, rt2, [base, #simm][!]
+    match = _AARCH64_PAIR_PRE_OR_OFFSET_RE.match(op_str)
+    if match is not None:
+        rt1 = match.group("rt1").lower()
+        rt2 = match.group("rt2").lower()
+        base = match.group("base").lower()
+        offset = _parse_displacement(match.group("offset"), "+")
+        width = _aarch64_register_width(rt1)
+        if width is None:
+            return ()
+        kind: MemoryKind = "write" if is_store else "read"
+        text1 = f"[{base}, #{offset}]"
+        text2 = f"[{base}, #{offset + width}]"
+        return (
+            MemoryOperand(
+                kind=kind,
+                width=width,
+                address=AddressExpr(base=base, displacement=offset),
+                text=text1,
+                value_register=rt1,
+            ),
+            MemoryOperand(
+                kind=kind,
+                width=width,
+                address=AddressExpr(base=base, displacement=offset + width),
+                text=text2,
+                value_register=rt2,
+            ),
+        )
+
+    # Try post-index form: ldp rt1, rt2, [base], #simm
+    match = _AARCH64_PAIR_POST_RE.match(op_str)
+    if match is not None:
+        rt1 = match.group("rt1").lower()
+        rt2 = match.group("rt2").lower()
+        base = match.group("base").lower()
+        width = _aarch64_register_width(rt1)
+        if width is None:
+            return ()
+        kind: MemoryKind = "write" if is_store else "read"
+        text1 = f"[{base}]"
+        text2 = f"[{base}, #{width}]"
+        return (
+            MemoryOperand(
+                kind=kind,
+                width=width,
+                address=AddressExpr(base=base),
+                text=text1,
+                value_register=rt1,
+            ),
+            MemoryOperand(
+                kind=kind,
+                width=width,
+                address=AddressExpr(base=base, displacement=width),
+                text=text2,
+                value_register=rt2,
+            ),
+        )
+
+    return ()
+
+
 def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
+    if mnemonic in {"push", "pop"}:
+        return _extract_x86_64_push_pop(mnemonic, op_str)
     if mnemonic not in {"mov", "movsxd"} and mnemonic not in _X86_RMW_MNEMONICS:
         return ()
     parts = [part.strip() for part in op_str.split(",", maxsplit=1)]
@@ -167,6 +254,80 @@ def _extract_x86_64(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
         return ()
     operand = _x86_operand("read", width, right_mem, value_register)
     return (operand,) if operand is not None else ()
+
+
+def _extract_x86_64_push_pop(mnemonic: str, op_str: str) -> tuple[MemoryOperand, ...]:
+    """Parse ``push``/``pop`` as implicit rsp-relative memory operands."""
+    if mnemonic == "push":
+        match = _X86_PUSH_POP_REG_RE.match(op_str)
+        if match is not None:
+            reg = match.group("reg").lower()
+            width = _x86_reg_width(reg)
+            if width is None:
+                return ()
+            return (
+                MemoryOperand(
+                    kind="write",
+                    width=width,
+                    address=AddressExpr(base="rsp", displacement=-width),
+                    text="[rsp]",
+                    value_register=reg,
+                ),
+            )
+        match = _X86_PUSH_IMM_RE.match(op_str)
+        if match is not None:
+            return (
+                MemoryOperand(
+                    kind="write",
+                    width=8,
+                    address=AddressExpr(base="rsp", displacement=-8),
+                    text="[rsp]",
+                    value_register=None,
+                    value_immediate=match.group("imm"),
+                ),
+            )
+        return ()
+
+    if mnemonic == "pop":
+        match = _X86_PUSH_POP_REG_RE.match(op_str)
+        if match is not None:
+            reg = match.group("reg").lower()
+            width = _x86_reg_width(reg)
+            if width is None:
+                return ()
+            return (
+                MemoryOperand(
+                    kind="read",
+                    width=width,
+                    address=AddressExpr(base="rsp"),
+                    text="[rsp]",
+                    value_register=reg,
+                ),
+            )
+    return ()
+
+
+def _x86_reg_width(register: str) -> int | None:
+    """Return memory access width implied by an x86-64 register name."""
+    reg = register.strip().lower()
+    if reg.startswith("r") and len(reg) >= 3:
+        return 8
+    if reg.startswith("e"):
+        return 4
+    if reg.endswith("w"):
+        return 2
+    if reg.endswith("b") or reg in {
+        "al",
+        "ah",
+        "bl",
+        "bh",
+        "cl",
+        "ch",
+        "dl",
+        "dh",
+    }:
+        return 1
+    return None
 
 
 def _x86_operand(

@@ -1,13 +1,21 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from angr_rule_learning.extraction.liveness import family_for_register
 from angr_rule_learning.extraction.memory_operands import (
     MemoryOperand,
+    _AARCH64_PAIR_POST_RE,
+    _AARCH64_PAIR_PRE_OR_OFFSET_RE,
+    _X86_PUSH_IMM_RE,
+    _X86_PUSH_POP_REG_RE,
+    _parse_displacement,
+    _x86_reg_width,
     extract_memory_operands,
     has_any_memory_access,
 )
+from angr_rule_learning.verification.addressing import AddressExpr
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -169,13 +177,103 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
     )
 
 
+_STACK_POINTERS = frozenset({"sp", "wsp", "rsp", "esp"})
+
+_AARCH64_SP_ADDSUB_RE = re.compile(
+    r"^sp\s*,\s*sp\s*,\s*#(?P<imm>(?:0x[0-9a-fA-F]+|\d+))$",
+    re.IGNORECASE,
+)
+_X86_SP_ADDSUB_RE = re.compile(
+    r"^rsp\s*,\s*(?P<imm>(?:0x[0-9a-fA-F]+|\d+))$",
+    re.IGNORECASE,
+)
+
+
+def _instruction_sp_delta(inst: ExtractedInstruction) -> int:
+    """Return the net change in the stack pointer caused by *inst*."""
+    arch = inst.arch.strip().lower()
+    mnemonic = inst.mnemonic.strip().lower()
+    op_str = inst.op_str.strip()
+    if arch == "x86-64":
+        return _x86_sp_delta(mnemonic, op_str)
+    if arch == "aarch64":
+        return _aarch64_sp_delta(mnemonic, op_str)
+    return 0
+
+
+def _x86_sp_delta(mnemonic: str, op_str: str) -> int:
+    if mnemonic == "push":
+        match = _X86_PUSH_POP_REG_RE.search(op_str)
+        if match:
+            reg = match.group("reg").lower()
+            width = _x86_reg_width(reg)
+            return -(width or 8)
+        match = _X86_PUSH_IMM_RE.search(op_str)
+        if match:
+            return -8
+        return 0
+    if mnemonic == "pop":
+        match = _X86_PUSH_POP_REG_RE.search(op_str)
+        if match:
+            reg = match.group("reg").lower()
+            width = _x86_reg_width(reg)
+            return width or 8
+        return 0
+    if mnemonic in {"add", "sub"}:
+        match = _X86_SP_ADDSUB_RE.match(op_str)
+        if match:
+            imm = int(match.group("imm"), 0)
+            return imm if mnemonic == "add" else -imm
+    return 0
+
+
+def _aarch64_sp_delta(mnemonic: str, op_str: str) -> int:
+    if mnemonic in {"stp", "stnp"}:
+        match = _AARCH64_PAIR_PRE_OR_OFFSET_RE.match(op_str)
+        if match and match.group("writeback"):
+            return _parse_displacement(match.group("offset"), "+")
+        return 0
+    if mnemonic in {"ldp", "ldnp"}:
+        match = _AARCH64_PAIR_POST_RE.match(op_str)
+        if match:
+            return _parse_displacement(match.group("offset"), "+")
+        return 0
+    if mnemonic in {"add", "sub"}:
+        match = _AARCH64_SP_ADDSUB_RE.match(op_str)
+        if match:
+            imm = int(match.group("imm"), 0)
+            return imm if mnemonic == "add" else -imm
+    return 0
+
+
+def _adjust_for_sp_delta(op: MemoryOperand, delta: int) -> MemoryOperand:
+    """If *op* uses a stack-pointer base register, adjust its displacement
+    by the cumulative *delta* from preceding instructions."""
+    if delta == 0 or op.address.base not in _STACK_POINTERS:
+        return op
+    return MemoryOperand(
+        kind=op.kind,
+        width=op.width,
+        address=AddressExpr(
+            base=op.address.base,
+            index=op.address.index,
+            scale=op.address.scale,
+            displacement=op.address.displacement + delta,
+        ),
+        text=op.text,
+        value_register=op.value_register,
+        value_immediate=op.value_immediate,
+    )
+
+
 def _collect(window: InstructionWindow) -> tuple[_CollectedMemoryOperand, ...]:
     operands: list[_CollectedMemoryOperand] = []
+    sp_delta = 0
     for instruction in window.instructions:
-        operands.extend(
-            _CollectedMemoryOperand(instruction, operand)
-            for operand in extract_memory_operands(instruction)
-        )
+        for operand in extract_memory_operands(instruction):
+            adjusted = _adjust_for_sp_delta(operand, sp_delta)
+            operands.append(_CollectedMemoryOperand(instruction, adjusted))
+        sp_delta += _instruction_sp_delta(instruction)
     return tuple(operands)
 
 
