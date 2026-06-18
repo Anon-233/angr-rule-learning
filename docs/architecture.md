@@ -176,9 +176,18 @@ parsed as 32-bit memory reads. The verifier compares output register
 expressions after execution, so the memory surface only needs the read address
 and width; the sign extension is checked via the output register relation.
 
-Still unsupported memory forms include full prologue/epilogue modelling
-(`push/pop` versus `stp/ldp`) and x86 read-modify-write arithmetic memory
-operands. These remain separate planned extensions.
+``push``/``pop`` (x86-64) and ``stp``/``ldp`` (AArch64, including
+non-temporal variants) are parsed as ``MemoryOperand`` records with
+stack-pointer-relative addresses.  Full prologue/epilogue *rules* require
+the window to contain matching sp/rsp modifications (e.g. ``sub sp`` /
+``add rsp`` on both sides) so the translation correctly preserves stack
+side-effects.  Windows where only one side modifies the stack pointer
+are rejected as ``one_sided_memory_access`` or
+``memory_access_count_mismatch``.
+
+Still unsupported: x86 read-modify-write arithmetic memory operands,
+x86 ``movaps`` (XMM spill/fill), and AArch64 SIMD memory
+(``ldr q0``/``str q0``).
 
 Rule generation consumes `WindowPair + VerificationCandidate + VerificationReport`
 and produces text rules with typed register placeholders such as `i32_reg1`
@@ -241,23 +250,37 @@ rule.
 
 - AArch64: `ldr`, `ldur`, `str`, `stur` with base-only, base+displacement,
   register-offset, and shifted-index (`lsl #N`) addressing.
+- AArch64: `stp`, `ldp`, `stnp`, `ldnp` with offset, pre-index (`!`),
+  and post-index forms.  Non-temporal variants (``ldnp``/``stnp``) do not
+  support writeback (rejected per ISA rules).
 - x86-64: `mov` with base-only, base+displacement, indexed
   (`base + index*scale`), and indexed+displacement addressing.
+- x86-64: `push` and `pop` as implicit rsp-relative memory operands.
+  64-bit registers (``rNN``, ``rax``, …) and 16-bit operand-size override
+  forms (``rNNw``, ``ax``, …) are supported.  32-bit and 8-bit register
+  names are rejected as not encodable in 64-bit mode.
 - x86-64 memory-source arithmetic: `add`, `sub`, `and`, `or`, `xor`, `imul`
   with a memory source operand are parsed and verified.
 - x86-64 memory-destination read-modify-write (RMW) remains unsupported.
 
 ### Immediate Derivation
 
-Host-only immediates are derived from guest placeholders only through
-explicit, instruction-aware templates:
+Host-only immediates are derived from guest placeholders through
+instruction-aware templates registered per ``(guest_arch, host_arch)`` pair
+in ``derivation._STRATEGIES``.  The derivation framework itself is
+ISA-agnostic.
+
+Current templates for ``("aarch64", "x86-64")``:
 
 - **tbz/tbnz mask**: host mask derived as `(1 << immN)` from the guest
   bit-position immediate.
 - **mov/movk constant**: host 64-bit constant derived as
   `(imm_high << imm_shift) | imm_low` from a guest `mov` + `movk` pair.
 - **Indexed-address scale**: host x86 multiplier derived as `(1 << immN)`
-  from the guest `lsl #immN` shift amount.
+  from the guest `lsl #immN` shift amount.  The ``*`` adjacency check uses
+  the precise span of each ``immN`` occurrence, so the same immediate
+  appearing as both scale and displacement in one operand is handled
+  correctly.
 
 Any host immediate that cannot be expressed through these templates causes
 the rule to be skipped with `unpaired_host_immediate` (a universal rejection
