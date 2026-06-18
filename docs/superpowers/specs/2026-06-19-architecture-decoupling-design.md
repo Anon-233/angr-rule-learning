@@ -129,9 +129,11 @@ Guest and host instruction streams are generalized with their own architecture:
 - Host register classification uses `candidate.host.arch`.
 - Save/restore spelling and register width use the architecture of the stream being
   rewritten.
-- Host fixed-role provenance applies only to host registers. Fixed-role registers
-  are target constraints of generated host code; applying the same rule to guest
-  registers is a category error.
+- Host fixed-role provenance applies only to host registers. A fixed-role register
+  encountered on the guest side is identified with the guest architecture and must
+  never be processed using host policy. Until the rule model can bind a guest
+  fixed-role literal to a generic host value, that shape is rejected rather than
+  emitted with an unbound placeholder.
 - Host fixed-role producer tracing uses host register families and host bit ranges,
   not x86-64 tables selected implicitly.
 - Host-only literal allowances are never passed into guest generalization.
