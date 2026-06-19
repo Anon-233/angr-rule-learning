@@ -17,6 +17,7 @@ from angr_rule_learning.rules.ast import (
 from angr_rule_learning.rules.generalize import (
     _annotate_dead_writes,
     _build_placeholder_map,
+    _verify_host_registers_bound,
     _verify_fixed_role_sources_in_host,
     _writer_covers_consumer,
     GeneratedRule,
@@ -2292,6 +2293,49 @@ def test_verify_sources_rejects_missing_mapping() -> None:
             {},
         )
     assert exc.value.reason == "unbound_fixed_role_register"
+
+
+def test_verify_host_registers_rejects_unbound_typed_register() -> None:
+    guest = (Instruction.from_text("add i32_reg1, i32_reg2"),)
+    host = (Instruction.from_text("add i32_reg1, i32_reg3, i32_reg2"),)
+
+    with pytest.raises(_RuleSkip) as exc:
+        _verify_host_registers_bound(guest, host)
+
+    assert exc.value.reason == "unbound_host_register"
+
+
+def test_verify_host_registers_allows_host_internal_temporary() -> None:
+    guest = (Instruction.from_text("mov i32_reg1, i32_reg2"),)
+    host = (
+        Instruction.from_text("mov i32_tmp1, i32_reg2"),
+        Instruction.from_text("mov i32_reg1, i32_tmp1"),
+    )
+
+    _verify_host_registers_bound(guest, host)
+
+
+def test_verify_host_registers_allows_host_fixed_role_placeholder() -> None:
+    guest = (Instruction.from_text("push i64_reg1"),)
+    host = (Instruction.from_text("str i64_reg1, [sp64, #-8]!"),)
+
+    _verify_host_registers_bound(guest, host)
+
+
+def test_verify_host_registers_checks_compound_operands_and_metadata() -> None:
+    guest = (Instruction.from_text("ldr i32_reg1, [i64_reg2]"),)
+    host = (
+        Instruction(
+            mnemonic="mov",
+            operands=(RegTextOp("dword ptr [i64_reg3]"), RegOp("i32", 32, 1)),
+            meta=(MetaOp("save", (RegOp("i32", 32, 4),)),),
+        ),
+    )
+
+    with pytest.raises(_RuleSkip) as exc:
+        _verify_host_registers_bound(guest, host)
+
+    assert exc.value.reason == "unbound_host_register"
 
 
 def test_no_untyped_temporaries_in_output() -> None:

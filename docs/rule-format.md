@@ -1,8 +1,10 @@
 # Rule Format
 
 `angr-rule-learning` emits plain-text translation rules. Each rule maps a
-guest (AArch64) code fragment to a host (x86-64) code fragment using typed
-placeholders for registers, immediates, branch targets, and temporaries.
+Guest code fragment to a Host code fragment using typed placeholders for
+registers, immediates, branch targets, and temporaries. AArch64 to x86-64 is
+the default direction, but the format itself does not assign an ISA to either
+side.
 
 ## Rule Structure
 
@@ -215,10 +217,11 @@ executing the host fragment.
 
 Rule generation guarantees:
 
-- Every register placeholder on the host side corresponds to a register
-  placeholder on the guest side (no host-only register placeholders).
-- Every immediate placeholder on the host side is a subset of those on the
-  guest side for non-branch rules with memory bindings.
+- Every immediate placeholder on the Host side is present on the Guest side or
+  has an approved derivation from Guest placeholders.
+- Every general-register placeholder on the Host side is present on the Guest
+  side. Fixed-role `spN`/`fpN` placeholders and Host-local `tmpN` placeholders
+  are resolved independently and are exempt.
 - `save`/`restore` annotations are consistent: every `save` has a matching
   `restore` in the same block, and the saved register is never used between
   them.
@@ -233,6 +236,7 @@ expressed with the available placeholder vocabulary:
 | `register_class_mismatch` | Guest and host registers differ in bit-width or kind (integer vs float). |
 | `unsupported_rule_shape` | Register coalescing conflicts — the same guest register maps to different host registers (or vice versa) in a way that cannot be resolved. |
 | `unpaired_host_immediate` | A host-side immediate placeholder has no guest-side counterpart and cannot be derived through any approved template.  This applies to all rule types, not just frame-relative memory rules. |
+| `unbound_host_register` | A Host general-register placeholder has no Guest-side occurrence, so rule application could not bind its value. |
 | `unmapped_register_surface` | The instruction text contains a register that was not classified (should only occur when no `tmp` heuristic applies). |
 | `duplicate_rule` | The generated rule text is identical to a previously emitted rule. |
 | `mismatched_branch_targets` | Guest and host branch targets use different label sets. |

@@ -120,6 +120,9 @@ rule:
   guest-side counterpart and cannot be derived through any approved template.
   This is a universal rejection condition that applies to all rule types, not
   just frame-relative memory rules.
+- `unbound_host_register`: a Host general-register placeholder has no Guest
+  occurrence. Fixed-role stack/frame placeholders and Host-local temporaries
+  are not Guest-bound parameters and are exempt.
 - `unsupported_rule_shape`: the candidate mapping is inconsistent or empty.
 
 AArch64 `xzr` and `wzr` may remain literal because they represent architectural

@@ -25,6 +25,7 @@ from angr_rule_learning.rules.ast import (
     Rule as AstRule,
 )
 from angr_rule_learning.rules.generalize import (
+    _collect_ast_placeholders,
     GeneratedRule,
     RuleDiagnostics,
     consolidate_rules,
@@ -202,6 +203,19 @@ def test_reverse_architecture_pipeline_emits_verified_rules(tmp_path: Path) -> N
     assert host_immediates
     assert all(not operand.aarch64_hash for operand in guest_immediates)
     assert all(operand.aarch64_hash for operand in host_immediates)
+
+    for generated in result.rules:
+        guest_registers = {
+            token
+            for token in _collect_ast_placeholders(generated.rule.guest)
+            if "_reg" in token
+        }
+        host_registers = {
+            token
+            for token in _collect_ast_placeholders(generated.rule.host)
+            if "_reg" in token
+        }
+        assert host_registers <= guest_registers, generated
 
     rules = rules_output.read_text(encoding="utf-8")
     assert ".Guest:\n" in rules

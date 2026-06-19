@@ -295,6 +295,7 @@ class RuleGeneralizer:
             )
             if not _host_immediates_are_derivable(guest_insts, host_insts, candidate):
                 raise _RuleSkip("unpaired_host_immediate")
+            _verify_host_registers_bound(guest_insts, host_insts)
         except _RuleSkip as exc:
             self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
             return None
@@ -480,12 +481,15 @@ def _require_fixed_role_producers(
 
 def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
     """Return the set of placeholder strings appearing in *insts*, collected
-    from typed operands and tokenised compound operand text."""
+    from operands, metadata, and tokenised compound operand text."""
     from angr_rule_learning.rules.ast import LitOp, RegOp, RegTextOp, TmpOp
 
     result: set[str] = set()
     for inst in insts:
-        for op in inst.operands:
+        operands = list(inst.operands)
+        for meta in inst.meta + inst.post_meta:
+            operands.extend(meta.regs)
+        for op in operands:
             if isinstance(op, (RegOp, TmpOp)):
                 result.add(op.to_text())
             elif isinstance(op, (LitOp, RegTextOp)):
@@ -494,6 +498,25 @@ def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
                     if _PARAMETERIZED_TOKEN_RE.match(token):
                         result.add(token)
     return frozenset(result)
+
+
+def _verify_host_registers_bound(
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
+) -> None:
+    """Reject Host register parameters that cannot be supplied by Guest."""
+    guest_registers = {
+        token
+        for token in _collect_ast_placeholders(guest_insts)
+        if _GENERAL_REGISTER_PLACEHOLDER_RE.fullmatch(token)
+    }
+    host_registers = {
+        token
+        for token in _collect_ast_placeholders(host_insts)
+        if _GENERAL_REGISTER_PLACEHOLDER_RE.fullmatch(token)
+    }
+    if not host_registers <= guest_registers:
+        raise _RuleSkip("unbound_host_register")
 
 
 def _verify_fixed_role_sources_in_host(
@@ -1427,8 +1450,9 @@ def _generalize_instructions_with_roles(
 
 
 _PARAMETERIZED_TOKEN_RE = re.compile(
-    r"^(?:i\d+_reg\d+|sp\d+|fp\d+|i\d+_tmp\d+|imm\d+|label\d+)$"
+    r"^(?:[ifv]\d+_reg\d+|sp\d+|fp\d+|[ifv]\d+_tmp\d+|imm\d+|label\d+)$"
 )
+_GENERAL_REGISTER_PLACEHOLDER_RE = re.compile(r"^[ifv]\d+_reg\d+$")
 _KEYWORD_TOKENS = frozenset({"dword", "word", "byte", "qword", "ptr", "lsl"})
 _TOKEN_RE = re.compile(r"\[|\]|0x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[-+*/#]")
 
