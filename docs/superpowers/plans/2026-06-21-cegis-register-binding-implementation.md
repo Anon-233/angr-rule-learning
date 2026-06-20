@@ -189,15 +189,17 @@ uv run ruff check src tests
 
 ```bash
 uv run pytest -q tests/test_extraction_pipeline.py
-./scripts/run_all_tests.sh samples/sources/rich_int.c runs/cegis-rich 1 cegis
-./scripts/run_all_tests.sh samples/sources/smoke_int.c runs/positional-smoke 0 positional
+./scripts/run_all_tests.sh samples/sources/rich_int.c \
+  /tmp/cegis-rich/work /tmp/cegis-rich 1 cegis
+./scripts/run_all_tests.sh samples/sources/smoke_int.c \
+  /tmp/positional-smoke/work /tmp/positional-smoke 0 positional
 ```
 
 - [ ] Commit: `Validate CEGIS register binding end to end`.
 
 ### Task 7: Full Verification, Review, and Main Integration
 
-- [ ] Run the complete quality gate:
+- [x] Run the complete quality gate:
 
 ```bash
 uv run ruff format --check
@@ -207,13 +209,13 @@ git diff --check
 git status --short
 ```
 
-- [ ] Review for architecture direction assumptions, especially any binding of Guest to AArch64 or Host to x86-64.
-- [ ] Review that transfer extraction occurs exactly once per side per `solve()` and that CEGIS rounds only reuse expressions.
-- [ ] Review that synthesis never decides correctness and every returned mapping was accepted by `SemanticVerifier`.
-- [ ] Review that unsupported CEGIS cases never fall back to positional pairing.
-- [ ] Review diagnostics and public documentation against actual behavior.
-- [ ] Fix findings with focused regression tests and commits.
-- [ ] Merge the feature branch into `main`, rerun the complete quality gate on `main`, and report commit hashes plus positional/CEGIS acceptance results.
+- [x] Review for architecture direction assumptions, especially any binding of Guest to AArch64 or Host to x86-64.
+- [x] Review that transfer extraction occurs exactly once per side per `solve()` and that CEGIS rounds only reuse expressions.
+- [x] Review that synthesis never decides correctness and every returned mapping was accepted by `SemanticVerifier`.
+- [x] Review that unsupported CEGIS cases never fall back to positional pairing.
+- [x] Review diagnostics and public documentation against actual behavior.
+- [x] Fix findings with focused regression tests and commits.
+- [x] Merge the feature branch into `main`, rerun the complete quality gate on `main`, and report commit hashes plus positional/CEGIS acceptance results.
 
 ## Execution Status
 
@@ -241,5 +243,5 @@ Review fixes completed before integration:
 - expected angr execution exceptions map to `execution_shape`, while unexpected
   implementation exceptions are no longer hidden by a broad catch.
 
-The remaining action is Task 7 Git commit/merge and the final post-merge quality
-gate.
+Completed on `main` at feature tip `6a1e866`. The post-merge quality gate passed
+with 467 tests and no Ruff or diff-check failures.
