@@ -98,7 +98,7 @@ uv run angr-rule-learning extract samples/sources/smoke_int.c \
   --rules-diagnostics /tmp/angr-rule-learning-rules-diagnostics.json
 ```
 
-Use semantic register binding for register-only windows:
+Use semantic register binding with compatibility fallback:
 
 ```bash
 uv run angr-rule-learning extract samples/sources/rich_int.c \
@@ -111,10 +111,13 @@ uv run angr-rule-learning extract samples/sources/rich_int.c \
   --rules-output /tmp/angr-rule-learning-cegis-rules.txt
 ```
 
-`positional` remains the default binding strategy. `cegis` currently accepts
-only straight-line, register-only integer windows with one to four inputs and
-outputs per side. Unsupported CEGIS windows are diagnosed and are not retried
-with positional binding.
+`positional` remains the default binding strategy. `cegis` uses transfer-assisted
+semantic synthesis for straight-line register windows and bounded verifier-driven
+selector search for parsed memory and branch windows. Surfaces are limited to
+four external inputs and outputs per side. Unsupported or inconclusive searches
+fall back to positional binding and are reported in
+`register_binding_fallbacks`; a CEGIS search that exhausts its supported mapping
+space remains `register_binding_unsat` and does not fall back.
 
 The CLI is a thin wrapper around `ExtractionPipeline` and `BatchVerifier`.
 Pipeline code should call the Python API directly.

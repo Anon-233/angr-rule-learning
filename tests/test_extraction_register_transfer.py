@@ -4,6 +4,7 @@ import angr
 import pytest
 
 from angr_rule_learning.extraction.liveness import WindowSurface
+from angr_rule_learning.extraction.memory_surfaces import MemorySurface
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -17,6 +18,7 @@ from angr_rule_learning.extraction.register_transfer import (
 )
 from angr_rule_learning.verification.execution import FragmentSuccessors
 from angr_rule_learning.verification.verifier import SemanticVerifier
+from angr_rule_learning.verification.candidate import MemorySpec
 
 
 def _window(
@@ -151,7 +153,7 @@ def test_does_not_hide_unexpected_transfer_extractor_errors() -> None:
         WindowPair("r0", (1, 1), guest, host),
         WindowSurface(inputs=("w1",), outputs=("w0",)),
         WindowSurface(inputs=("edi",), outputs=("eax",)),
-        False,
+        MemorySurface(MemorySpec()),
     )
 
     with pytest.raises(TypeError, match="implementation defect"):

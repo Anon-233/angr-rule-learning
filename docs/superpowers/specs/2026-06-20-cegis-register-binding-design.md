@@ -1,5 +1,9 @@
 # CEGIS Register Binding Prototype Design
 
+> Historical prototype specification. Its no-fallback and register-only
+> boundaries were superseded by
+> `2026-06-21-cegis-compatibility-design.md`.
+
 ## Context
 
 The extraction pipeline independently infers Guest and Host register surfaces,

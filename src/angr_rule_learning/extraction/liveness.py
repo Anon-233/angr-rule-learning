@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from angr_rule_learning.arch.registers import register_family
+from angr_rule_learning.arch.registers import is_zero_register, register_family
 from angr_rule_learning.arch.registry import canonical_arch_name
 from angr_rule_learning.extraction.models import (
     ExtractedFunction,
@@ -21,6 +21,8 @@ def families_for_registers(arch: str, registers: tuple[str, ...]) -> tuple[str, 
     seen: set[str] = set()
     result: list[str] = []
     for register in registers:
+        if is_zero_register(arch, register):
+            continue
         family = family_for_register(arch, register)
         if family and family not in seen:
             seen.add(family)
@@ -384,6 +386,8 @@ def _ordered_family_registers(
     seen: set[str] = set()
     result: list[tuple[str, str]] = []
     for register in registers:
+        if is_zero_register(arch, register):
+            continue
         family = family_for_register(arch, register)
         if family and family not in seen:
             seen.add(family)

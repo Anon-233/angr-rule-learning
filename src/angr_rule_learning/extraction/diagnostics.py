@@ -24,6 +24,7 @@ class MiningDiagnostics:
     windows_verified_pass: int = 0
     skip_reasons: Counter[str] = field(default_factory=Counter)
     skip_details: dict[str, Counter[str]] = field(default_factory=dict)
+    register_binding_fallbacks: Counter[str] = field(default_factory=Counter)
     surface_kinds: Counter[str] = field(default_factory=Counter)
     _guest_sizes: list[int] = field(default_factory=list)
     _host_sizes: list[int] = field(default_factory=list)
@@ -63,6 +64,9 @@ class MiningDiagnostics:
         if detail is not None:
             self.skip_details.setdefault(reason, Counter())[detail] += 1
 
+    def record_register_binding_fallback(self, detail: str) -> None:
+        self.register_binding_fallbacks[detail] += 1
+
     def to_json(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "functions": self.functions,
@@ -93,4 +97,8 @@ class MiningDiagnostics:
             }
             if skip_details:
                 payload["skip_details"] = skip_details
+        if self.register_binding_fallbacks:
+            payload["register_binding_fallbacks"] = dict(
+                sorted(self.register_binding_fallbacks.items())
+            )
         return payload

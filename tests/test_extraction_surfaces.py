@@ -403,18 +403,20 @@ def test_surface_inferer_uses_register_binding_solver() -> None:
     liveness = LivenessAnalyzer().analyze(
         (_function(guest, guest_ret), _function(host, host_ret))
     )
+    diagnostics = MiningDiagnostics()
 
     class StubBindingSolver:
         def solve(self, problem):
             assert problem.pair is pair
-            assert not problem.has_memory
+            assert not problem.memory_surface.has_memory
             return RegisterBindingResult(
                 input_registers=(("w1", "esi"), ("w0", "eax")),
                 output_registers=(("w0", "eax"),),
+                fallback_detail="execution_shape",
             )
 
     candidate = SurfaceInferer(
-        MiningDiagnostics(),
+        diagnostics,
         liveness,
         binding_solver=StubBindingSolver(),
     ).infer(pair)
@@ -422,6 +424,7 @@ def test_surface_inferer_uses_register_binding_solver() -> None:
     assert candidate is not None
     assert candidate.input_registers == (("w1", "esi"), ("w0", "eax"))
     assert candidate.output_registers == (("w0", "eax"),)
+    assert diagnostics.to_json()["register_binding_fallbacks"] == {"execution_shape": 1}
 
 
 def test_surface_inferer_records_binding_skip_detail() -> None:

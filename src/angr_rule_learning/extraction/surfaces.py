@@ -85,7 +85,7 @@ class SurfaceInferer:
                     pair,
                     guest_surface,
                     host_surface,
-                    has_memory=memory_surface.has_memory,
+                    memory_surface,
                 )
             )
             if bindings.skip_reason is not None:
@@ -94,6 +94,10 @@ class SurfaceInferer:
                     detail=bindings.skip_detail,
                 )
                 return None
+            if bindings.fallback_detail is not None:
+                self._diagnostics.record_register_binding_fallback(
+                    bindings.fallback_detail
+                )
             surface_kind = guest_surface.kind
 
         candidate = build_verification_candidate(pair, bindings, memory_surface)

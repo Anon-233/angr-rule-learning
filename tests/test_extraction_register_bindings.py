@@ -1,4 +1,5 @@
 from angr_rule_learning.extraction.liveness import WindowSurface
+from angr_rule_learning.extraction.memory_surfaces import MemorySurface
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -6,8 +7,10 @@ from angr_rule_learning.extraction.models import (
 )
 from angr_rule_learning.extraction.register_bindings import (
     BindingProblem,
+    RegisterBindingResult,
     RegisterBindingSolver,
 )
+from angr_rule_learning.verification.candidate import MemorySpec
 
 
 def _pair() -> WindowPair:
@@ -43,7 +46,7 @@ def test_register_binding_solver_uses_positional_placeholder_binding() -> None:
     guest = WindowSurface(inputs=("w0", "w1"), outputs=("w2",))
     host = WindowSurface(inputs=("edi", "esi"), outputs=("eax",))
 
-    problem = BindingProblem(_pair(), guest, host, has_memory=False)
+    problem = BindingProblem(_pair(), guest, host, MemorySurface(MemorySpec()))
     result = RegisterBindingSolver().solve(problem)
 
     assert result.skip_reason is None
@@ -55,7 +58,7 @@ def test_register_binding_solver_rejects_incompatible_surfaces() -> None:
     guest = WindowSurface(inputs=("w0", "w1"), outputs=("w2",))
     host = WindowSurface(inputs=("edi",), outputs=("eax",))
 
-    problem = BindingProblem(_pair(), guest, host, has_memory=False)
+    problem = BindingProblem(_pair(), guest, host, MemorySurface(MemorySpec()))
     result = RegisterBindingSolver().solve(problem)
 
     assert result.skip_reason == "ambiguous_register_surface"
@@ -68,9 +71,21 @@ def test_binding_problem_preserves_semantic_context() -> None:
     guest = WindowSurface(inputs=("w0",), outputs=("w1",))
     host = WindowSurface(inputs=("edi",), outputs=("eax",))
 
-    problem = BindingProblem(pair, guest, host, has_memory=True)
+    memory_surface = MemorySurface(MemorySpec(), guest_operands=(object(),))
+    problem = BindingProblem(pair, guest, host, memory_surface)
 
     assert problem.pair is pair
     assert problem.guest_surface is guest
     assert problem.host_surface is host
-    assert problem.has_memory
+    assert problem.memory_surface is memory_surface
+
+
+def test_binding_result_preserves_successful_fallback_reason() -> None:
+    result = RegisterBindingResult(
+        input_registers=(("w0", "edi"),),
+        output_registers=(("w1", "eax"),),
+        fallback_detail="register_limit_exceeded:guest_inputs:5>4",
+    )
+
+    assert result.skip_reason is None
+    assert result.fallback_detail == "register_limit_exceeded:guest_inputs:5>4"

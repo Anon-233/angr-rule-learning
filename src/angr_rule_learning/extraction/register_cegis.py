@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from itertools import combinations
+from dataclasses import dataclass, replace
+from itertools import combinations, permutations, product
 
 import claripy
 
@@ -12,7 +12,6 @@ from angr_rule_learning.arch.registers import (
 from angr_rule_learning.extraction.blocks import is_control_flow
 from angr_rule_learning.extraction.candidates import build_verification_candidate
 from angr_rule_learning.extraction.liveness import is_condition_family
-from angr_rule_learning.extraction.memory_surfaces import MemorySurface
 from angr_rule_learning.extraction.register_bindings import (
     BindingProblem,
     RegisterBindingResult,
@@ -23,9 +22,11 @@ from angr_rule_learning.extraction.register_transfer import (
     RegisterTransferExtractor,
     SymbolicRegisterTransfer,
 )
-from angr_rule_learning.verification.candidate import MemorySpec
 from angr_rule_learning.verification.report import VerificationReport
 from angr_rule_learning.verification.verifier import SemanticVerifier
+
+
+_MAX_SURFACE_REGISTERS = 4
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,7 @@ class CegisRegisterBindingSolver(RegisterBindingSolver):
         *,
         transfer_extractor: RegisterTransferExtractor | None = None,
         synthesizer: SelectorSynthesizer | None = None,
+        fallback_solver: RegisterBindingSolver | None = None,
         max_iterations: int = 16,
     ) -> None:
         if max_iterations < 1:
@@ -116,12 +118,16 @@ class CegisRegisterBindingSolver(RegisterBindingSolver):
         self._verifier = verifier
         self._transfer_extractor = transfer_extractor or RegisterTransferExtractor()
         self._synthesizer = synthesizer or SelectorSynthesizer()
+        self._fallback_solver = fallback_solver or RegisterBindingSolver()
         self._max_iterations = max_iterations
 
     def solve(self, problem: BindingProblem) -> RegisterBindingResult:
         eligibility_detail = _eligibility_detail(problem)
         if eligibility_detail is not None:
-            return _unsupported(eligibility_detail)
+            return self._fallback(problem, eligibility_detail)
+
+        if _requires_verifier_search(problem):
+            return self._solve_with_verifier(problem)
 
         try:
             guest_transfer = self._transfer_extractor.extract(
@@ -135,7 +141,7 @@ class CegisRegisterBindingSolver(RegisterBindingSolver):
                 side="host",
             )
         except RegisterTransferError as exc:
-            return _inconclusive(exc.detail)
+            return self._fallback(problem, exc.detail)
 
         samples = [BindingSample((0,) * len(guest_transfer.input_registers))]
         for _iteration in range(self._max_iterations):
@@ -152,27 +158,82 @@ class CegisRegisterBindingSolver(RegisterBindingSolver):
             candidate = build_verification_candidate(
                 problem.pair,
                 proposal,
-                MemorySurface(MemorySpec()),
+                problem.memory_surface,
             )
             report = self._verifier.verify(candidate)
             if report.equivalent:
                 return proposal
             if report.status == "unsupported":
-                return _inconclusive("verification_unsupported")
+                return self._fallback(problem, "verification_unsupported")
             if report.status == "error":
-                return _inconclusive("verification_error")
+                return self._fallback(problem, "verification_error")
 
             counterexample = _guest_counterexample(
                 report,
                 guest_transfer,
             )
             if counterexample is None:
-                return _inconclusive("counterexample_missing")
+                return self._fallback(problem, "counterexample_missing")
             if counterexample in samples:
-                return _inconclusive("counterexample_repeated")
+                return self._fallback(problem, "counterexample_repeated")
             samples.append(counterexample)
 
-        return _inconclusive("iteration_limit")
+        return self._fallback(problem, "iteration_limit")
+
+    def _solve_with_verifier(self, problem: BindingProblem) -> RegisterBindingResult:
+        guest_arch = problem.pair.guest.instructions[0].arch
+        host_arch = problem.pair.host.instructions[0].arch
+        input_options = _binding_options(
+            guest_arch,
+            problem.guest_surface.inputs,
+            host_arch,
+            problem.host_surface.inputs,
+        )
+        output_options = _binding_options(
+            guest_arch,
+            problem.guest_surface.outputs,
+            host_arch,
+            problem.host_surface.outputs,
+        )
+        if input_options is None or output_options is None:
+            return self._fallback(problem, "selector_domain_empty")
+
+        fixed_pairs = problem.memory_surface.input_registers
+        for input_pairs, output_pairs in product(input_options, output_options):
+            if not _respects_fixed_pairs(input_pairs, fixed_pairs):
+                continue
+            proposal = RegisterBindingResult(
+                input_registers=input_pairs,
+                output_registers=output_pairs,
+            )
+            candidate = build_verification_candidate(
+                problem.pair,
+                proposal,
+                problem.memory_surface,
+            )
+            report = self._verifier.verify(candidate)
+            if report.equivalent:
+                return proposal
+            if report.status == "unsupported":
+                return self._fallback(problem, "verification_unsupported")
+            if report.status == "error":
+                return self._fallback(problem, "verification_error")
+
+        return RegisterBindingResult(skip_reason="register_binding_unsat")
+
+    def _fallback(
+        self,
+        problem: BindingProblem,
+        detail: str,
+    ) -> RegisterBindingResult:
+        result = self._fallback_solver.solve(problem)
+        if result.skip_reason is None:
+            return replace(result, fallback_detail=detail)
+        return replace(
+            result,
+            skip_detail=result.skip_detail or f"cegis_fallback_failed:{detail}",
+            fallback_detail=detail,
+        )
 
 
 def make_register_binding_solver(
@@ -189,53 +250,30 @@ def make_register_binding_solver(
     raise ValueError(f"unsupported register binding strategy: {strategy}")
 
 
-def _unsupported(detail: str) -> RegisterBindingResult:
-    return RegisterBindingResult(
-        skip_reason="unsupported_register_binding_surface",
-        skip_detail=detail,
-    )
-
-
-def _inconclusive(detail: str) -> RegisterBindingResult:
-    return RegisterBindingResult(
-        skip_reason="register_binding_inconclusive",
-        skip_detail=detail,
-    )
-
-
 def _eligibility_detail(problem: BindingProblem) -> str | None:
     guest_surface = problem.guest_surface
     host_surface = problem.host_surface
-    if problem.has_memory:
-        return "memory_surface"
-    if guest_surface.kind != "register" or host_surface.kind != "register":
-        return "branch_surface"
-    if any(
-        is_control_flow(inst.arch, inst.mnemonic)
-        for window in (problem.pair.guest, problem.pair.host)
-        for inst in window.instructions
-    ):
-        return "branch_surface"
-    if _has_flag_surface(problem):
-        return "flag_surface"
+    if guest_surface.kind != host_surface.kind:
+        return "surface_kind_mismatch"
 
     guest_inputs = guest_surface.inputs
     host_inputs = host_surface.inputs
     guest_outputs = guest_surface.outputs
     host_outputs = host_surface.outputs
-    counts = tuple(
-        len(registers)
-        for registers in (
-            guest_inputs,
-            host_inputs,
-            guest_outputs,
-            host_outputs,
-        )
+    named_registers = (
+        ("guest_inputs", guest_inputs),
+        ("host_inputs", host_inputs),
+        ("guest_outputs", guest_outputs),
+        ("host_outputs", host_outputs),
     )
-    if any(count < 1 or count > 4 for count in counts):
-        return "register_limit_exceeded"
+    for name, registers in named_registers:
+        if len(registers) > _MAX_SURFACE_REGISTERS:
+            return (
+                f"register_limit_exceeded:{name}:"
+                f"{len(registers)}>{_MAX_SURFACE_REGISTERS}"
+            )
     if len(guest_inputs) != len(host_inputs) or len(guest_outputs) != len(host_outputs):
-        return "width_domain_empty"
+        return "register_count_mismatch"
 
     guest_arch = problem.pair.guest.instructions[0].arch
     host_arch = problem.pair.host.instructions[0].arch
@@ -269,6 +307,63 @@ def _eligibility_detail(problem: BindingProblem) -> str | None:
     if not _width_domains_exist(guest_output_widths, host_output_widths):
         return "width_domain_empty"
     return None
+
+
+def _requires_verifier_search(problem: BindingProblem) -> bool:
+    if problem.memory_surface.has_memory:
+        return True
+    if problem.guest_surface.kind != "register":
+        return True
+    if _has_flag_surface(problem):
+        return True
+    return any(
+        is_control_flow(inst.arch, inst.mnemonic)
+        for window in (problem.pair.guest, problem.pair.host)
+        for inst in window.instructions
+    )
+
+
+def _binding_options(
+    guest_arch: str,
+    guest_registers: tuple[str, ...],
+    host_arch: str,
+    host_registers: tuple[str, ...],
+) -> tuple[tuple[tuple[str, str], ...], ...] | None:
+    if len(guest_registers) != len(host_registers):
+        return None
+    guest_widths = _register_widths(guest_arch, guest_registers)
+    host_widths = _register_widths(host_arch, host_registers)
+    if guest_widths is None or host_widths is None:
+        return None
+
+    result: list[tuple[tuple[str, str], ...]] = []
+    for guest_order in permutations(range(len(guest_registers))):
+        if all(
+            guest_widths[guest_index] == host_widths[host_index]
+            for host_index, guest_index in enumerate(guest_order)
+        ):
+            result.append(
+                tuple(
+                    (guest_registers[guest_index], host_register)
+                    for guest_index, host_register in zip(
+                        guest_order, host_registers, strict=True
+                    )
+                )
+            )
+    return tuple(result) or None
+
+
+def _respects_fixed_pairs(
+    proposal: tuple[tuple[str, str], ...],
+    fixed_pairs: tuple[tuple[str, str], ...],
+) -> bool:
+    by_guest = dict(proposal)
+    by_host = {host: guest for guest, host in proposal}
+    return all(
+        (guest not in by_guest or by_guest[guest] == host)
+        and (host not in by_host or by_host[host] == guest)
+        for guest, host in fixed_pairs
+    )
 
 
 def _has_flag_surface(problem: BindingProblem) -> bool:

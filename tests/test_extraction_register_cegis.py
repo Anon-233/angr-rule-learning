@@ -4,6 +4,7 @@ import claripy
 import pytest
 
 from angr_rule_learning.extraction.liveness import WindowSurface
+from angr_rule_learning.extraction.memory_surfaces import MemorySurface
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -19,6 +20,13 @@ from angr_rule_learning.extraction.register_bindings import (
     RegisterBindingResult,
 )
 from angr_rule_learning.extraction.register_transfer import SymbolicRegisterTransfer
+from angr_rule_learning.extraction.register_transfer import RegisterTransferError
+from angr_rule_learning.verification.candidate import (
+    MemoryAccessExpectation,
+    MemoryBinding,
+    MemorySlot,
+    MemorySpec,
+)
 from angr_rule_learning.verification.report import CheckResult, VerificationReport
 from angr_rule_learning.verification.verifier import SemanticVerifier
 
@@ -172,7 +180,11 @@ def _problem(
         InstructionWindow("r0", "guest", guest_instructions),
         InstructionWindow("r0", "host", host_instructions),
     )
-    return BindingProblem(pair, guest_surface, host_surface, has_memory)
+    memory_surface = MemorySurface(
+        MemorySpec(),
+        guest_operands=((object(),) if has_memory else ()),
+    )
+    return BindingProblem(pair, guest_surface, host_surface, memory_surface)
 
 
 def _identity_transfers() -> tuple[
@@ -261,45 +273,264 @@ def test_cegis_extracts_each_transfer_once_and_feeds_back_counterexample() -> No
     ]
 
 
-@pytest.mark.parametrize(
-    ("guest_surface", "host_surface", "has_memory", "detail"),
-    [
-        (
+def test_cegis_accepts_zero_input_constant_transfer() -> None:
+    guest = _transfer((), (), (), ("w0",), (claripy.BVV(9, 32),))
+    host = _transfer((), (), (), ("eax",), (claripy.BVV(9, 32),))
+
+    class Extractor:
+        def extract(self, window, surface, *, side):
+            return guest if side == "guest" else host
+
+    class PassingVerifier:
+        def verify(self, candidate):
+            return VerificationReport(candidate.candidate_id, "pass")
+
+    result = CegisRegisterBindingSolver(
+        PassingVerifier(), transfer_extractor=Extractor()
+    ).solve(
+        _problem(
+            WindowSurface(outputs=("w0",)),
+            WindowSurface(outputs=("eax",)),
+        )
+    )
+
+    assert result.skip_reason is None
+    assert result.input_registers == ()
+    assert result.output_registers == (("w0", "eax"),)
+
+
+def test_cegis_memory_search_uses_complete_memory_candidate() -> None:
+    memory_spec = MemorySpec(
+        slots=(MemorySlot("mem0", 4),),
+        bindings=(MemoryBinding("mem0", "x0", "rdi", "read"),),
+        accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+    )
+    memory_surface = MemorySurface(
+        memory_spec,
+        guest_operands=(object(),),
+        host_operands=(object(),),
+    )
+    problem = _problem(
+        WindowSurface(inputs=("w0", "w1"), outputs=("w0",)),
+        WindowSurface(inputs=("edi", "esi"), outputs=("eax",)),
+    )
+    problem = BindingProblem(
+        problem.pair,
+        problem.guest_surface,
+        problem.host_surface,
+        memory_surface,
+    )
+
+    class MappingVerifier:
+        def __init__(self):
+            self.candidates = []
+
+        def verify(self, candidate):
+            self.candidates.append(candidate)
+            status = (
+                "pass"
+                if candidate.input_registers == (("w1", "edi"), ("w0", "esi"))
+                else "fail"
+            )
+            return VerificationReport(candidate.candidate_id, status)
+
+    verifier = MappingVerifier()
+    result = CegisRegisterBindingSolver(verifier).solve(problem)
+
+    assert result.skip_reason is None
+    assert result.input_registers == (("w1", "edi"), ("w0", "esi"))
+    assert len(verifier.candidates) == 2
+    assert all(candidate.memory is memory_spec for candidate in verifier.candidates)
+
+
+def test_cegis_branch_search_stops_at_first_verified_mapping() -> None:
+    problem = _problem(
+        WindowSurface(inputs=("w0", "w1"), kind="branch"),
+        WindowSurface(inputs=("edi", "esi"), kind="branch"),
+    )
+
+    class MappingVerifier:
+        def __init__(self):
+            self.calls = 0
+
+        def verify(self, candidate):
+            self.calls += 1
+            status = (
+                "pass"
+                if candidate.input_registers == (("w0", "edi"), ("w1", "esi"))
+                else "fail"
+            )
+            return VerificationReport(candidate.candidate_id, status)
+
+    verifier = MappingVerifier()
+    result = CegisRegisterBindingSolver(verifier).solve(problem)
+
+    assert result.skip_reason is None
+    assert result.input_registers == (("w0", "edi"), ("w1", "esi"))
+    assert result.output_registers == ()
+    assert verifier.calls == 1
+
+
+def test_cegis_branch_search_proves_real_terminal_guards() -> None:
+    guest_instructions = (
+        _instruction(
+            "aarch64",
+            0x1000,
+            "1f 00 01 eb",
+            "cmp",
+            ("x0", "x1"),
+            ("nzcv",),
+        ),
+        _instruction(
+            "aarch64",
+            0x1004,
+            "40 00 00 54",
+            "b.eq",
+            ("nzcv",),
+            (),
+        ),
+    )
+    host_instructions = (
+        _instruction(
+            "x86-64",
+            0x2000,
+            "48 39 c8",
+            "cmp",
+            ("rax", "rcx"),
+            ("rflags",),
+        ),
+        _instruction(
+            "x86-64",
+            0x2003,
+            "74 02",
+            "je",
+            ("rflags",),
+            (),
+        ),
+    )
+    problem = _problem(
+        WindowSurface(inputs=("x0", "x1"), kind="branch"),
+        WindowSurface(inputs=("rax", "rcx"), kind="branch"),
+        guest_instructions=guest_instructions,
+        host_instructions=host_instructions,
+    )
+
+    result = CegisRegisterBindingSolver(SemanticVerifier()).solve(problem)
+
+    assert result.skip_reason is None
+    assert result.input_registers == (("x0", "rax"), ("x1", "rcx"))
+
+
+def test_cegis_over_limit_uses_positional_fallback_with_explicit_reason() -> None:
+    registers = tuple(f"w{index}" for index in range(5))
+    host_registers = ("eax", "ebx", "ecx", "edx", "esi")
+
+    class Fallback:
+        def __init__(self):
+            self.calls = 0
+
+        def solve(self, problem):
+            self.calls += 1
+            return RegisterBindingResult(
+                input_registers=tuple(zip(registers, host_registers, strict=True)),
+                output_registers=(("w0", "eax"),),
+            )
+
+    fallback = Fallback()
+    result = CegisRegisterBindingSolver(
+        SemanticVerifier(), fallback_solver=fallback
+    ).solve(
+        _problem(
+            WindowSurface(inputs=registers, outputs=("w0",)),
+            WindowSurface(inputs=host_registers, outputs=("eax",)),
+        )
+    )
+
+    assert result.skip_reason is None
+    assert result.fallback_detail == "register_limit_exceeded:guest_inputs:5>4"
+    assert fallback.calls == 1
+
+
+def test_cegis_transfer_inconclusive_uses_positional_fallback() -> None:
+    class FailingExtractor:
+        def extract(self, window, surface, *, side):
+            raise RegisterTransferError("execution_shape")
+
+    class Fallback:
+        def solve(self, problem):
+            return RegisterBindingResult(
+                input_registers=(("w0", "edi"),),
+                output_registers=(("w0", "eax"),),
+            )
+
+    result = CegisRegisterBindingSolver(
+        SemanticVerifier(),
+        transfer_extractor=FailingExtractor(),
+        fallback_solver=Fallback(),
+    ).solve(
+        _problem(
             WindowSurface(inputs=("w0",), outputs=("w0",)),
             WindowSurface(inputs=("edi",), outputs=("eax",)),
-            True,
-            "memory_surface",
-        ),
-        (
-            WindowSurface(inputs=("w0",), outputs=("w0",), kind="branch"),
-            WindowSurface(inputs=("edi",), outputs=("eax",)),
-            False,
-            "branch_surface",
-        ),
+        )
+    )
+
+    assert result.skip_reason is None
+    assert result.fallback_detail == "execution_shape"
+
+
+def test_cegis_unsat_does_not_use_positional_fallback() -> None:
+    guest, host = _identity_transfers()
+
+    class Extractor:
+        def extract(self, window, surface, *, side):
+            return guest if side == "guest" else host
+
+    class UnsatSynthesizer:
+        def synthesize(self, guest, host, samples):
+            return None
+
+    class ForbiddenFallback:
+        def solve(self, problem):
+            raise AssertionError("unsat must not use positional fallback")
+
+    result = CegisRegisterBindingSolver(
+        SemanticVerifier(),
+        transfer_extractor=Extractor(),
+        synthesizer=UnsatSynthesizer(),
+        fallback_solver=ForbiddenFallback(),
+    ).solve(
+        _problem(
+            WindowSurface(inputs=("w0", "w1"), outputs=("w0",)),
+            WindowSurface(inputs=("edi", "esi"), outputs=("eax",)),
+        )
+    )
+
+    assert result.skip_reason == "register_binding_unsat"
+
+
+@pytest.mark.parametrize(
+    ("guest_surface", "host_surface", "detail"),
+    [
         (
             WindowSurface(inputs=("v0",), outputs=("v0",)),
             WindowSurface(inputs=("xmm0",), outputs=("xmm0",)),
-            False,
             "non_integer_register",
         ),
         (
             WindowSurface(inputs=("w0",), outputs=("w0",)),
             WindowSurface(inputs=("rax",), outputs=("rax",)),
-            False,
             "width_domain_empty",
         ),
         (
             WindowSurface(inputs=("w0",), outputs=("w0",)),
             WindowSurface(inputs=("cl",), outputs=("eax",)),
-            False,
             "unmodeled_input",
         ),
     ],
 )
-def test_cegis_rejects_unsupported_surface_without_fallback(
+def test_cegis_unsupported_surface_uses_positional_fallback(
     guest_surface,
     host_surface,
-    has_memory,
     detail,
 ) -> None:
     class UnusedVerifier:
@@ -307,15 +538,17 @@ def test_cegis_rejects_unsupported_surface_without_fallback(
             raise AssertionError("unsupported surface reached verifier")
 
     result = CegisRegisterBindingSolver(UnusedVerifier()).solve(
-        _problem(guest_surface, host_surface, has_memory=has_memory)
+        _problem(guest_surface, host_surface)
     )
 
-    assert result.skip_reason == "unsupported_register_binding_surface"
-    assert result.skip_detail == detail
-    assert result.input_registers == ()
+    assert result.skip_reason is None
+    assert result.fallback_detail == detail
+    assert result.input_registers == tuple(
+        zip(guest_surface.inputs, host_surface.inputs, strict=True)
+    )
 
 
-def test_cegis_returns_inconclusive_for_repeated_counterexample() -> None:
+def test_cegis_repeated_counterexample_uses_positional_fallback() -> None:
     guest_transfer, host_transfer = _identity_transfers()
 
     class Extractor:
@@ -356,8 +589,8 @@ def test_cegis_returns_inconclusive_for_repeated_counterexample() -> None:
         )
     )
 
-    assert result.skip_reason == "register_binding_inconclusive"
-    assert result.skip_detail == "counterexample_repeated"
+    assert result.skip_reason is None
+    assert result.fallback_detail == "counterexample_repeated"
 
 
 def test_cegis_stops_after_first_fully_verified_binding() -> None:
@@ -404,7 +637,7 @@ def test_cegis_stops_after_first_fully_verified_binding() -> None:
     assert verifier.calls == 1
 
 
-def test_cegis_reports_iteration_limit_after_distinct_counterexamples() -> None:
+def test_cegis_iteration_limit_uses_positional_fallback() -> None:
     guest_transfer, host_transfer = _identity_transfers()
 
     class Extractor:
@@ -451,8 +684,8 @@ def test_cegis_reports_iteration_limit_after_distinct_counterexamples() -> None:
         )
     )
 
-    assert result.skip_reason == "register_binding_inconclusive"
-    assert result.skip_detail == "iteration_limit"
+    assert result.skip_reason is None
+    assert result.fallback_detail == "iteration_limit"
     assert verifier.calls == 2
 
 

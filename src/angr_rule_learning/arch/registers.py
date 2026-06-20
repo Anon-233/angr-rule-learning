@@ -81,9 +81,20 @@ _FIXED_ROLE_FAMILIES = {
     "x86-64": frozenset({"rcx"}),
 }
 
+_ZERO_REGISTERS = {
+    "aarch64": frozenset({"xzr", "wzr"}),
+}
+
 
 def normalize_register_name(register: str) -> str:
     return register.strip().lower()
+
+
+def is_zero_register(arch: str, register: str) -> bool:
+    canonical = canonical_arch_name(arch)
+    return normalize_register_name(register) in _ZERO_REGISTERS.get(
+        canonical, frozenset()
+    )
 
 
 def register_family(arch: str, register: str) -> str:

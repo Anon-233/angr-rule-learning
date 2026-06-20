@@ -52,3 +52,21 @@ def test_omits_skip_details_when_only_empty_detail_counters_exist() -> None:
     payload = diagnostics.to_json()
 
     assert "skip_details" not in payload
+
+
+def test_records_register_binding_fallbacks_separately_from_skips() -> None:
+    diagnostics = MiningDiagnostics()
+
+    diagnostics.record_register_binding_fallback(
+        "register_limit_exceeded:guest_inputs:5>4"
+    )
+    diagnostics.record_register_binding_fallback(
+        "register_limit_exceeded:guest_inputs:5>4"
+    )
+
+    payload = diagnostics.to_json()
+
+    assert payload["register_binding_fallbacks"] == {
+        "register_limit_exceeded:guest_inputs:5>4": 2
+    }
+    assert payload["skip_reasons"] == {}

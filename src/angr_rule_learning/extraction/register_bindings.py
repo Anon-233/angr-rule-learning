@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from angr_rule_learning.extraction.liveness import WindowSurface
+from angr_rule_learning.extraction.memory_surfaces import MemorySurface
 from angr_rule_learning.extraction.models import WindowPair
 
 
@@ -14,7 +15,7 @@ class BindingProblem:
     pair: WindowPair
     guest_surface: WindowSurface
     host_surface: WindowSurface
-    has_memory: bool
+    memory_surface: MemorySurface
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class RegisterBindingResult:
     output_registers: RegisterPairs = field(default_factory=tuple)
     skip_reason: str | None = None
     skip_detail: str | None = None
+    fallback_detail: str | None = None
 
 
 class RegisterBindingSolver:

@@ -660,6 +660,10 @@ def test_cegis_register_binding_emits_fixed_role_shift_rules(tmp_path: Path) -> 
     assert "\tlsl " in rules_text
     assert "\tmov ecx, i32_reg" in rules_text
     assert "\tshl i32_reg" in rules_text
+    assert "\tmov i32_reg1, #imm1" in rules_text
+    assert "\tmovabs i64_reg1, ${(imm2 << imm3) | imm1}" in rules_text
+    assert "\tldr i32_reg1, [i64_reg2]" in rules_text
+    assert "\tmov i32_reg1, dword ptr [i64_reg2]" in rules_text
     assert all(
         host_register != "cl"
         for candidate in result.candidates

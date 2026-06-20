@@ -49,6 +49,10 @@ def test_families_for_registers_preserves_first_use_order() -> None:
     )
 
 
+def test_aarch64_zero_registers_are_not_live_register_families() -> None:
+    assert families_for_registers("aarch64", ("wzr", "xzr", "w0")) == ("x0",)
+
+
 def test_abi_exit_live_out_includes_return_and_callee_saved() -> None:
     assert abi_exit_live_out("aarch64") == frozenset(
         {

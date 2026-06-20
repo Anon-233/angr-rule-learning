@@ -174,14 +174,14 @@ invertible.
 `extraction.register_bindings` defines the single boundary that converts
 independent Guest and Host `WindowSurface` values into paired input and output
 registers. `BindingProblem` carries both surfaces, the `WindowPair`, and the
-structured memory-presence decision. `SurfaceInferer` consumes the resulting
+complete `MemorySurface`. `SurfaceInferer` consumes the resulting
 `RegisterBindingResult` and does not construct register pairs itself.
 
 Two strategies implement this boundary. `positional` remains the default and
 pairs equal-sized surfaces with `zip` for compatibility. The opt-in `cegis`
-strategy supports small, straight-line, register-only integer windows. It
-rejects unsupported windows explicitly and never falls back to positional
-pairing.
+strategy accepts equal-cardinality surfaces with at most four external inputs
+and outputs per side. Zero inputs or outputs are valid when register outputs,
+memory events, or branch guards still provide an observable effect.
 
 For CEGIS, `RegisterTransferExtractor` independently symbolically executes the
 Guest and Host fragment once and caches their output expressions over distinct
@@ -193,10 +193,18 @@ the next Guest input sample; transfer expressions are not re-extracted. The
 first verifier-proved mapping is returned, so synthesis filters proposals while
 the existing verifier remains the correctness boundary.
 
-Current CEGIS coarse skips are `unsupported_register_binding_surface`,
-`register_binding_unsat`, and `register_binding_inconclusive`. Details identify
-memory, branch, flag, non-integer, register-limit, width-domain, execution,
-verification, counterexample, and iteration-limit failures.
+Parsed memory and branch windows use bounded verifier-driven selector search
+instead of the register transfer summary. Each proposal carries the complete
+memory slots, address bindings, aliases, and access expectations. Structurally
+inferred memory register pairs constrain selector proposals where those pairs
+are already known.
+
+If transfer extraction, selector modelling, or verification is unsupported or
+inconclusive, CEGIS invokes positional binding as a compatibility heuristic.
+Successful fallbacks are counted in `register_binding_fallbacks` with their
+cause, separately from window skips. Exhausting every supported selector
+mapping returns `register_binding_unsat` and does not fall back. Register-limit
+details identify the side, surface role, observed count, and limit of four.
 
 ### Memory Surface Inference
 
