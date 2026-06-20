@@ -81,6 +81,7 @@ src/angr_rule_learning/
     align.py
     windows.py
     surfaces.py
+    register_bindings.py
     memory_operands.py
     memory_surfaces.py
     liveness.py
@@ -133,6 +134,7 @@ single C source
      -> SurfaceInferer
         -> memory_surfaces.infer_memory_surface (AddressExpr pairing)
         -> liveness.WindowSurfaceInferer (register/liveness surface)
+        -> register_bindings.RegisterBindingSolver (cross-side bindings)
      -> VerificationCandidate values + candidate JSONL
   -> verification.BatchVerifier
      -> addressing.parse_address_binding (AddressExpr for memory bindings)
@@ -162,6 +164,21 @@ fragment because generated Host code must establish that physical register.
 Immediate derivation templates remain registered by
 `(guest_arch, host_arch)` because those transformations are not generally
 invertible.
+
+### Register Binding Boundary
+
+`extraction.register_bindings.RegisterBindingSolver` is the single boundary
+that converts independent Guest and Host `WindowSurface` values into paired
+input and output registers. `SurfaceInferer` consumes its typed
+`RegisterBindingResult` and does not construct positional register pairs
+itself.
+
+The current solver is intentionally a placeholder: after checking register
+counts and surface kinds, it pairs both sides positionally with `zip`. This
+preserves existing behavior while isolating the known-unsound ordering
+assumption. Future provenance, constraint, or SMT-backed matching belongs in
+this module and can use the supplied `WindowPair` without changing candidate
+construction.
 
 ### Memory Surface Inference
 

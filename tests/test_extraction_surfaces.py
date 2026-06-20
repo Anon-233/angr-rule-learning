@@ -13,6 +13,7 @@ from angr_rule_learning.extraction.models import (
     SourceLocation,
     WindowPair,
 )
+from angr_rule_learning.extraction.register_bindings import RegisterBindingResult
 from angr_rule_learning.extraction.surfaces import SurfaceInferer
 
 
@@ -381,6 +382,44 @@ def _function(*instructions: ExtractedInstruction) -> ExtractedFunction:
         size=sum(inst.size for inst in instructions),
         instructions=instructions,
     )
+
+
+def test_surface_inferer_uses_register_binding_solver() -> None:
+    guest = _inst(
+        "aarch64",
+        0x1000,
+        ("w0", "w1"),
+        ("w0",),
+    )
+    host = _inst(
+        "x86-64",
+        0x2000,
+        ("eax", "esi"),
+        ("eax", "rflags"),
+    )
+    guest_ret = _inst("aarch64", 0x1004, (), (), mnemonic="ret")
+    host_ret = _inst("x86-64", 0x2003, (), (), mnemonic="ret")
+    pair = _multi_window_pair((guest,), (host,))
+    liveness = LivenessAnalyzer().analyze(
+        (_function(guest, guest_ret), _function(host, host_ret))
+    )
+
+    class StubBindingSolver:
+        def solve(self, pair, guest_surface, host_surface):
+            return RegisterBindingResult(
+                input_registers=(("w1", "esi"), ("w0", "eax")),
+                output_registers=(("w0", "eax"),),
+            )
+
+    candidate = SurfaceInferer(
+        MiningDiagnostics(),
+        liveness,
+        binding_solver=StubBindingSolver(),
+    ).infer(pair)
+
+    assert candidate is not None
+    assert candidate.input_registers == (("w1", "esi"), ("w0", "eax"))
+    assert candidate.output_registers == (("w0", "eax"),)
 
 
 def test_surface_inferer_rejects_unbound_fixed_role_input() -> None:

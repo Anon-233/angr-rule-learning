@@ -17,6 +17,10 @@ from angr_rule_learning.extraction.models import (
     InstructionWindow,
     WindowPair,
 )
+from angr_rule_learning.extraction.register_bindings import (
+    RegisterBindingResult,
+    RegisterBindingSolver,
+)
 from angr_rule_learning.verification.candidate import (
     Clobbers,
     CodeFragment,
@@ -29,9 +33,11 @@ class SurfaceInferer:
         self,
         diagnostics: MiningDiagnostics,
         liveness: LivenessIndex,
+        binding_solver: RegisterBindingSolver | None = None,
     ) -> None:
         self._diagnostics = diagnostics
         self._surface_inferer = WindowSurfaceInferer(liveness)
+        self._binding_solver = binding_solver or RegisterBindingSolver()
 
     def infer(self, pair: WindowPair) -> VerificationCandidate | None:
         control_flow_detail = _unsupported_control_flow_detail(pair.guest)
@@ -69,33 +75,25 @@ class SurfaceInferer:
             surface.skip_reason == "no_verifiable_surface"
             for surface in (guest_surface, host_surface)
         ):
-            guest_inputs: tuple[str, ...] = ()
-            host_inputs: tuple[str, ...] = ()
-            guest_outputs: tuple[str, ...] = ()
-            host_outputs: tuple[str, ...] = ()
+            bindings = RegisterBindingResult()
             surface_kind = "memory"
         else:
             for surface in (guest_surface, host_surface):
                 if surface.skip_reason is not None:
                     self._diagnostics.record_window_skipped(surface.skip_reason)
                     return None
-            if len(guest_surface.inputs) != len(host_surface.inputs) or len(
-                guest_surface.outputs
-            ) != len(host_surface.outputs):
-                self._diagnostics.record_window_skipped("ambiguous_register_surface")
+            bindings = self._binding_solver.solve(
+                pair,
+                guest_surface,
+                host_surface,
+            )
+            if bindings.skip_reason is not None:
+                self._diagnostics.record_window_skipped(bindings.skip_reason)
                 return None
-            if guest_surface.kind != host_surface.kind:
-                self._diagnostics.record_window_skipped("ambiguous_register_surface")
-                return None
-            guest_inputs = guest_surface.inputs
-            host_inputs = host_surface.inputs
-            guest_outputs = guest_surface.outputs
-            host_outputs = host_surface.outputs
             surface_kind = guest_surface.kind
 
-        input_registers = tuple(zip(guest_inputs, host_inputs, strict=True))
         input_registers = _merge_register_pairs(
-            input_registers, memory_surface.input_registers
+            bindings.input_registers, memory_surface.input_registers
         )
 
         candidate = VerificationCandidate(
@@ -113,7 +111,7 @@ class SurfaceInferer:
                 pair.host.instruction_count,
             ),
             input_registers=input_registers,
-            output_registers=tuple(zip(guest_outputs, host_outputs, strict=True)),
+            output_registers=bindings.output_registers,
             output_flags=(),
             memory=memory_surface.spec,
             preconditions=(),
@@ -126,7 +124,7 @@ class SurfaceInferer:
             if surface_kind == "memory"
             else (
                 ("branch",)
-                if surface_kind == "branch" and not guest_outputs
+                if surface_kind == "branch" and not bindings.output_registers
                 else ("register",)
             ),
         )
