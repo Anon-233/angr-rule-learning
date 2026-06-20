@@ -79,6 +79,20 @@ def test_guest_fixed_role_is_detected_with_guest_architecture() -> None:
     assert excinfo.value.reason == "unsupported_rule_shape"
 
 
+def test_host_fixed_role_cannot_be_used_as_input_mapping() -> None:
+    candidate = VerificationCandidate(
+        candidate_id="host-fixed-role-input",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "0102", 1),
+        input_registers=(("w1", "cl"),),
+    )
+
+    with pytest.raises(_RuleSkip) as excinfo:
+        _build_placeholder_map(candidate, "aarch64", "x86-64")
+
+    assert excinfo.value.reason == "unsupported_rule_shape"
+
+
 def _inst(
     arch: str,
     address: int,

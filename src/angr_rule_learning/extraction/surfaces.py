@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from angr_rule_learning.arch.registers import (
+    is_fixed_role_register,
+    register_bit_range,
+    register_family,
+)
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 from angr_rule_learning.extraction.liveness import (
     LivenessIndex,
@@ -36,6 +41,16 @@ class SurfaceInferer:
             self._diagnostics.record_window_skipped(
                 "unsupported_control_flow_surface",
                 detail=control_flow_detail,
+            )
+            return None
+
+        fixed_role_detail = _unbound_fixed_role_detail(pair.guest)
+        if fixed_role_detail is None:
+            fixed_role_detail = _unbound_fixed_role_detail(pair.host)
+        if fixed_role_detail is not None:
+            self._diagnostics.record_window_skipped(
+                "unbound_fixed_role_register",
+                detail=fixed_role_detail,
             )
             return None
 
@@ -126,6 +141,31 @@ def _candidate_id(pair: WindowPair) -> str:
         f"h{pair.host.instructions[0].address:x}"
         f"-{pair.host.instructions[-1].end_address:x}"
     )
+
+
+def _unbound_fixed_role_detail(window: InstructionWindow) -> str | None:
+    prior_writes: list[str] = []
+    for inst in window.instructions:
+        for read_reg in inst.read_registers:
+            if not is_fixed_role_register(inst.arch, read_reg):
+                continue
+            if not any(
+                _write_covers_read(inst.arch, write_reg, read_reg)
+                for write_reg in prior_writes
+            ):
+                return f"{inst.arch}:{read_reg.lower()}"
+        prior_writes.extend(inst.write_registers)
+    return None
+
+
+def _write_covers_read(arch: str, writer: str, reader: str) -> bool:
+    if register_family(arch, writer) != register_family(arch, reader):
+        return False
+    writer_range = register_bit_range(arch, writer)
+    reader_range = register_bit_range(arch, reader)
+    if writer_range is None or reader_range is None:
+        return False
+    return writer_range[0] <= reader_range[0] and writer_range[1] >= reader_range[1]
 
 
 def _unsupported_control_flow_detail(window: InstructionWindow) -> str | None:

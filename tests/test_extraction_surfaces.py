@@ -3,9 +3,11 @@ import pytest
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 from angr_rule_learning.extraction.liveness import (
     InstructionLiveness,
+    LivenessAnalyzer,
     LivenessIndex,
 )
 from angr_rule_learning.extraction.models import (
+    ExtractedFunction,
     ExtractedInstruction,
     InstructionWindow,
     SourceLocation,
@@ -369,6 +371,84 @@ def _multi_window_pair(
         guest=InstructionWindow("r0", "guest", guest_insts),
         host=InstructionWindow("r0", "host", host_insts),
     )
+
+
+def _function(*instructions: ExtractedInstruction) -> ExtractedFunction:
+    return ExtractedFunction(
+        arch=instructions[0].arch,
+        name=instructions[0].function,
+        address=instructions[0].address,
+        size=sum(inst.size for inst in instructions),
+        instructions=instructions,
+    )
+
+
+def test_surface_inferer_rejects_unbound_fixed_role_input() -> None:
+    guest = _inst(
+        "aarch64",
+        0x1000,
+        ("w0", "w1"),
+        ("w0",),
+        mnemonic="lsl",
+    )
+    host = _inst(
+        "x86-64",
+        0x2000,
+        ("eax", "cl"),
+        ("eax", "rflags"),
+        mnemonic="shl",
+    )
+    guest_ret = _inst("aarch64", 0x1004, (), (), mnemonic="ret")
+    host_ret = _inst("x86-64", 0x2003, (), (), mnemonic="ret")
+    pair = _multi_window_pair((guest,), (host,))
+    diagnostics = MiningDiagnostics()
+    liveness = LivenessAnalyzer().analyze(
+        (_function(guest, guest_ret), _function(host, host_ret))
+    )
+
+    candidate = SurfaceInferer(diagnostics, liveness).infer(pair)
+
+    assert candidate is None
+    assert diagnostics.skip_reasons == {"unbound_fixed_role_register": 1}
+
+
+def test_surface_inferer_accepts_fixed_role_with_visible_producer() -> None:
+    guest = _inst(
+        "aarch64",
+        0x1000,
+        ("w0", "w1"),
+        ("w0",),
+        mnemonic="lsl",
+    )
+    host_mov = _inst(
+        "x86-64",
+        0x2000,
+        ("esi",),
+        ("ecx",),
+        mnemonic="mov",
+    )
+    host_shift = _inst(
+        "x86-64",
+        0x2003,
+        ("eax", "cl"),
+        ("eax", "rflags"),
+        mnemonic="shl",
+    )
+    guest_ret = _inst("aarch64", 0x1004, (), (), mnemonic="ret")
+    host_ret = _inst("x86-64", 0x2006, (), (), mnemonic="ret")
+    pair = _multi_window_pair((guest,), (host_mov, host_shift))
+    diagnostics = MiningDiagnostics()
+    liveness = LivenessAnalyzer().analyze(
+        (
+            _function(guest, guest_ret),
+            _function(host_mov, host_shift, host_ret),
+        )
+    )
+
+    candidate = SurfaceInferer(diagnostics, liveness).infer(pair)
+
+    assert candidate is not None
+    assert all(host_reg != "cl" for _, host_reg in candidate.input_registers)
 
 
 def test_surface_inferer_rejects_mixed_supported_unsupported_memory() -> None:

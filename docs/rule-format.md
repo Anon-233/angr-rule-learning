@@ -208,6 +208,12 @@ register.  The instruction text retains the original sub-register name
 (e.g. mov ecx, i32_reg2; shl i32_reg1, cl with save rcx /
 restore rcx annotations).
 
+Fixed-role registers are never generalized through cross-ISA input bindings.
+For example, `w1` cannot be paired directly with `cl`. A rule containing
+`shl ..., cl` must also contain an earlier producer whose write covers `cl`,
+such as `mov ecx, i32_reg2`; otherwise extraction rejects the window with
+`unbound_fixed_role_register`.
+
 ## Semantic Contract
 
 A rule describes an equivalence: if the guest and host share the same

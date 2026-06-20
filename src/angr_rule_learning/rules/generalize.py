@@ -229,11 +229,11 @@ class RuleGeneralizer:
         try:
             guest_arch = candidate.guest.arch
             host_arch = candidate.host.arch
-            mapping, role_split = _build_placeholder_map(
-                candidate, guest_arch, host_arch
-            )
             fixed_producers, fixed_sources = _require_fixed_role_producers(
                 window, candidate
+            )
+            mapping, role_split = _build_placeholder_map(
+                candidate, guest_arch, host_arch
             )
             internal_temps = _identify_internal_temps(window, candidate)
             mapping.update(internal_temps)
@@ -654,19 +654,15 @@ def _build_placeholder_map(
 
         guest_fixed = is_fixed_role_register(guest_arch, guest_reg)
         host_fixed = is_fixed_role_register(host_arch, host_reg)
-        if guest_fixed:
-            # The current rule format cannot bind a Guest fixed-role literal
-            # to a generic Host placeholder without losing its value source.
+        if guest_fixed or host_fixed:
+            # A fixed-role value must be established by an instruction inside
+            # the corresponding fragment, not by a cross-ISA input binding.
             raise _RuleSkip("unsupported_rule_shape")
 
         guest_class = _classify_for_rule(guest_arch, guest_reg)
         host_class = _classify_for_rule(host_arch, host_reg)
         if guest_class != host_class:
-            # Allow architecturally fixed host registers (e.g. cl for
-            # shift counts) to match any integer-width guest register.
-            # The host register is emitted as a literal in the output.
-            if not (host_fixed and guest_class.kind == "i"):
-                raise _RuleSkip("register_class_mismatch")
+            raise _RuleSkip("register_class_mismatch")
         guest_existing = mapping.get(guest_reg)
         host_existing = mapping.get(host_reg)
 

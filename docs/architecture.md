@@ -336,7 +336,9 @@ classified via ``is_fixed_role_register()`` in ``arch/registers.py`` and are
 emitted as literals in rule output.
 
 For correctness, every fixed-role register *read* must have a visible
-reaching definition in the Host window.  The producer target register
+reaching definition earlier on the same side of the window. Surface inference
+rejects an unbound read before candidate verification, and fixed-role registers
+cannot appear in cross-ISA `input_registers` pairs. The producer target register
 (e.g. ``ecx`` feeding into ``cl``) is preserved as a literal rather than
 generalised to a ``tmpN`` placeholder, so the family relationship
 (``ecx`` → ``cl``) is explicit in the emitted rule.  Rules lacking a
@@ -354,11 +356,10 @@ widest family register (e.g. ``save rcx`` / ``restore rcx``) to
 correctly preserve the full physical register, even when the instruction
 text writes a sub-register (``ecx``, ``cx``, ``cl``).
 
-The family and covering bit range are queried using the candidate's Host
-architecture. A fixed-role register on the Guest side is identified using the
-Guest architecture; until the rule format can bind that literal to a generic
-Host value, this shape is rejected as unsupported rather than emitted with an
-unbound placeholder.
+The family and covering bit range are queried using the architecture of the
+fragment being inspected. This policy is symmetric: neither Guest nor Host may
+use a fixed-role register as an unexplained boundary value. Learning rules for
+fixed-role values supplied directly at fragment entry remains unsupported.
 
 ## Candidate Boundary
 
