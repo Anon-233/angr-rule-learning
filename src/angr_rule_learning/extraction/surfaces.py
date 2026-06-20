@@ -5,6 +5,7 @@ from angr_rule_learning.arch.registers import (
     register_bit_range,
     register_family,
 )
+from angr_rule_learning.extraction.candidates import build_verification_candidate
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 from angr_rule_learning.extraction.liveness import (
     LivenessIndex,
@@ -18,14 +19,11 @@ from angr_rule_learning.extraction.models import (
     WindowPair,
 )
 from angr_rule_learning.extraction.register_bindings import (
+    BindingProblem,
     RegisterBindingResult,
     RegisterBindingSolver,
 )
-from angr_rule_learning.verification.candidate import (
-    Clobbers,
-    CodeFragment,
-    VerificationCandidate,
-)
+from angr_rule_learning.verification.candidate import VerificationCandidate
 
 
 class SurfaceInferer:
@@ -83,40 +81,22 @@ class SurfaceInferer:
                     self._diagnostics.record_window_skipped(surface.skip_reason)
                     return None
             bindings = self._binding_solver.solve(
-                pair,
-                guest_surface,
-                host_surface,
+                BindingProblem(
+                    pair,
+                    guest_surface,
+                    host_surface,
+                    has_memory=memory_surface.has_memory,
+                )
             )
             if bindings.skip_reason is not None:
-                self._diagnostics.record_window_skipped(bindings.skip_reason)
+                self._diagnostics.record_window_skipped(
+                    bindings.skip_reason,
+                    detail=bindings.skip_detail,
+                )
                 return None
             surface_kind = guest_surface.kind
 
-        input_registers = _merge_register_pairs(
-            bindings.input_registers, memory_surface.input_registers
-        )
-
-        candidate = VerificationCandidate(
-            candidate_id=_candidate_id(pair),
-            guest=CodeFragment(
-                pair.guest.instructions[0].arch,
-                pair.guest.address,
-                pair.guest.code_hex,
-                pair.guest.instruction_count,
-            ),
-            host=CodeFragment(
-                pair.host.instructions[0].arch,
-                pair.host.address,
-                pair.host.code_hex,
-                pair.host.instruction_count,
-            ),
-            input_registers=input_registers,
-            output_registers=bindings.output_registers,
-            output_flags=(),
-            memory=memory_surface.spec,
-            preconditions=(),
-            clobbers=Clobbers(),
-        )
+        candidate = build_verification_candidate(pair, bindings, memory_surface)
         self._diagnostics.record_window_emitted(
             pair.guest.instruction_count,
             pair.host.instruction_count,
@@ -129,16 +109,6 @@ class SurfaceInferer:
             ),
         )
         return candidate
-
-
-def _candidate_id(pair: WindowPair) -> str:
-    return (
-        f"{pair.region_id}:"
-        f"g{pair.guest.instructions[0].address:x}"
-        f"-{pair.guest.instructions[-1].end_address:x}:"
-        f"h{pair.host.instructions[0].address:x}"
-        f"-{pair.host.instructions[-1].end_address:x}"
-    )
 
 
 def _unbound_fixed_role_detail(window: InstructionWindow) -> str | None:
@@ -187,16 +157,3 @@ def _unsupported_control_flow_detail(window: InstructionWindow) -> str | None:
             if mnemonic == "ret":
                 return "x86_64_return"
     return None
-
-
-def _merge_register_pairs(
-    left: tuple[tuple[str, str], ...],
-    right: tuple[tuple[str, str], ...],
-) -> tuple[tuple[str, str], ...]:
-    result: list[tuple[str, str]] = []
-    seen: set[tuple[str, str]] = set()
-    for pair in left + right:
-        if pair not in seen:
-            seen.add(pair)
-            result.append(pair)
-    return tuple(result)

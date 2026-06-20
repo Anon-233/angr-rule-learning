@@ -405,7 +405,9 @@ def test_surface_inferer_uses_register_binding_solver() -> None:
     )
 
     class StubBindingSolver:
-        def solve(self, pair, guest_surface, host_surface):
+        def solve(self, problem):
+            assert problem.pair is pair
+            assert not problem.has_memory
             return RegisterBindingResult(
                 input_registers=(("w1", "esi"), ("w0", "eax")),
                 output_registers=(("w0", "eax"),),
@@ -420,6 +422,36 @@ def test_surface_inferer_uses_register_binding_solver() -> None:
     assert candidate is not None
     assert candidate.input_registers == (("w1", "esi"), ("w0", "eax"))
     assert candidate.output_registers == (("w0", "eax"),)
+
+
+def test_surface_inferer_records_binding_skip_detail() -> None:
+    guest = _inst("aarch64", 0x1000, ("w1",), ("w0",))
+    host = _inst("x86-64", 0x2000, ("esi",), ("eax",))
+    guest_ret = _inst("aarch64", 0x1004, (), (), mnemonic="ret")
+    host_ret = _inst("x86-64", 0x2003, (), (), mnemonic="ret")
+    pair = _multi_window_pair((guest,), (host,))
+    liveness = LivenessAnalyzer().analyze(
+        (_function(guest, guest_ret), _function(host, host_ret))
+    )
+    diagnostics = MiningDiagnostics()
+
+    class RejectingBindingSolver:
+        def solve(self, problem):
+            return RegisterBindingResult(
+                skip_reason="unsupported_register_binding_surface",
+                skip_detail="branch_surface",
+            )
+
+    candidate = SurfaceInferer(
+        diagnostics,
+        liveness,
+        binding_solver=RejectingBindingSolver(),
+    ).infer(pair)
+
+    assert candidate is None
+    assert diagnostics.to_json()["skip_details"] == {
+        "unsupported_register_binding_surface": {"branch_surface": 1}
+    }
 
 
 def test_surface_inferer_rejects_unbound_fixed_role_input() -> None:

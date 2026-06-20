@@ -10,20 +10,25 @@ RegisterPairs = tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
+class BindingProblem:
+    pair: WindowPair
+    guest_surface: WindowSurface
+    host_surface: WindowSurface
+    has_memory: bool
+
+
+@dataclass(frozen=True)
 class RegisterBindingResult:
     input_registers: RegisterPairs = field(default_factory=tuple)
     output_registers: RegisterPairs = field(default_factory=tuple)
     skip_reason: str | None = None
+    skip_detail: str | None = None
 
 
 class RegisterBindingSolver:
-    def solve(
-        self,
-        pair: WindowPair,
-        guest_surface: WindowSurface,
-        host_surface: WindowSurface,
-    ) -> RegisterBindingResult:
-        del pair  # Reserved for semantic binding strategies.
+    def solve(self, problem: BindingProblem) -> RegisterBindingResult:
+        guest_surface = problem.guest_surface
+        host_surface = problem.host_surface
         if (
             len(guest_surface.inputs) != len(host_surface.inputs)
             or len(guest_surface.outputs) != len(host_surface.outputs)
