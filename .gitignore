@@ -9,5 +9,8 @@ wheels/
 # Virtual environments
 .venv
 
+# Local Git worktrees
+.worktrees/
+
 # Project-generated run artifacts
 runs/
