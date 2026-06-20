@@ -215,3 +215,31 @@ git status --short
 - [ ] Fix findings with focused regression tests and commits.
 - [ ] Merge the feature branch into `main`, rerun the complete quality gate on `main`, and report commit hashes plus positional/CEGIS acceptance results.
 
+## Execution Status
+
+Implemented on `feature/cegis-register-binding`:
+
+- Tasks 1-6, including typed binding problems, shared candidate construction,
+  one-time symbolic transfer extraction, finite selector synthesis, the CEGIS
+  verifier loop, CLI/config integration, documentation, and end-to-end tests.
+- Architecture-direction regression coverage for the fixed-role shift mapping.
+- A control-flow classifier correction so AArch64 `bic`/`bfi` are not treated
+  as branches while x86 jump, call, return, and interrupt variants remain
+  recognized.
+
+Acceptance evidence:
+
+- full pytest suite: 467 tests passed;
+- CEGIS `rich_int.c -O1`: 51 candidates emitted, 51 verifier passes, 18 rules;
+- emitted shift rules contain an explicit `mov ecx, i32_regN` producer;
+- positional `smoke_int.c -O0`: 210 candidates, 120 verifier passes, 13 rules.
+
+Review fixes completed before integration:
+
+- ordinary `ecx`/`rcx` inputs are no longer rejected as fixed-role live-ins;
+  only the actual fixed-role `cl` boundary remains unsupported;
+- expected angr execution exceptions map to `execution_shape`, while unexpected
+  implementation exceptions are no longer hidden by a broad catch.
+
+The remaining action is Task 7 Git commit/merge and the final post-merge quality
+gate.

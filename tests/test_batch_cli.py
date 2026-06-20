@@ -307,3 +307,33 @@ def test_diagnose_cli_propagates_architecture_direction(tmp_path, monkeypatch) -
 
     assert captured["config"].guest_arch == "x86-64"
     assert captured["config"].host_arch == "aarch64"
+
+
+def test_extract_cli_propagates_register_binding_strategy(
+    tmp_path, monkeypatch
+) -> None:
+    captured = {}
+
+    def fake_run(self, config, **kwargs) -> None:
+        captured["config"] = config
+
+    monkeypatch.setattr("angr_rule_learning.cli.ExtractionPipeline.run", fake_run)
+    source = tmp_path / "sample.c"
+    source.write_text("int f(void) { return 1; }\n", encoding="utf-8")
+
+    main(
+        [
+            "extract",
+            str(source),
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--output",
+            str(tmp_path / "candidates.jsonl"),
+            "--diagnostics",
+            str(tmp_path / "diagnostics.json"),
+            "--register-binding",
+            "cegis",
+        ]
+    )
+
+    assert captured["config"].register_binding == "cegis"

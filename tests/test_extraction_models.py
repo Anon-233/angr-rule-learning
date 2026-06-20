@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from angr_rule_learning.extraction.config import (
     CompileOptions,
     ExtractionConfig,
@@ -37,6 +39,7 @@ def test_extraction_config_defaults() -> None:
     assert config.work_dir == Path("build/extract")
     assert config.guest_arch == "aarch64"
     assert config.host_arch == "x86-64"
+    assert config.register_binding == "positional"
     assert config.compile_options.optimization == "0"
     assert config.compile_options.command_flags_for_side("guest") == (
         "-g",
@@ -45,6 +48,25 @@ def test_extraction_config_defaults() -> None:
         "-fno-builtin",
     )
     assert config.window_limits.stage_order()[0] == (1, 1)
+
+
+def test_extraction_config_accepts_cegis_register_binding() -> None:
+    config = ExtractionConfig(
+        source=Path("sample.c"),
+        work_dir=Path("build/extract"),
+        register_binding="CEGIS",
+    )
+
+    assert config.register_binding == "cegis"
+
+
+def test_extraction_config_rejects_unknown_register_binding() -> None:
+    with pytest.raises(ValueError, match="unsupported register binding strategy"):
+        ExtractionConfig(
+            source=Path("sample.c"),
+            work_dir=Path("build/extract"),
+            register_binding="permutation",
+        )
 
 
 def test_compile_options_exposes_side_specific_flags() -> None:

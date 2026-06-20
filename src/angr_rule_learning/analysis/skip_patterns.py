@@ -23,8 +23,10 @@ from angr_rule_learning.extraction.models import (
 )
 from angr_rule_learning.extraction.object import ObjectExtractor
 from angr_rule_learning.extraction.pipeline import ExtractionData
+from angr_rule_learning.extraction.register_cegis import make_register_binding_solver
 from angr_rule_learning.extraction.surfaces import SurfaceInferer
 from angr_rule_learning.extraction.windows import WindowMiner
+from angr_rule_learning.verification.verifier import SemanticVerifier
 
 _HEX_RE = re.compile(r"(?<![A-Za-z0-9_])-?0x[0-9a-fA-F]+")
 _DEC_RE = re.compile(r"(?<![A-Za-z0-9_])-?\d+(?![A-Za-z0-9_])")
@@ -206,7 +208,16 @@ class SkipPatternAnalyzer:
         diagnostics = MiningDiagnostics()
         data = self._regions(config, diagnostics)
         miner = WindowMiner(config.window_limits, diagnostics)
-        inferer = SurfaceInferer(diagnostics, data.liveness)
+        inferer = SurfaceInferer(
+            diagnostics,
+            data.liveness,
+            binding_solver=make_register_binding_solver(
+                config.register_binding,
+                verifier=(
+                    SemanticVerifier() if config.register_binding == "cegis" else None
+                ),
+            ),
+        )
         aggregator = SkipPatternAggregator()
 
         _SELECTED_DETAILS = {"unparsed_memory_access", "one_sided_memory_access"}

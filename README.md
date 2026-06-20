@@ -31,6 +31,8 @@ Implemented:
   load/store/mov patterns, including x86 memory-source arithmetic
   (add/sub/and/or/xor/imul);
 - compiler/debug-info based candidate extraction for one C source file;
+- opt-in CEGIS register binding for small straight-line integer windows,
+  using verifier counterexamples instead of positional register order;
 - verified rule generalization producing plain text rules with typed
   register and address placeholders.
 
@@ -95,6 +97,24 @@ uv run angr-rule-learning extract samples/sources/smoke_int.c \
   --rules-output /tmp/angr-rule-learning-rules.txt \
   --rules-diagnostics /tmp/angr-rule-learning-rules-diagnostics.json
 ```
+
+Use semantic register binding for register-only windows:
+
+```bash
+uv run angr-rule-learning extract samples/sources/rich_int.c \
+  --work-dir /tmp/angr-rule-learning-cegis \
+  --output /tmp/angr-rule-learning-cegis-candidates.jsonl \
+  --diagnostics /tmp/angr-rule-learning-cegis-diagnostics.json \
+  --optimization 1 \
+  --register-binding cegis \
+  --verify \
+  --rules-output /tmp/angr-rule-learning-cegis-rules.txt
+```
+
+`positional` remains the default binding strategy. `cegis` currently accepts
+only straight-line, register-only integer windows with one to four inputs and
+outputs per side. Unsupported CEGIS windows are diagnosed and are not retried
+with positional binding.
 
 The CLI is a thin wrapper around `ExtractionPipeline` and `BatchVerifier`.
 Pipeline code should call the Python API directly.

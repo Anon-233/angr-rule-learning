@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from angr_rule_learning.cli import main
-from angr_rule_learning.extraction.config import ExtractionConfig
+from angr_rule_learning.extraction.config import CompileOptions, ExtractionConfig
 from angr_rule_learning.extraction.models import (
     AlignmentRegion,
     ExtractedInstruction,
@@ -627,6 +627,46 @@ def test_indexed_memory_rule_smoke(tmp_path: Path) -> None:
     assert "addr64_" not in rules_text
     assert "i64_reg" in rules_text
     assert "lsl #imm" in rules_text or "*imm" in rules_text, rules_text[:1000]
+
+
+def test_cegis_register_binding_emits_fixed_role_shift_rules(tmp_path: Path) -> None:
+    if shutil.which("clang") is None:
+        return
+    source = Path(__file__).resolve().parents[1] / "samples" / "sources" / "rich_int.c"
+    candidates_output = tmp_path / "candidates.jsonl"
+    diagnostics_output = tmp_path / "diagnostics.json"
+    rules_output = tmp_path / "rules.txt"
+    try:
+        result = ExtractionPipeline().run(
+            ExtractionConfig(
+                source=source,
+                work_dir=tmp_path / "work",
+                register_binding="cegis",
+                compile_options=CompileOptions(optimization="1"),
+            ),
+            candidates_output=candidates_output,
+            diagnostics_output=diagnostics_output,
+            verify=True,
+            rules_output=rules_output,
+        )
+    except RuntimeError as exc:
+        if "error: unable to create target" in str(exc).lower():
+            return
+        if "cannot find clang" in str(exc).lower():
+            return
+        raise
+
+    rules_text = rules_output.read_text(encoding="utf-8")
+    assert "\tlsl " in rules_text
+    assert "\tmov ecx, i32_reg" in rules_text
+    assert "\tshl i32_reg" in rules_text
+    assert all(
+        host_register != "cl"
+        for candidate in result.candidates
+        for _guest_register, host_register in candidate.input_registers
+    )
+    assert result.diagnostics.windows_verified_pass > 0
+    assert all(report.status != "error" for report in result.reports)
 
 
 def test_consolidation_diagnostics_match_emitted_count():

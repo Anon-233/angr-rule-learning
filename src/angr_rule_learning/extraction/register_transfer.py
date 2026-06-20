@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import angr
 import claripy
 
 from angr_rule_learning.extraction.candidates import fragment_for_window
@@ -46,7 +47,10 @@ class RegisterTransferExtractor:
             raise ValueError(f"unsupported transfer side: {side}")
 
         fragment = fragment_for_window(window)
-        state = self._executor.make_state(fragment)
+        try:
+            state = self._executor.make_state(fragment)
+        except (angr.errors.AngrError, angr.errors.SimError) as exc:
+            raise RegisterTransferError("execution_shape") from exc
         input_symbols: list[claripy.ast.BV] = []
         input_widths: list[int] = []
         for register in surface.inputs:
@@ -60,7 +64,10 @@ class RegisterTransferExtractor:
             input_symbols.append(symbol)
             input_widths.append(width)
 
-        successors = self._executor.successors(fragment, state)
+        try:
+            successors = self._executor.successors(fragment, state)
+        except (angr.errors.AngrError, angr.errors.SimError) as exc:
+            raise RegisterTransferError("execution_shape") from exc
         if successors.count != 1:
             raise RegisterTransferError("execution_shape")
         post_state = successors.successors[0]

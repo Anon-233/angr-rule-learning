@@ -7,10 +7,20 @@ from angr_rule_learning.extraction.models import (
 )
 
 
-CONTROL_FLOW_PREFIXES = {
-    "aarch64": ("b", "cbz", "cbnz", "tbz", "tbnz", "br", "blr", "ret", "eret"),
-    "x86-64": ("j", "ret", "call", "syscall", "int"),
+_AARCH64_CONTROL_FLOW = {
+    "b",
+    "bl",
+    "br",
+    "blr",
+    "cbz",
+    "cbnz",
+    "tbz",
+    "tbnz",
+    "ret",
+    "eret",
 }
+
+_X86_64_CONTROL_FLOW_PREFIXES = ("j", "ret", "call", "syscall", "int", "iret")
 
 
 class BasicBlockBuilder:
@@ -19,7 +29,7 @@ class BasicBlockBuilder:
         current: list[ExtractedInstruction] = []
         for instruction in function.instructions:
             current.append(instruction)
-            if _is_control_flow(function.arch, instruction.mnemonic):
+            if is_control_flow(function.arch, instruction.mnemonic):
                 blocks.append(_block(function, len(blocks), tuple(current)))
                 current = []
         if current:
@@ -40,9 +50,11 @@ def _block(
     )
 
 
-def _is_control_flow(arch: str, mnemonic: str) -> bool:
+def is_control_flow(arch: str, mnemonic: str) -> bool:
+    normalized_arch = arch.strip().lower()
     normalized = mnemonic.strip().lower()
-    prefixes = CONTROL_FLOW_PREFIXES.get(arch.strip().lower(), ())
-    if arch.strip().lower() == "x86-64" and normalized == "jmp":
-        return True
-    return any(normalized.startswith(prefix) for prefix in prefixes)
+    if normalized_arch == "aarch64":
+        return normalized in _AARCH64_CONTROL_FLOW or normalized.startswith("b.")
+    if normalized_arch == "x86-64":
+        return normalized.startswith(_X86_64_CONTROL_FLOW_PREFIXES)
+    return False

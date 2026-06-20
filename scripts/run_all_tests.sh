@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   cat <<'EOF'
-Usage: run_all_tests.sh [OPTIONS] [SOURCE] [WORK_DIR] [OUT_DIR] [OPT_LEVEL]
+Usage: run_all_tests.sh [OPTIONS] [SOURCE] [WORK_DIR] [OUT_DIR] [OPT_LEVEL] [REGISTER_BINDING]
 
   Run the end-to-end extraction + verify + rules pipeline on a single
   C source file and print a diagnostics and rules summary.
@@ -21,6 +21,9 @@ Positional arguments (all optional, defaults shown):
                   Default: /tmp/angr-rule-learning-review
   OPT_LEVEL       Clang optimization level (0, 1, 2, 3, s).
                   Default: 0
+  REGISTER_BINDING
+                  Register binding strategy (positional or cegis).
+                  Default: positional
 
 Output files written to OUT_DIR:
   candidates.jsonl              Extracted verification candidates.
@@ -39,7 +42,7 @@ Examples:
 
   # Full customisation
   ./scripts/run_all_tests.sh samples/sources/my_sample.c \
-    /tmp/my-work /tmp/my-out 0
+    /tmp/my-work /tmp/my-out 1 cegis
 EOF
 }
 
@@ -55,6 +58,7 @@ SOURCE="${1:-samples/sources/memory_int.c}"
 WORK_DIR="${2:-/tmp/angr-rule-learning-review/work}"
 OUT_DIR="${3:-/tmp/angr-rule-learning-review}"
 OPT="${4:-0}"
+REGISTER_BINDING="${5:-positional}"
 
 CANDIDATES="${OUT_DIR}/candidates.jsonl"
 DIAGNOSTICS="${OUT_DIR}/diagnostics.json"
@@ -70,6 +74,7 @@ uv run angr-rule-learning extract "${SOURCE}" \
   --output                  "${CANDIDATES}" \
   --diagnostics             "${DIAGNOSTICS}" \
   --optimization            "${OPT}" \
+  --register-binding        "${REGISTER_BINDING}" \
   --verify \
   --rules-output            "${RULES}" \
   --rules-diagnostics       "${RULES_DIAGNOSTICS}" \
@@ -80,7 +85,8 @@ echo "=== skip pattern analysis (${SOURCE}) ==="
 uv run angr-rule-learning diagnose-skips "${SOURCE}" \
   --work-dir    "${WORK_DIR}-skips" \
   --output      "${SKIP_PATTERNS}" \
-  --optimization "${OPT}"
+  --optimization "${OPT}" \
+  --register-binding "${REGISTER_BINDING}"
 
 # ── Summaries ───────────────────────────────────────────────────
 echo ""

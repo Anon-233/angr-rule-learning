@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import angr
 import pytest
 
 from angr_rule_learning.extraction.liveness import WindowSurface
-from angr_rule_learning.extraction.models import ExtractedInstruction, InstructionWindow
+from angr_rule_learning.extraction.models import (
+    ExtractedInstruction,
+    InstructionWindow,
+    WindowPair,
+)
+from angr_rule_learning.extraction.register_bindings import BindingProblem
+from angr_rule_learning.extraction.register_cegis import CegisRegisterBindingSolver
 from angr_rule_learning.extraction.register_transfer import (
     RegisterTransferError,
     RegisterTransferExtractor,
 )
 from angr_rule_learning.verification.execution import FragmentSuccessors
+from angr_rule_learning.verification.verifier import SemanticVerifier
 
 
 def _window(
@@ -105,3 +113,49 @@ def test_rejects_non_single_successor_execution_shape() -> None:
             WindowSurface(outputs=("eax",)),
             side="host",
         )
+
+
+def test_converts_angr_execution_error_to_execution_shape() -> None:
+    class FailingExecutor:
+        def make_state(self, fragment):
+            raise angr.errors.SimError("unsupported execution")
+
+    with pytest.raises(RegisterTransferError, match="execution_shape"):
+        RegisterTransferExtractor(FailingExecutor()).extract(
+            _window("x86-64", bytes.fromhex("90"), "nop", (), ()),
+            WindowSurface(outputs=("eax",)),
+            side="host",
+        )
+
+
+def test_does_not_hide_unexpected_transfer_extractor_errors() -> None:
+    class BrokenExtractor:
+        def extract(self, window, surface, *, side):
+            raise TypeError("implementation defect")
+
+    guest = _window(
+        "aarch64",
+        bytes.fromhex("e0 03 01 2a"),
+        "mov",
+        ("w1",),
+        ("w0",),
+    )
+    host = _window(
+        "x86-64",
+        bytes.fromhex("89 f8"),
+        "mov",
+        ("edi",),
+        ("eax",),
+    )
+    problem = BindingProblem(
+        WindowPair("r0", (1, 1), guest, host),
+        WindowSurface(inputs=("w1",), outputs=("w0",)),
+        WindowSurface(inputs=("edi",), outputs=("eax",)),
+        False,
+    )
+
+    with pytest.raises(TypeError, match="implementation defect"):
+        CegisRegisterBindingSolver(
+            SemanticVerifier(),
+            transfer_extractor=BrokenExtractor(),
+        ).solve(problem)

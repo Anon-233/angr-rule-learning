@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal, cast
 
 from angr_rule_learning.arch.registry import canonical_arch_name
+
+
+RegisterBindingStrategy = Literal["positional", "cegis"]
 
 
 @dataclass(frozen=True)
@@ -62,9 +66,20 @@ class ExtractionConfig:
     work_dir: Path
     guest_arch: str = "aarch64"
     host_arch: str = "x86-64"
+    register_binding: RegisterBindingStrategy = "positional"
     compile_options: CompileOptions = field(default_factory=CompileOptions)
     window_limits: WindowLimits = field(default_factory=WindowLimits)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "guest_arch", canonical_arch_name(self.guest_arch))
         object.__setattr__(self, "host_arch", canonical_arch_name(self.host_arch))
+        binding = self.register_binding.strip().lower()
+        if binding not in {"positional", "cegis"}:
+            raise ValueError(
+                f"unsupported register binding strategy: {self.register_binding}"
+            )
+        object.__setattr__(
+            self,
+            "register_binding",
+            cast(RegisterBindingStrategy, binding),
+        )

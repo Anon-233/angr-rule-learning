@@ -22,6 +22,7 @@ from angr_rule_learning.extraction.models import (
     WindowPair,
 )
 from angr_rule_learning.extraction.object import ObjectExtractor
+from angr_rule_learning.extraction.register_cegis import make_register_binding_solver
 from angr_rule_learning.extraction.surfaces import SurfaceInferer
 from angr_rule_learning.extraction.windows import VerifiedWindowSet, WindowMiner
 from angr_rule_learning.rules.generalize import (
@@ -98,7 +99,16 @@ class ExtractionPipeline:
         data = self._regions(config, diagnostics)
         regions = data.regions
         miner = WindowMiner(config.window_limits, diagnostics)
-        inferer = SurfaceInferer(diagnostics, data.liveness)
+        semantic_verifier = getattr(self._verifier, "verifier", None)
+        binding_solver = make_register_binding_solver(
+            config.register_binding,
+            verifier=semantic_verifier,
+        )
+        inferer = SurfaceInferer(
+            diagnostics,
+            data.liveness,
+            binding_solver=binding_solver,
+        )
         verified = VerifiedWindowSet()
         candidates: list[VerificationCandidate] = []
         reports: list[VerificationReport] = []

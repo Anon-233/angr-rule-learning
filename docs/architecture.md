@@ -81,7 +81,10 @@ src/angr_rule_learning/
     align.py
     windows.py
     surfaces.py
+    candidates.py
     register_bindings.py
+    register_transfer.py
+    register_cegis.py
     memory_operands.py
     memory_surfaces.py
     liveness.py
@@ -134,7 +137,8 @@ single C source
      -> SurfaceInferer
         -> memory_surfaces.infer_memory_surface (AddressExpr pairing)
         -> liveness.WindowSurfaceInferer (register/liveness surface)
-        -> register_bindings.RegisterBindingSolver (cross-side bindings)
+        -> register_bindings.RegisterBindingSolver (positional binding)
+        -> register_cegis.CegisRegisterBindingSolver (opt-in semantic binding)
      -> VerificationCandidate values + candidate JSONL
   -> verification.BatchVerifier
      -> addressing.parse_address_binding (AddressExpr for memory bindings)
@@ -167,18 +171,32 @@ invertible.
 
 ### Register Binding Boundary
 
-`extraction.register_bindings.RegisterBindingSolver` is the single boundary
-that converts independent Guest and Host `WindowSurface` values into paired
-input and output registers. `SurfaceInferer` consumes its typed
-`RegisterBindingResult` and does not construct positional register pairs
-itself.
+`extraction.register_bindings` defines the single boundary that converts
+independent Guest and Host `WindowSurface` values into paired input and output
+registers. `BindingProblem` carries both surfaces, the `WindowPair`, and the
+structured memory-presence decision. `SurfaceInferer` consumes the resulting
+`RegisterBindingResult` and does not construct register pairs itself.
 
-The current solver is intentionally a placeholder: after checking register
-counts and surface kinds, it pairs both sides positionally with `zip`. This
-preserves existing behavior while isolating the known-unsound ordering
-assumption. Future provenance, constraint, or SMT-backed matching belongs in
-this module and can use the supplied `WindowPair` without changing candidate
-construction.
+Two strategies implement this boundary. `positional` remains the default and
+pairs equal-sized surfaces with `zip` for compatibility. The opt-in `cegis`
+strategy supports small, straight-line, register-only integer windows. It
+rejects unsupported windows explicitly and never falls back to positional
+pairing.
+
+For CEGIS, `RegisterTransferExtractor` independently symbolically executes the
+Guest and Host fragment once and caches their output expressions over distinct
+side-local input symbols. Finite Host-to-Guest selector variables then propose
+exact-width, all-different input and output bindings under concrete samples.
+Each proposal is converted through the same candidate factory used by normal
+extraction and passed to `SemanticVerifier`. A failed verifier model contributes
+the next Guest input sample; transfer expressions are not re-extracted. The
+first verifier-proved mapping is returned, so synthesis filters proposals while
+the existing verifier remains the correctness boundary.
+
+Current CEGIS coarse skips are `unsupported_register_binding_surface`,
+`register_binding_unsat`, and `register_binding_inconclusive`. Details identify
+memory, branch, flag, non-integer, register-limit, width-domain, execution,
+verification, counterexample, and iteration-limit failures.
 
 ### Memory Surface Inference
 

@@ -43,6 +43,11 @@ def main(argv: list[str] | None = None) -> None:
     extract_parser.add_argument("--optimization", default="0")
     extract_parser.add_argument("--guest-max-window", type=int, default=2)
     extract_parser.add_argument("--host-max-window", type=int, default=3)
+    extract_parser.add_argument(
+        "--register-binding",
+        choices=("positional", "cegis"),
+        default="positional",
+    )
     extract_parser.add_argument("--verify", action="store_true")
     extract_parser.add_argument("--rules-output", type=Path)
     extract_parser.add_argument("--rules-diagnostics", type=Path)
@@ -60,6 +65,11 @@ def main(argv: list[str] | None = None) -> None:
     diagnose_parser.add_argument("--optimization", default="0")
     diagnose_parser.add_argument("--guest-max-window", type=int, default=2)
     diagnose_parser.add_argument("--host-max-window", type=int, default=3)
+    diagnose_parser.add_argument(
+        "--register-binding",
+        choices=("positional", "cegis"),
+        default="positional",
+    )
     _add_architecture_arguments(diagnose_parser)
 
     args = parser.parse_args(argv)
@@ -84,6 +94,7 @@ def main(argv: list[str] | None = None) -> None:
             work_dir=args.work_dir,
             guest_arch=args.guest_arch,
             host_arch=args.host_arch,
+            register_binding=args.register_binding,
             compile_options=CompileOptions(
                 clang=args.clang,
                 optimization=args.optimization,
@@ -108,6 +119,7 @@ def main(argv: list[str] | None = None) -> None:
             work_dir=args.work_dir,
             guest_arch=args.guest_arch,
             host_arch=args.host_arch,
+            register_binding=args.register_binding,
             compile_options=CompileOptions(
                 clang=args.clang,
                 optimization=args.optimization,
