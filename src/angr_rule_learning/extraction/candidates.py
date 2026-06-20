@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from angr_rule_learning.extraction.memory_surfaces import MemorySurface
-from angr_rule_learning.extraction.models import WindowPair
+from angr_rule_learning.extraction.models import InstructionWindow, WindowPair
 from angr_rule_learning.extraction.register_bindings import RegisterBindingResult
 from angr_rule_learning.verification.candidate import (
     Clobbers,
@@ -17,18 +17,8 @@ def build_verification_candidate(
 ) -> VerificationCandidate:
     return VerificationCandidate(
         candidate_id=candidate_id(pair),
-        guest=CodeFragment(
-            pair.guest.instructions[0].arch,
-            pair.guest.address,
-            pair.guest.code_hex,
-            pair.guest.instruction_count,
-        ),
-        host=CodeFragment(
-            pair.host.instructions[0].arch,
-            pair.host.address,
-            pair.host.code_hex,
-            pair.host.instruction_count,
-        ),
+        guest=fragment_for_window(pair.guest),
+        host=fragment_for_window(pair.host),
         input_registers=_merge_register_pairs(
             bindings.input_registers, memory_surface.input_registers
         ),
@@ -37,6 +27,15 @@ def build_verification_candidate(
         memory=memory_surface.spec,
         preconditions=(),
         clobbers=Clobbers(),
+    )
+
+
+def fragment_for_window(window: InstructionWindow) -> CodeFragment:
+    return CodeFragment(
+        window.instructions[0].arch,
+        window.address,
+        window.code_hex,
+        window.instruction_count,
     )
 
 
