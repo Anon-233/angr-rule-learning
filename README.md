@@ -142,7 +142,7 @@ supports the reverse `x86-64` to `aarch64` direction.
 
 ```text
 src/angr_rule_learning/
-  arch/          architecture identities, register capabilities, and flags
+  arch/          architecture identities and per-ISA semantic recognizers
   io/            JSON/JSONL readers, writers, and schema conversion
   smt/           shared bit-vector width utilities
   verification/  verifier models, execution, checks, reports, and batching

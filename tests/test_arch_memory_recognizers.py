@@ -1,10 +1,10 @@
-from angr_rule_learning.extraction.memory_operands import (
+from angr_rule_learning.arch.memory import (
     MemoryOperand,
     extract_memory_operands,
+    stack_pointer_delta,
 )
 from angr_rule_learning.extraction.memory_surfaces import (
     _adjust_for_sp_delta,
-    _instruction_sp_delta,
 )
 from angr_rule_learning.extraction.models import ExtractedInstruction
 from angr_rule_learning.verification.addressing import AddressExpr
@@ -471,53 +471,50 @@ def test_stp_w_register_uses_4_byte_width() -> None:
 
 
 def test_push_has_negative_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("x86-64", "push", "rbp")) == -8
+    assert stack_pointer_delta(_inst("x86-64", "push", "rbp")) == -8
 
 
 def test_pop_has_positive_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("x86-64", "pop", "r14")) == 8
+    assert stack_pointer_delta(_inst("x86-64", "pop", "r14")) == 8
 
 
 def test_push_imm_has_negative_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("x86-64", "push", "0x18")) == -8
+    assert stack_pointer_delta(_inst("x86-64", "push", "0x18")) == -8
 
 
 def test_stp_pre_index_has_negative_sp_delta() -> None:
     assert (
-        _instruction_sp_delta(_inst("aarch64", "stp", "x29, x30, [sp, #-0x10]!"))
-        == -0x10
+        stack_pointer_delta(_inst("aarch64", "stp", "x29, x30, [sp, #-0x10]!")) == -0x10
     )
 
 
 def test_stp_offset_no_writeback_has_zero_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("aarch64", "stp", "x20, x19, [sp, #0x40]")) == 0
+    assert stack_pointer_delta(_inst("aarch64", "stp", "x20, x19, [sp, #0x40]")) == 0
 
 
 def test_ldp_post_index_has_positive_sp_delta() -> None:
-    assert (
-        _instruction_sp_delta(_inst("aarch64", "ldp", "x29, x30, [sp], #0x10")) == 0x10
-    )
+    assert stack_pointer_delta(_inst("aarch64", "ldp", "x29, x30, [sp], #0x10")) == 0x10
 
 
 def test_ldp_offset_no_writeback_has_zero_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("aarch64", "ldp", "x20, x19, [sp, #0x40]")) == 0
+    assert stack_pointer_delta(_inst("aarch64", "ldp", "x20, x19, [sp, #0x40]")) == 0
 
 
 def test_x86_add_rsp_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("x86-64", "add", "rsp, 0x18")) == 0x18
+    assert stack_pointer_delta(_inst("x86-64", "add", "rsp, 0x18")) == 0x18
 
 
 def test_x86_sub_rsp_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("x86-64", "sub", "rsp, 0x18")) == -0x18
+    assert stack_pointer_delta(_inst("x86-64", "sub", "rsp, 0x18")) == -0x18
 
 
 def test_aarch64_sub_sp_sp_delta() -> None:
-    assert _instruction_sp_delta(_inst("aarch64", "sub", "sp, sp, #0x50")) == -0x50
+    assert stack_pointer_delta(_inst("aarch64", "sub", "sp, sp, #0x50")) == -0x50
 
 
 def test_non_sp_instruction_has_zero_delta() -> None:
-    assert _instruction_sp_delta(_inst("x86-64", "mov", "eax, ebx")) == 0
-    assert _instruction_sp_delta(_inst("aarch64", "add", "w0, w1, w2")) == 0
+    assert stack_pointer_delta(_inst("x86-64", "mov", "eax, ebx")) == 0
+    assert stack_pointer_delta(_inst("aarch64", "add", "w0, w1, w2")) == 0
 
 
 def test_adjust_for_sp_delta_modifies_rsp_based_operand() -> None:

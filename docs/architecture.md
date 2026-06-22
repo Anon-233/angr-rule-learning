@@ -53,6 +53,11 @@ src/angr_rule_learning/
     registry.py
     registers.py
     flags.py
+    memory.py
+    aarch64/
+      memory.py
+    x86_64/
+      memory.py
   io/
     readers.py
     schema.py
@@ -85,7 +90,6 @@ src/angr_rule_learning/
     register_bindings.py
     register_transfer.py
     register_cegis.py
-    memory_operands.py
     memory_surfaces.py
     liveness.py
     diagnostics.py
@@ -105,8 +109,11 @@ The package boundaries are:
 
 - `arch`: owns canonical architecture names, angr and clang identifiers,
   register families and bit ranges, stack/frame roles, fixed register roles,
-  and architecture-specific flag expressions. Capability APIs receive an
-  architecture explicitly and contain no guest/host policy.
+  architecture-specific flag expressions, and instruction-level memory
+  recognition. `arch.memory` defines the shared memory-operand contract and
+  dispatches to per-ISA packages such as `arch.aarch64.memory` and
+  `arch.x86_64.memory`. Capability APIs receive an architecture explicitly and
+  contain no guest/host policy.
 - `io`: converts strict JSON dictionaries into typed verifier models and writes
   report/summary JSON.
 - `smt`: holds shared bit-vector width helpers used by relation checks.
@@ -209,14 +216,19 @@ details identify the side, surface role, observed count, and limit of four.
 ### Memory Surface Inference
 
 The extractor explicitly distinguishes "no memory access" from "memory access
-exists but is unsupported."  Structured memory operand parsing
-(`memory_operands.extract_memory_operands`) parses supported AArch64 and x86-64
-memory addressing forms into a shared `AddressExpr` model.  The surface inferer
-checks for broader memory access patterns via `has_any_memory_access` and emits
-`unsupported_memory_surface` in diagnostics when memory access is present but
-cannot be modelled.  This prevents windows with unsupported memory forms
-(push/pop, ldp/stp, writeback, extension-indexed) from being silently treated
+exists but is unsupported." `arch.memory` dispatches each instruction to its
+ISA recognizer. The recognizer parses supported operands into the shared
+`MemoryOperand` and `AddressExpr` models, identifies broader unsupported memory
+forms through `has_any_memory_access`, and reports implicit stack-pointer
+changes through `stack_pointer_delta`. The architecture-neutral surface
+inferer emits `unsupported_memory_surface` when memory access is present but
+cannot be modelled, preventing unsupported forms from being silently treated
 as register-only candidates.
+
+Adding memory recognition for another ISA requires a canonical architecture
+entry and an `arch/<canonical_name>/memory.py` module exporting `RECOGNIZER`.
+Extraction, diagnostics, and verification code must not import ISA-specific
+regular expressions or mnemonic tables directly.
 
 Address base and index registers are included in candidate `input_registers`
 so rule generalization can emit typed register placeholders for them.

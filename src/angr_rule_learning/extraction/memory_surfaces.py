@@ -1,25 +1,18 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
+from angr_rule_learning.arch.memory import (
+    MemoryOperand,
+    extract_memory_operands,
+    has_any_memory_access,
+    stack_pointer_delta,
+)
 from angr_rule_learning.arch.registers import (
     is_compatible_frame_base_pair,
     is_stack_pointer,
 )
-from angr_rule_learning.arch.registry import canonical_arch_name
 from angr_rule_learning.extraction.liveness import family_for_register
-from angr_rule_learning.extraction.memory_operands import (
-    MemoryOperand,
-    _AARCH64_PAIR_POST_RE,
-    _AARCH64_PAIR_PRE_OR_OFFSET_RE,
-    _X86_PUSH_IMM_RE,
-    _X86_PUSH_POP_REG_RE,
-    _parse_displacement,
-    _x86_push_pop_width,
-    extract_memory_operands,
-    has_any_memory_access,
-)
 from angr_rule_learning.verification.addressing import AddressExpr
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
@@ -260,76 +253,6 @@ def _reorder_stack_operands(
     return guest, host, None
 
 
-_AARCH64_SP_ADDSUB_RE = re.compile(
-    r"^sp\s*,\s*sp\s*,\s*#(?P<imm>(?:0x[0-9a-fA-F]+|\d+))$",
-    re.IGNORECASE,
-)
-_X86_SP_ADDSUB_RE = re.compile(
-    r"^rsp\s*,\s*(?P<imm>(?:0x[0-9a-fA-F]+|\d+))$",
-    re.IGNORECASE,
-)
-
-
-def _instruction_sp_delta(inst: ExtractedInstruction) -> int:
-    """Return the net change in the stack pointer caused by *inst*."""
-    arch = canonical_arch_name(inst.arch)
-    mnemonic = inst.mnemonic.strip().lower()
-    op_str = inst.op_str.strip()
-    if arch == "x86-64":
-        return _x86_sp_delta(mnemonic, op_str)
-    if arch == "aarch64":
-        return _aarch64_sp_delta(mnemonic, op_str)
-    return 0
-
-
-def _x86_sp_delta(mnemonic: str, op_str: str) -> int:
-    if mnemonic == "push":
-        match = _X86_PUSH_POP_REG_RE.search(op_str)
-        if match:
-            reg = match.group("reg").lower()
-            width = _x86_push_pop_width(reg)
-            return -(width or 8)
-        match = _X86_PUSH_IMM_RE.search(op_str)
-        if match:
-            return -8
-        return 0
-    if mnemonic == "pop":
-        match = _X86_PUSH_POP_REG_RE.search(op_str)
-        if match:
-            reg = match.group("reg").lower()
-            width = _x86_push_pop_width(reg)
-            return width or 8
-        return 0
-    if mnemonic in {"add", "sub"}:
-        match = _X86_SP_ADDSUB_RE.match(op_str)
-        if match:
-            imm = int(match.group("imm"), 0)
-            return imm if mnemonic == "add" else -imm
-    return 0
-
-
-def _aarch64_sp_delta(mnemonic: str, op_str: str) -> int:
-    if mnemonic in {"stp", "stnp"}:
-        # ldnp/stnp do not support writeback (rejected at extraction).
-        match = _AARCH64_PAIR_PRE_OR_OFFSET_RE.match(op_str)
-        if match and match.group("writeback"):
-            offset_str = match.group("offset")
-            return _parse_displacement(offset_str, "+") if offset_str else 0
-        return 0
-    if mnemonic in {"ldp", "ldnp"}:
-        # Non-temporal post-index is rejected at extraction.
-        match = _AARCH64_PAIR_POST_RE.match(op_str)
-        if match:
-            return _parse_displacement(match.group("offset"), "+")
-        return 0
-    if mnemonic in {"add", "sub"}:
-        match = _AARCH64_SP_ADDSUB_RE.match(op_str)
-        if match:
-            imm = int(match.group("imm"), 0)
-            return imm if mnemonic == "add" else -imm
-    return 0
-
-
 def _adjust_for_sp_delta(
     op: MemoryOperand,
     delta: int,
@@ -361,7 +284,7 @@ def _collect(window: InstructionWindow) -> tuple[_CollectedMemoryOperand, ...]:
         for operand in extract_memory_operands(instruction):
             adjusted = _adjust_for_sp_delta(operand, sp_delta, instruction.arch)
             operands.append(_CollectedMemoryOperand(instruction, adjusted))
-        sp_delta += _instruction_sp_delta(instruction)
+        sp_delta += stack_pointer_delta(instruction)
     return tuple(operands)
 
 

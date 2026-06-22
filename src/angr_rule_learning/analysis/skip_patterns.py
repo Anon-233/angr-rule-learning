@@ -6,16 +6,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from angr_rule_learning.arch.memory import (
+    extract_memory_operands,
+    has_any_memory_access,
+)
 from angr_rule_learning.extraction.align import AlignmentRegionBuilder
 from angr_rule_learning.extraction.blocks import BasicBlockBuilder
 from angr_rule_learning.extraction.build import BuildArtifacts, ClangBuildDriver
 from angr_rule_learning.extraction.config import ExtractionConfig
 from angr_rule_learning.extraction.diagnostics import MiningDiagnostics
 from angr_rule_learning.extraction.liveness import LivenessAnalyzer
-from angr_rule_learning.extraction.memory_operands import (
-    extract_memory_operands,
-    has_any_memory_access,
-)
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
