@@ -51,7 +51,9 @@ class KernelBindingBuilder:
         self, kernel: IRKernel, snippets: SnippetPair
     ) -> tuple[WindowPair, VerificationCandidate]:
         spec = self.build_spec(kernel, snippets.guest.arch, snippets.host.arch)
-        guest_window = InstructionWindow(kernel.id, "guest", snippets.guest.instructions)
+        guest_window = InstructionWindow(
+            kernel.id, "guest", snippets.guest.instructions
+        )
         host_window = InstructionWindow(kernel.id, "host", snippets.host.instructions)
         pair = WindowPair(
             region_id=kernel.id,

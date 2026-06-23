@@ -14,14 +14,18 @@ def _kernel(name: str):
 
 
 def test_scalar_i32_abi_binding_for_aarch64_to_x86_64() -> None:
-    spec = KernelBindingBuilder().build_spec(_kernel("kernel_add_i32"), "aarch64", "x86-64")
+    spec = KernelBindingBuilder().build_spec(
+        _kernel("kernel_add_i32"), "aarch64", "x86-64"
+    )
 
     assert spec.inputs == (("a", "w0", "edi"), ("b", "w1", "esi"))
     assert spec.outputs == (("r", "w0", "eax"),)
 
 
 def test_scalar_i32_abi_binding_for_reverse_direction() -> None:
-    spec = KernelBindingBuilder().build_spec(_kernel("kernel_add_i32"), "x86-64", "aarch64")
+    spec = KernelBindingBuilder().build_spec(
+        _kernel("kernel_add_i32"), "x86-64", "aarch64"
+    )
 
     assert spec.inputs == (("a", "edi", "w0"), ("b", "esi", "w1"))
     assert spec.outputs == (("r", "eax", "w0"),)

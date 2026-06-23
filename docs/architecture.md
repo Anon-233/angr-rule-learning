@@ -1,48 +1,52 @@
 # Architecture
 
 `angr-rule-learning` is a rule-learning pipeline with explicit data boundaries
-and independently testable components. The repository implements the verifier
-core, single-source candidate extraction, and verified text rule generation.
-Rule storage and coverage evaluation remain planned.
+and independently testable components. The current main path is IR-kernel based
+constructive learning: controlled LLVM IR kernels are compiled to Guest and
+Host targets, their machine-code snippets are verified with angr/Claripy, and
+passing snippets are generalized into text rules. Rule storage and coverage
+evaluation remain planned.
 
 ## Pipeline Shape
 
-The intended full pipeline is:
+The intended constructive pipeline is:
 
 ```text
-Compiler/Debug Info
-  -> Candidate Extraction
+IR Kernel Corpus
+  -> Kernel Compilation
+  -> Snippet Extraction
+  -> ABI Binding
   -> Semantic Verification
   -> Rule Generalization
   -> Rule Store
   -> Coverage Evaluation
 ```
 
-The extractor package (`src/angr_rule_learning/extraction/`) implements the
-first two stages:
+The kernel package (`src/angr_rule_learning/kernel/`) implements the first
+four stages for the current MVP:
 
 ```text
-single C source
-  -> extraction.ExtractionPipeline
-  -> candidate JSONL
+HardcodedKernelSynthesizer
+  -> KernelCompiler (clang -x ir)
+  -> SnippetExtractor (ObjectExtractor + conservative filtering)
+  -> KernelBindingBuilder (scalar ABI register binding)
+  -> VerificationCandidate values
   -> verification.BatchVerifier
+  -> rules.RuleGeneralizer
+  -> text rules + diagnostics
 ```
 
-The pipeline compiles source to guest/host objects, extracts functions and
-debug information, builds alignment regions, mines bounded semantic windows,
-infers verifier surfaces, and emits candidate JSONL compatible with the
-existing verifier boundary.
+This route constructs a clean learning region from each IR kernel instead of
+searching a source/debug-info aligned binary region for candidate windows.
+One kernel may eventually produce multiple candidates, but the MVP emits one
+function-level candidate per scalar kernel.
 
-Guest and host are pipeline roles, not architecture aliases. The `extract`
-and `diagnose-skips` commands accept `--guest-arch` and `--host-arch`; their
-defaults remain `aarch64` and `x86-64` for compatibility. The complete
-source-to-rule path is tested in both AArch64-to-x86-64 and
-x86-64-to-AArch64 directions.
+Guest and Host are pipeline roles, not architecture aliases. The `learn`
+command accepts `--guest-arch` and `--host-arch`; the defaults are `aarch64`
+and `x86-64`, and the same code path supports the reverse direction.
 
-With `--verify --rules-output`, the pipeline also runs verification and
-produces plain text rules with typed register placeholders. The existing CLI
-accepts candidate JSON/JSONL directly so verifier work can proceed
-independently of extraction.
+The CLI still accepts candidate JSON/JSONL through `verify` so verifier work
+can proceed independently of the constructive learner.
 
 ## Package Structure
 
@@ -58,6 +62,13 @@ src/angr_rule_learning/
       memory.py
     x86_64/
       memory.py
+  kernel/
+    models.py
+    synthesize.py
+    compile.py
+    extract.py
+    bind.py
+    pipeline.py
   io/
     readers.py
     schema.py
@@ -116,12 +127,16 @@ The package boundaries are:
   contain no guest/host policy.
 - `io`: converts strict JSON dictionaries into typed verifier models and writes
   report/summary JSON.
+- `kernel`: owns the constructive learning route. It defines IR-kernel models,
+  synthesizes the builtin scalar corpus, compiles LLVM IR through clang,
+  extracts snippets from target objects, builds ABI-based verifier candidates,
+  invokes verification, and emits generalized rules and diagnostics.
 - `smt`: holds shared bit-vector width helpers used by relation checks.
 - `verification`: owns the verifier data model, execution setup, semantic
   checks, report model, and batch API.
-- `extraction`: compiles source, extracts functions and debug information,
-  builds alignment regions, mines bounded windows, infers verifier surfaces,
-  and orchestrates the source-to-candidate pipeline.
+- `extraction`: contains the legacy source/debug-info mining route and reusable
+  object/disassembly models. It is no longer the primary learning entry point,
+  but `kernel.extract` intentionally reuses `ObjectExtractor`.
 - `rules`: defines the structured Rule AST (`ast.py`) as the canonical
   internal rule model; classifies registers; generalizes verified extraction
   windows into typed placeholder rules; derives host-only immediates from
@@ -132,21 +147,21 @@ The package boundaries are:
   components to aggregate skip patterns but never participates in candidate
   extraction, verification, or rule generation decisions.  Exposed via the
   `diagnose-skips` CLI subcommand.
-- `cli.py`: provides a thin command-line wrapper over `BatchVerifier`,
-  `ExtractionPipeline`, and `SkipPatternAnalyzer`.
+- `cli.py`: provides a thin command-line wrapper over `KernelLearningPipeline`
+  and `BatchVerifier`.
 
 ## Data Flow
 
 ```text
-single C source
-  -> extraction.ExtractionPipeline
-     -> WindowMiner (enumerate instruction windows)
-     -> SurfaceInferer
-        -> memory_surfaces.infer_memory_surface (AddressExpr pairing)
-        -> liveness.WindowSurfaceInferer (register/liveness surface)
-        -> register_bindings.RegisterBindingSolver (positional binding)
-        -> register_cegis.CegisRegisterBindingSolver (opt-in semantic binding)
-     -> VerificationCandidate values + candidate JSONL
+IRKernel
+  -> kernel.KernelCompiler
+     -> guest object
+     -> host object
+  -> kernel.SnippetExtractor
+     -> guest snippet
+     -> host snippet
+  -> kernel.KernelBindingBuilder
+     -> VerificationCandidate values
   -> verification.BatchVerifier
      -> addressing.parse_address_binding (AddressExpr for memory bindings)
   -> VerificationReport values
@@ -154,6 +169,10 @@ single C source
      -> rules.registers (register classification + generalization)
   -> plain text rules + rule diagnostics
 ```
+
+The legacy source-mining route still exists under `extraction/` and can be
+used as a reference for future snippet mining work, but it is intentionally not
+the main pipeline described by this document.
 
 ### Architecture Capability Boundary
 

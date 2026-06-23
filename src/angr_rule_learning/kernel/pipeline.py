@@ -121,7 +121,9 @@ class KernelLearningPipeline:
                     )
                 )
 
-        consolidated_rules = tuple(consolidate_rules(rules, diagnostics=rule_diagnostics))
+        consolidated_rules = tuple(
+            consolidate_rules(rules, diagnostics=rule_diagnostics)
+        )
         result = KernelPipelineResult(
             candidates=tuple(candidates),
             reports=tuple(reports),

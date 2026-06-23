@@ -1465,7 +1465,10 @@ def _mapping_for_instruction(
         return mapping
 
     result = dict(mapping)
-    op_tokens = {normalize_register_name(token) for token in _TOKEN_RE.findall(instruction.op_str)}
+    op_tokens = {
+        normalize_register_name(token)
+        for token in _TOKEN_RE.findall(instruction.op_str)
+    }
     for register, placeholder in mapping.items():
         if not placeholder.startswith("i32_reg"):
             continue

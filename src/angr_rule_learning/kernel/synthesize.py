@@ -10,7 +10,9 @@ from angr_rule_learning.kernel.models import (
 
 class HardcodedKernelSynthesizer:
     def generate(self) -> tuple[IRKernel, ...]:
-        return tuple(_binary_i32_kernel(op) for op in ("add", "sub", "and", "or", "xor"))
+        return tuple(
+            _binary_i32_kernel(op) for op in ("add", "sub", "and", "or", "xor")
+        )
 
 
 def _binary_i32_kernel(op: str) -> IRKernel:

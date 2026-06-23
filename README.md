@@ -1,129 +1,93 @@
 # angr-rule-learning
 
-`angr-rule-learning` is a Python prototype for learning and validating binary
-translation rules. The current implementation focuses on the semantic verifier:
-it accepts paired guest/host machine-code fragments, executes them with angr,
-and uses Claripy/SMT checks to decide whether the requested semantic surfaces
-are equivalent.
+`angr-rule-learning` is a Python prototype for learning binary translation
+rules. The current main path is IR-kernel based constructive learning: small
+LLVM IR kernels are compiled to a Guest ISA and a Host ISA, the resulting
+machine-code snippets are verified with angr/Claripy, and passing snippets are
+generalized into text rules.
 
-The first supported rule-learning target is AArch64 integer fragments translated
-to x86-64 integer fragments. The package is intentionally API-first so rule
-storage, coverage evaluation, broader extraction targets, and future learning
-stages can reuse the verifier without shelling out to the CLI.
+The first target remains scalar integer rules between AArch64 and x86-64. The
+verifier and rule generalizer are intentionally reusable: later kernel
+synthesizers, memory kernels, branch kernels, coverage tooling, or manual rule
+seeds should all feed the same candidate and report boundary.
 
 ## Current Status
 
 Implemented:
 
-- typed verifier candidate and report models;
-- JSON/JSONL candidate input and JSON report/summary output;
-- batch verifier API and CLI wrapper;
-- AArch64 and x86-64 shellcode execution through angr;
-- shared symbolic input register initialization;
-- SMT relation checks for register outputs, memory events, explicit flags, and
-  terminal conditional branch guards;
-- memory slots, address bindings, load/store events, `must_alias`, and
-  `may_alias` unsupported reporting;
-- four-state diagnostics: `pass`, `fail`, `unsupported`, and `error`;
-- memory rule learning: structured memory operand extraction, memory surface
-  inference, and generalized memory rules with native ISA syntax and typed
-  register placeholders for base+displacement and indexed (base+index*scale)
-  load/store/mov patterns, including x86 memory-source arithmetic
-  (add/sub/and/or/xor/imul);
-- compiler/debug-info based candidate extraction for one C source file;
-- opt-in CEGIS register binding for small straight-line integer windows,
-  using verifier counterexamples instead of positional register order;
-- verified rule generalization producing plain text rules with typed
-  register and address placeholders.
+- builtin scalar integer IR kernels for `add`, `sub`, `and`, `or`, and `xor`;
+- clang-based LLVM IR compilation for Guest and Host targets;
+- object extraction and conservative snippet filtering;
+- ABI-based scalar register binding for AArch64 and x86-64;
+- angr/Claripy semantic verification for generated candidates;
+- text rule generation with typed placeholders;
+- JSON/JSONL verifier utility input and report output;
+- architecture capability modules for register families, fixed-role registers,
+  flags, and memory operand recognition;
+- legacy source/DWARF extraction modules retained for reference and reuse.
 
 Not implemented yet:
 
-- rule store;
-- coverage evaluation against a reference rule table;
-- precondition solving;
-- branch target equivalence for direct or indirect branches;
-- generalized memory rules for complex addressing modes (push/pop,
-  ldp/stp, writeback, extension-indexed), x86 memory-destination RMW,
-  multi-slot memory surfaces, and memory alias constraints.
+- memory and branch IR kernels in the constructive pipeline;
+- variable-shift kernels with explicit LLVM shift-domain constraints;
+- rule store and coverage evaluation against a reference rule table;
+- replacement of the current heuristic immediate derivation module;
+- large or feedback-driven kernel corpus synthesis.
 
 ## Quick Start
 
-Install dependencies with uv:
+Install dependencies:
 
 ```bash
 uv sync
 ```
 
-Run the test suite:
+Run tests and lint checks:
 
 ```bash
 uv run pytest
-```
-
-Run lint and formatting checks:
-
-```bash
 uv run ruff check
 uv run ruff format --check
 ```
 
-Verify the example JSONL batch:
+Generate rules from the builtin IR-kernel corpus:
+
+```bash
+uv run angr-rule-learning learn \
+  --work-dir /tmp/angr-rule-learning-kernels \
+  --rules-output /tmp/angr-rule-learning-rules.txt \
+  --diagnostics /tmp/angr-rule-learning-diagnostics.json
+```
+
+Write optional candidate and report artifacts:
+
+```bash
+uv run angr-rule-learning learn \
+  --work-dir /tmp/angr-rule-learning-kernels \
+  --rules-output /tmp/angr-rule-learning-rules.txt \
+  --diagnostics /tmp/angr-rule-learning-diagnostics.json \
+  --candidates-output /tmp/angr-rule-learning-candidates.jsonl \
+  --reports-output /tmp/angr-rule-learning-reports.jsonl
+```
+
+Reverse the learning direction:
+
+```bash
+uv run angr-rule-learning learn \
+  --guest-arch x86-64 \
+  --host-arch aarch64 \
+  --work-dir /tmp/angr-rule-learning-reverse \
+  --rules-output /tmp/angr-rule-learning-reverse-rules.txt \
+  --diagnostics /tmp/angr-rule-learning-reverse-diagnostics.json
+```
+
+Verify an existing candidate JSON/JSONL batch directly:
 
 ```bash
 uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl \
   --output /tmp/angr-rule-learning-report.jsonl \
   --summary /tmp/angr-rule-learning-summary.json
 ```
-
-Extract verifier candidates from one C source file:
-
-```bash
-uv run angr-rule-learning extract samples/sources/smoke_int.c \
-  --work-dir /tmp/angr-rule-learning-extract \
-  --output /tmp/angr-rule-learning-candidates.jsonl \
-  --diagnostics /tmp/angr-rule-learning-diagnostics.json \
-  --optimization 0
-```
-
-Extract, verify, and generate text rules:
-
-```bash
-uv run angr-rule-learning extract samples/sources/smoke_int.c \
-  --work-dir /tmp/angr-rule-learning-extract \
-  --output /tmp/angr-rule-learning-candidates.jsonl \
-  --diagnostics /tmp/angr-rule-learning-diagnostics.json \
-  --optimization 0 \
-  --verify \
-  --rules-output /tmp/angr-rule-learning-rules.txt \
-  --rules-diagnostics /tmp/angr-rule-learning-rules-diagnostics.json
-```
-
-Use semantic register binding with compatibility fallback:
-
-```bash
-uv run angr-rule-learning extract samples/sources/rich_int.c \
-  --work-dir /tmp/angr-rule-learning-cegis \
-  --output /tmp/angr-rule-learning-cegis-candidates.jsonl \
-  --diagnostics /tmp/angr-rule-learning-cegis-diagnostics.json \
-  --optimization 1 \
-  --register-binding cegis \
-  --verify \
-  --rules-output /tmp/angr-rule-learning-cegis-rules.txt
-```
-
-`positional` remains the default binding strategy. `cegis` uses transfer-assisted
-semantic synthesis for straight-line register windows and bounded verifier-driven
-selector search for parsed memory and branch windows. Surfaces are limited to
-four external inputs and outputs per side. Unsupported or inconclusive searches
-fall back to positional binding and are reported in
-`register_binding_fallbacks`; a CEGIS search that exhausts its supported mapping
-space remains `register_binding_unsat` and does not fall back.
-
-The CLI is a thin wrapper around `ExtractionPipeline` and `BatchVerifier`.
-Pipeline code should call the Python API directly.
-`extract` and `diagnose-skips` accept `--guest-arch` and `--host-arch`;
-the defaults are `aarch64` and `x86-64`, and the full extraction path also
-supports the reverse `x86-64` to `aarch64` direction.
 
 ## Documentation
 
@@ -143,12 +107,13 @@ supports the reverse `x86-64` to `aarch64` direction.
 ```text
 src/angr_rule_learning/
   arch/          architecture identities and per-ISA semantic recognizers
+  kernel/        IR-kernel synthesis, compilation, extraction, binding, pipeline
+  verification/  verifier models, execution, checks, reports, and batching
+  rules/         register classification, rule generalization, text formatting
   io/            JSON/JSONL readers, writers, and schema conversion
   smt/           shared bit-vector width utilities
-  verification/  verifier models, execution, checks, reports, and batching
-  extraction/    compile, disassemble, source-align, mine windows, infer candidates
-  rules/         register classification, rule generalization, text formatting
-tests/           pytest coverage for verifier, extraction, rules, and CLI
-examples/        small candidate batches for smoke testing
+  extraction/    legacy source/debug-info mining modules retained for reference
+tests/           pytest coverage for kernel learning, verifier, rules, and CLI
+examples/        small candidate batches for verifier smoke testing
 docs/            architecture and format documentation
 ```
