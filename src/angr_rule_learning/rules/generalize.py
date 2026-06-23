@@ -1351,6 +1351,7 @@ def _generalize_instructions_with_roles(
     result: list[AstInstruction] = []
 
     for inst, ext in zip(insts, extracted, strict=True):
+        inst_mapping = _mapping_for_instruction(mapping, arch, ext)
         # Work on a text copy so we can detect whether an operand became
         # a pure placeholder after all replacements are applied.
         inst_text = inst.to_text()
@@ -1404,8 +1405,8 @@ def _generalize_instructions_with_roles(
                 )
 
         # Step 2: Handle regular mapping (text-level).
-        for register in sorted(mapping, key=lambda r: len(r), reverse=True):
-            placeholder = mapping[register]
+        for register in sorted(inst_mapping, key=lambda r: len(r), reverse=True):
+            placeholder = inst_mapping[register]
             rewritten = re.sub(
                 rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
                 placeholder,
@@ -1443,6 +1444,35 @@ def _generalize_instructions_with_roles(
     )
 
     return tuple(result)
+
+
+def _mapping_for_instruction(
+    mapping: dict[str, str],
+    arch: str,
+    instruction: ExtractedInstruction,
+) -> dict[str, str]:
+    """Return the register mapping visible to a single instruction.
+
+    x86-64 commonly lowers i32 addition to ``lea eax, [rdi + rsi]``.  The
+    semantic ABI inputs are ``edi``/``esi``, but the address expression text
+    uses their 64-bit register-family names.  For this specific ``lea`` form,
+    allow those family names to inherit the i32 placeholders so the emitted
+    rule can keep the compiler-selected ``lea`` idiom.
+    """
+    if canonical_arch_name(arch) != "x86-64":
+        return mapping
+    if instruction.mnemonic.strip().lower() != "lea":
+        return mapping
+
+    result = dict(mapping)
+    op_tokens = {normalize_register_name(token) for token in _TOKEN_RE.findall(instruction.op_str)}
+    for register, placeholder in mapping.items():
+        if not placeholder.startswith("i32_reg"):
+            continue
+        family = register_family(arch, register)
+        if family in op_tokens and family not in result:
+            result[family] = placeholder
+    return result
 
 
 _PARAMETERIZED_TOKEN_RE = re.compile(

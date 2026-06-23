@@ -177,6 +177,40 @@ def test_cli_writes_report_jsonl_and_summary_json(tmp_path) -> None:
     assert summary["by_kind"]["register"] == {"pass": 1}
 
 
+def test_learn_cli_propagates_kernel_config_and_outputs(tmp_path, monkeypatch) -> None:
+    captured = {}
+
+    def fake_run(self, config, **kwargs) -> None:
+        captured["config"] = config
+        captured["kwargs"] = kwargs
+
+    monkeypatch.setattr("angr_rule_learning.cli.KernelLearningPipeline.run", fake_run)
+
+    main(
+        [
+            "learn",
+            "--work-dir",
+            str(tmp_path / "work"),
+            "--rules-output",
+            str(tmp_path / "rules.txt"),
+            "--diagnostics",
+            str(tmp_path / "diagnostics.json"),
+            "--guest-arch",
+            "x86_64",
+            "--host-arch",
+            "arm64",
+            "--optimization",
+            "1",
+        ]
+    )
+
+    assert captured["config"].guest_arch == "x86-64"
+    assert captured["config"].host_arch == "aarch64"
+    assert captured["config"].optimization == "1"
+    assert captured["kwargs"]["rules_output"] == tmp_path / "rules.txt"
+    assert captured["kwargs"]["diagnostics_output"] == tmp_path / "diagnostics.json"
+
+
 def test_extract_cli_rejects_rules_output_without_verify(tmp_path) -> None:
     source = tmp_path / "sample.c"
     source.write_text("int add(int a, int b) { return a + b; }\n", encoding="utf-8")

@@ -13,6 +13,8 @@ from angr_rule_learning.extraction.config import (
 from angr_rule_learning.extraction.pipeline import ExtractionPipeline
 from angr_rule_learning.io.readers import read_candidates
 from angr_rule_learning.io.writers import write_reports_jsonl, write_summary_json
+from angr_rule_learning.kernel.models import KernelConfig
+from angr_rule_learning.kernel.pipeline import KernelLearningPipeline
 from angr_rule_learning.verification.batch import BatchVerifier
 
 
@@ -31,6 +33,20 @@ def main(argv: list[str] | None = None) -> None:
     verify_parser.add_argument("input", type=Path)
     verify_parser.add_argument("--output", required=True, type=Path)
     verify_parser.add_argument("--summary", required=True, type=Path)
+
+    learn_parser = subparsers.add_parser(
+        "learn", help="construct rules from builtin LLVM IR kernels"
+    )
+    learn_parser.add_argument("--work-dir", required=True, type=Path)
+    learn_parser.add_argument("--rules-output", required=True, type=Path)
+    learn_parser.add_argument("--diagnostics", required=True, type=Path)
+    learn_parser.add_argument("--candidates-output", type=Path)
+    learn_parser.add_argument("--reports-output", type=Path)
+    learn_parser.add_argument("--rules-diagnostics", type=Path)
+    learn_parser.add_argument("--rules-debug-diagnostics", type=Path)
+    learn_parser.add_argument("--clang", default="clang")
+    learn_parser.add_argument("--optimization", default="1")
+    _add_architecture_arguments(learn_parser)
 
     extract_parser = subparsers.add_parser(
         "extract", help="compile one C source and emit verifier candidates"
@@ -79,6 +95,23 @@ def main(argv: list[str] | None = None) -> None:
         reports = verifier.verify_many(candidates)
         write_reports_jsonl(args.output, reports)
         write_summary_json(args.summary, verifier.summarize(reports))
+    elif args.command == "learn":
+        config = KernelConfig(
+            work_dir=args.work_dir,
+            guest_arch=args.guest_arch,
+            host_arch=args.host_arch,
+            clang=args.clang,
+            optimization=args.optimization,
+        )
+        KernelLearningPipeline().run(
+            config,
+            rules_output=args.rules_output,
+            diagnostics_output=args.diagnostics,
+            candidates_output=args.candidates_output,
+            reports_output=args.reports_output,
+            rules_diagnostics_output=args.rules_diagnostics,
+            rules_debug_diagnostics_output=args.rules_debug_diagnostics,
+        )
     elif args.command == "extract":
         if (
             args.rules_output is not None
