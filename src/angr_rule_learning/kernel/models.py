@@ -46,8 +46,6 @@ class KernelSignature:
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "outputs", tuple(self.outputs))
-        if not self.outputs:
-            raise ValueError("kernel signature must have at least one output")
 
 
 @dataclass(frozen=True)
@@ -150,8 +148,6 @@ class BindingSpec:
     def __post_init__(self) -> None:
         object.__setattr__(self, "inputs", tuple(self.inputs))
         object.__setattr__(self, "outputs", tuple(self.outputs))
-        if not self.outputs:
-            raise ValueError("binding spec must have at least one output")
 
     @property
     def input_registers(self) -> tuple[tuple[str, str], ...]:

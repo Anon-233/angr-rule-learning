@@ -2,7 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from angr_rule_learning.kernel.models import KernelConfig, KernelSignature, KernelValue
+from angr_rule_learning.kernel.models import (
+    BindingSpec,
+    KernelConfig,
+    KernelSignature,
+    KernelValue,
+)
 
 
 def test_kernel_value_accepts_scalar_integer_types() -> None:
@@ -24,6 +29,15 @@ def test_kernel_config_canonicalizes_architectures(tmp_path: Path) -> None:
     assert config.host_arch == "x86-64"
 
 
-def test_signature_rejects_missing_output() -> None:
-    with pytest.raises(ValueError, match="at least one output"):
-        KernelSignature(inputs=(KernelValue("a", "i32"),), outputs=())
+def test_signature_allows_void_output() -> None:
+    signature = KernelSignature(inputs=(KernelValue("a", "i32"),), outputs=())
+
+    assert signature.inputs == (KernelValue("a", "i32"),)
+    assert signature.outputs == ()
+
+
+def test_binding_spec_allows_no_register_outputs() -> None:
+    spec = BindingSpec(inputs=(("a", "w0", "edi"),), outputs=())
+
+    assert spec.input_registers == (("w0", "edi"),)
+    assert spec.output_registers == ()

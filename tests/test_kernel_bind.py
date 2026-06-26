@@ -5,7 +5,13 @@ import pytest
 from angr_rule_learning.kernel.bind import KernelBindingBuilder
 from angr_rule_learning.kernel.compile import KernelCompiler
 from angr_rule_learning.kernel.extract import SnippetExtractor
-from angr_rule_learning.kernel.models import KernelConfig
+from angr_rule_learning.kernel.models import (
+    IRKernel,
+    KernelConfig,
+    KernelMetadata,
+    KernelSignature,
+    KernelValue,
+)
 from angr_rule_learning.kernel.synthesize import HardcodedKernelSynthesizer
 
 
@@ -29,6 +35,30 @@ def test_scalar_i32_abi_binding_for_reverse_direction() -> None:
 
     assert spec.inputs == (("a", "edi", "w0"), ("b", "esi", "w1"))
     assert spec.outputs == (("r", "eax", "w0"),)
+
+
+def test_void_kernel_abi_binding_has_no_output_registers() -> None:
+    kernel = IRKernel(
+        id="kernel_void_i32",
+        name="kernel_void_i32",
+        llvm_ir="""
+define void @kernel_void_i32(i32 %a) {
+entry:
+  ret void
+}
+""",
+        signature=KernelSignature(
+            inputs=(KernelValue("a", "i32"),),
+            outputs=(),
+        ),
+        metadata=KernelMetadata(op_kind="void", bit_width=32),
+    )
+
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+
+    assert spec.inputs == (("a", "w0", "edi"),)
+    assert spec.outputs == ()
+    assert spec.output_registers == ()
 
 
 @pytest.mark.skipif(shutil.which("clang") is None, reason="clang not installed")
