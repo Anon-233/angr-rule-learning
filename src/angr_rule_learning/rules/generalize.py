@@ -23,6 +23,7 @@ from angr_rule_learning.rules.derivation import (
     DerivationContext,
     derive_host_expressions,
 )
+from angr_rule_learning.rules.register_views import resolve_register_views
 from angr_rule_learning.rules.registers import (
     RegisterClass,
     RegisterClassError,
@@ -481,8 +482,13 @@ def _require_fixed_role_producers(
 
 def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
     """Return the set of placeholder strings appearing in *insts*, collected
-    from operands, metadata, and tokenised compound operand text."""
-    from angr_rule_learning.rules.ast import LitOp, RegOp, RegTextOp, TmpOp
+    from operands, metadata, and tokenised compound operand text.
+
+    For ``RegViewOp``, only the base placeholder is collected (e.g.
+    ``i32_reg1`` from ``reg64(i32_reg1)``), because that is the semantic
+    binding point.
+    """
+    from angr_rule_learning.rules.ast import LitOp, RegOp, RegTextOp, RegViewOp, TmpOp
 
     result: set[str] = set()
     for inst in insts:
@@ -492,11 +498,19 @@ def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
         for op in operands:
             if isinstance(op, (RegOp, TmpOp)):
                 result.add(op.to_text())
+            elif isinstance(op, RegViewOp):
+                # Collect the *base* placeholder — the semantic binding,
+                # not the view wrapper.
+                result.add(op.base.to_text())
             elif isinstance(op, (LitOp, RegTextOp)):
                 text = op.to_text()
                 for token in _TOKEN_RE.findall(text):
                     if _PARAMETERIZED_TOKEN_RE.match(token):
                         result.add(token)
+                    # Collect base placeholders nested inside reg64(...) text.
+                    # The tokeniser splits reg64(i32_reg1) into "reg64"
+                    # and "i32_reg1", but "i32_reg1" is already matched above.
+                    # reg64 is not a binder itself, so skip it.
     return frozenset(result)
 
 
@@ -1234,7 +1248,16 @@ def _annotate_dead_writes(
         return first_write, last_access
 
     def _text_to_regop(placeholder: str, arch: str) -> Operand:
-        from angr_rule_learning.rules.ast import LitOp, RegOp, TmpOp
+        from angr_rule_learning.rules.ast import LitOp, RegOp, RegViewOp, TmpOp
+
+        # Handle reg64(i32_reg1) — parse the base and wrap in RegViewOp.
+        m = re.fullmatch(r"reg(\d+)\((.+)\)", placeholder)
+        if m:
+            view_bits = int(m.group(1))
+            base = _text_to_regop(m.group(2), arch)
+            if isinstance(base, (RegOp, TmpOp)):
+                return RegViewOp(base=base, view_bits=view_bits)
+            raise ValueError(f"invalid base in register view: {placeholder!r}")
 
         m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
         if m:
@@ -1340,7 +1363,8 @@ def _generalize_instructions_with_roles(
 
     Step 1: Handle role-split registers.
     Step 2: Replace remaining physical registers via *mapping*.
-    Step 3: Validate no physical registers remain.
+    Step 3: Apply register-view replacements (e.g. rdi→reg64(i32_reg2)).
+    Step 4: Validate no physical registers remain.
     """
     from angr_rule_learning.rules.ast import (
         Instruction as AstInstruction,
@@ -1351,7 +1375,6 @@ def _generalize_instructions_with_roles(
     result: list[AstInstruction] = []
 
     for inst, ext in zip(insts, extracted, strict=True):
-        inst_mapping = _mapping_for_instruction(mapping, arch, ext)
         # Work on a text copy so we can detect whether an operand became
         # a pure placeholder after all replacements are applied.
         inst_text = inst.to_text()
@@ -1405,11 +1428,23 @@ def _generalize_instructions_with_roles(
                 )
 
         # Step 2: Handle regular mapping (text-level).
-        for register in sorted(inst_mapping, key=lambda r: len(r), reverse=True):
-            placeholder = inst_mapping[register]
+        for register in sorted(mapping, key=lambda r: len(r), reverse=True):
+            placeholder = mapping[register]
             rewritten = re.sub(
                 rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
                 placeholder,
+                rewritten,
+                flags=re.IGNORECASE,
+            )
+
+        # Step 3: Apply register-view replacements.
+        # This replaces physical registers that are same-family wider
+        # variants of mapped registers with reg64(i32_regN) text.
+        views = resolve_register_views(arch, ext, mapping)
+        for rv in sorted(views, key=lambda r: len(r.physical_register), reverse=True):
+            rewritten = re.sub(
+                rf"(?<![A-Za-z0-9_]){re.escape(rv.physical_register)}(?![A-Za-z0-9_])",
+                rv.replacement_text,
                 rewritten,
                 flags=re.IGNORECASE,
             )
@@ -1438,7 +1473,7 @@ def _generalize_instructions_with_roles(
             )
         )
 
-    # Step 3: Validate.
+    # Step 4: Validate.
     _validate_no_remaining_registers(
         tuple(result), arch, allowed_literals=allowed_literals
     )
@@ -1446,43 +1481,13 @@ def _generalize_instructions_with_roles(
     return tuple(result)
 
 
-def _mapping_for_instruction(
-    mapping: dict[str, str],
-    arch: str,
-    instruction: ExtractedInstruction,
-) -> dict[str, str]:
-    """Return the register mapping visible to a single instruction.
-
-    x86-64 commonly lowers i32 addition to ``lea eax, [rdi + rsi]``.  The
-    semantic ABI inputs are ``edi``/``esi``, but the address expression text
-    uses their 64-bit register-family names.  For this specific ``lea`` form,
-    allow those family names to inherit the i32 placeholders so the emitted
-    rule can keep the compiler-selected ``lea`` idiom.
-    """
-    if canonical_arch_name(arch) != "x86-64":
-        return mapping
-    if instruction.mnemonic.strip().lower() != "lea":
-        return mapping
-
-    result = dict(mapping)
-    op_tokens = {
-        normalize_register_name(token)
-        for token in _TOKEN_RE.findall(instruction.op_str)
-    }
-    for register, placeholder in mapping.items():
-        if not placeholder.startswith("i32_reg"):
-            continue
-        family = register_family(arch, register)
-        if family in op_tokens and family not in result:
-            result[family] = placeholder
-    return result
-
-
 _PARAMETERIZED_TOKEN_RE = re.compile(
     r"^(?:[ifv]\d+_reg\d+|sp\d+|fp\d+|[ifv]\d+_tmp\d+|imm\d+|label\d+)$"
 )
 _GENERAL_REGISTER_PLACEHOLDER_RE = re.compile(r"^[ifv]\d+_reg\d+$")
 _KEYWORD_TOKENS = frozenset({"dword", "word", "byte", "qword", "ptr", "lsl"})
+# reg64/reg32/etc. are view-cast function keywords in rule text.
+_VIEW_FUNCTION_TOKENS = re.compile(r"^reg\d+$")
 _TOKEN_RE = re.compile(r"\[|\]|0x[0-9a-fA-F]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[-+*/#]")
 
 
@@ -1510,6 +1515,8 @@ def _validate_no_remaining_registers(
                     if token_n in _KEYWORD_TOKENS:
                         continue
                     if _PARAMETERIZED_TOKEN_RE.match(token_n):
+                        continue
+                    if _VIEW_FUNCTION_TOKENS.match(token_n):
                         continue
                     if is_allowed_literal_register(arch, token_n):
                         continue
