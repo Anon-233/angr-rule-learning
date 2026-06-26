@@ -562,10 +562,11 @@ def _build_placeholder_map(
     """Return ``(mapping, role_split)``.
 
     *mapping* maps register names to placeholders.
-    *role_split* maps a guest register name to
-    ``(output_placeholder, input_placeholder)`` when the same guest
-    register appears in both output and input pairs with **different**
-    host registers and must be given distinct placeholders per role.
+    *role_split* maps a physical register name to
+    ``(output_placeholder, input_placeholder)`` when the same register
+    appears in **both** output and input pairs with **different** paired
+    registers.  This is side-symmetric: both guest-side and host-side
+    role conflicts are detected.
     """
     mapping: dict[str, str] = {}
     next_id = 1
@@ -573,6 +574,9 @@ def _build_placeholder_map(
     # Record host register per guest register for output vs input roles.
     output_host: dict[str, str] = {}
     input_host: dict[str, str] = {}
+    # Also record guest per host for reverse-lookup of host-side conflicts.
+    output_guest: dict[str, str] = {}
+    input_guest: dict[str, str] = {}
 
     register_pairs = (
         candidate.output_registers
@@ -582,6 +586,8 @@ def _build_placeholder_map(
     output_count = len(candidate.output_registers)
     input_count = len(candidate.input_registers)
 
+    role_split: dict[str, tuple[str, str]] = {}
+
     pair_index = 0
     for guest_reg, host_reg in register_pairs:
         pair_index += 1
@@ -590,8 +596,10 @@ def _build_placeholder_map(
 
         if is_output:
             output_host[guest_reg] = host_reg
+            output_guest[host_reg] = guest_reg
         elif is_input:
             input_host[guest_reg] = host_reg
+            input_guest[host_reg] = guest_reg
         guest_reg = normalize_register_name(guest_reg)
         host_reg = normalize_register_name(host_reg)
 
@@ -692,7 +700,21 @@ def _build_placeholder_map(
         elif guest_existing is not None and host_existing is None:
             existing = guest_existing
         elif host_existing is not None and guest_existing is None:
-            existing = host_existing
+            # When the host register is already mapped and this is an
+            # input pair where the same host register also appears in
+            # an output pair with a *different* guest, the host register
+            # serves two roles.  Create a fresh input-role placeholder
+            # for the guest and record the host-side role split.
+            if is_input and host_reg in output_guest:
+                out_guest_reg = output_guest[host_reg]
+                if out_guest_reg != guest_reg:
+                    existing = f"{guest_class.placeholder_prefix}_reg{next_id}"
+                    next_id += 1
+                    role_split[host_reg] = (host_existing, existing)
+                else:
+                    existing = host_existing
+            else:
+                existing = host_existing
         else:
             raise _RuleSkip("unsupported_rule_shape")
 
@@ -706,22 +728,29 @@ def _build_placeholder_map(
         if not host_fixed:
             host_previous = mapping.get(host_reg)
             if host_previous is not None and host_previous != existing:
-                raise _RuleSkip("unsupported_rule_shape")
-            mapping[host_reg] = existing
+                # When this host register already has a mapping from an
+                # output pair and we created a new input-role placeholder
+                # for the guest, the host keeps its output placeholder.
+                # A host-side role split was recorded above.
+                if host_reg in role_split and role_split[host_reg][0] == host_previous:
+                    pass  # Host keeps output placeholder; guest gets new one.
+                else:
+                    raise _RuleSkip("unsupported_rule_shape")
+            else:
+                mapping[host_reg] = existing
     if not mapping:
         raise _RuleSkip("unsupported_rule_shape")
 
-    # Detect split registers: same guest register appears in both
+    # Detect guest-side role splits: same guest register appears in both
     # output and input pairs but with different host registers.
-    role_split: dict[str, tuple[str, str]] = {}
     for guest_reg in output_host:
         if guest_reg not in input_host:
             continue
+        if output_host[guest_reg] == input_host[guest_reg]:
+            continue  # Same host register — no split needed
         out_ph = mapping.get(guest_reg)
         if out_ph is None:
             continue
-        if output_host[guest_reg] == input_host[guest_reg]:
-            continue  # Same host register — no split needed
         # Create a new input-role placeholder.
         guest_class = _classify_for_rule(guest_arch, guest_reg)
         in_ph = f"{guest_class.placeholder_prefix}_reg{next_id}"
@@ -730,6 +759,28 @@ def _build_placeholder_map(
         # Also update the host input register's mapping.
         host_input_reg = input_host[guest_reg]
         mapping[host_input_reg] = in_ph
+
+    # Detect host-side role splits: same host register appears in both
+    # output and input pairs but with different guest registers.
+    for host_reg in set(output_guest.keys()) & set(input_guest.keys()):
+        if host_reg in role_split:
+            continue  # Already handled in the main loop.
+        out_guest_reg = output_guest[host_reg]
+        in_guest_reg = input_guest[host_reg]
+        if out_guest_reg == in_guest_reg:
+            continue
+        out_ph = mapping.get(out_guest_reg)
+        if out_ph is None:
+            out_ph = mapping.get(host_reg)
+        if out_ph is None:
+            continue
+        # Create a new input-role placeholder for the guest input register.
+        guest_class = _classify_for_rule(guest_arch, in_guest_reg)
+        in_ph = f"{guest_class.placeholder_prefix}_reg{next_id}"
+        next_id += 1
+        role_split[host_reg] = (out_ph, in_ph)
+        # Update the guest input register's mapping.
+        mapping[in_guest_reg] = in_ph
 
     return mapping, role_split
 
