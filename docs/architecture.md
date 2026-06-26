@@ -398,6 +398,14 @@ Current templates for ``("aarch64", "x86-64")``:
   appearing as both scale and displacement in one operand is handled
   correctly.
 
+Current templates for ``("x86-64", "aarch64")``:
+
+- **Reverse indexed-address scale**: host AArch64 shift `lsl #immN` derived
+  as `log2(guest_scale)` from the guest x86-64 ``*immN`` scale factor.
+  The derivation validates that the guest occurrence is a scale factor
+  (``*`` before the immediate in the operand text) and that the host
+  occurrence is adjacent to ``lsl``.
+
 Any host immediate that cannot be expressed through these templates causes
 the rule to be skipped with `unpaired_host_immediate` (a universal rejection
 condition, not limited to frame-relative memory rules).

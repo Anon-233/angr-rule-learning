@@ -195,10 +195,12 @@ def _make_memory_kernel(
         llvm_ir=f"define i32 @{kernel_id}(ptr %p) {{ ret i32 0 }}",
         signature=KernelSignature(inputs=sig_inputs, outputs=sig_outputs),
         metadata=KernelMetadata(op_kind="load", bit_width=32, has_memory=True),
-        memory_objects=objects
-        or (KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),),
-        memory_accesses=accesses
-        or (
+        memory_objects=(
+            KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),
+        )
+        if objects is None
+        else tuple(objects),
+        memory_accesses=(
             KernelMemoryAccessSpec(
                 kind="load",
                 object="slot0",
@@ -206,7 +208,9 @@ def _make_memory_kernel(
                 address=KernelAddressSpec(base="p"),
                 result="v",
             ),
-        ),
+        )
+        if accesses is None
+        else tuple(accesses),
     )
 
 
@@ -219,6 +223,8 @@ def _build_memory_spec(kernel, spec):
 def test_validation_rejects_missing_object_base_in_inputs():
     from angr_rule_learning.kernel.bind import KernelBindingBuilder
     from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
         KernelMemoryObjectSpec,
     )
 
@@ -226,7 +232,15 @@ def test_validation_rejects_missing_object_base_in_inputs():
         objects=(
             KernelMemoryObjectSpec(name="slot0", base="nonexistent", element_bits=32),
         ),
-        accesses=(),
+        accesses=(
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="nonexistent"),
+                result="v",
+            ),
+        ),
     )
     spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
     with pytest.raises(ValueError, match="not found in kernel signature inputs"):
@@ -236,13 +250,23 @@ def test_validation_rejects_missing_object_base_in_inputs():
 def test_validation_rejects_non_ptr_base():
     from angr_rule_learning.kernel.bind import KernelBindingBuilder
     from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
         KernelMemoryObjectSpec,
     )
 
     kernel = _make_memory_kernel(
         inputs=(("p", "i64"), ("v", "i64")),
         objects=(KernelMemoryObjectSpec(name="slot0", base="p", element_bits=64),),
-        accesses=(),
+        accesses=(
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="slot0",
+                width_bits=64,
+                address=KernelAddressSpec(base="p"),
+                result="v",
+            ),
+        ),
     )
     spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
     with pytest.raises(ValueError, match="expected 'ptr'"):
@@ -390,3 +414,91 @@ def test_validation_rejects_unknown_base():
     addr = KernelAddressSpec(base="unknown")
     with pytest.raises(ValueError, match="not in register map"):
         _build_addr_str(addr, reg_map, "guest")
+
+
+def test_validation_rejects_two_accesses():
+    """A kernel with one memory object and two accesses must be rejected."""
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
+        KernelMemoryObjectSpec,
+    )
+
+    kernel = _make_memory_kernel(
+        inputs=(("p", "ptr"), ("v", "i32")),
+        objects=(KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),),
+        accesses=(
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                result="v",
+            ),
+            KernelMemoryAccessSpec(
+                kind="store",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                value="v",
+            ),
+        ),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="exactly one memory access"):
+        _build_memory_spec(kernel, spec)
+
+
+def test_validation_rejects_empty_accesses():
+    """A kernel with one object but zero accesses must be rejected."""
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelMemoryObjectSpec,
+    )
+
+    kernel = _make_memory_kernel(
+        objects=(KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),),
+        accesses=(),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="exactly one memory access"):
+        _build_memory_spec(kernel, spec)
+
+
+def test_validation_rejects_empty_objects():
+    """A kernel with zero objects but one access must be rejected."""
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
+    )
+
+    kernel = _make_memory_kernel(
+        objects=(),
+        accesses=(
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                result="v",
+            ),
+        ),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="exactly one memory object"):
+        _build_memory_spec(kernel, spec)
+
+
+def test_single_access_builds_one_mem0_slot():
+    """Current single-load kernel still builds one slot named mem0."""
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+
+    kernel = _kernel("kernel_load_i32")
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    mem_spec = _build_memory_spec(kernel, spec)
+    assert len(mem_spec.slots) == 1
+    assert mem_spec.slots[0].name == "mem0"
+    assert len(mem_spec.bindings) == 1
+    assert len(mem_spec.accesses) == 1

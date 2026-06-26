@@ -2547,6 +2547,80 @@ def test_reverse_add_keeps_output_and_input_placeholders_distinct():
     )
 
 
+# ── Reverse indexed-scale derivation test ───────────────────────────────
+
+
+def test_reverse_indexed_scale_derivation():
+    """x86-64→AArch64 indexed load: guest *immN scale → host lsl #${log2(immN)}.
+
+    Guest: mov eax, dword ptr [rdi + rsi*4]
+    Host:  ldr w0, [x0, x1, lsl #2]
+    """
+    guest_mov = ExtractedInstruction(
+        arch="x86-64",
+        address=0x1000,
+        size=3,
+        code_bytes=b"\x01\x02\x03",
+        mnemonic="mov",
+        op_str="eax, dword ptr [rdi + rsi*4]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("eax",),
+        read_registers=("rdi", "rsi"),
+    )
+    host_ldr = ExtractedInstruction(
+        arch="aarch64",
+        address=0x2000,
+        size=4,
+        code_bytes=b"\x01\x02\x03\x04",
+        mnemonic="ldr",
+        op_str="w0, [x0, x1, lsl #2]",
+        function="f",
+        source=SourceLocation("sample.c", 1),
+        write_registers=("w0",),
+        read_registers=("x0", "x1"),
+    )
+    window = WindowPair(
+        "sample:sample.c:1:0",
+        (1, 1),
+        InstructionWindow("sample:sample.c:1:0", "guest", (guest_mov,)),
+        InstructionWindow("sample:sample.c:1:0", "host", (host_ldr,)),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="reverse-indexed-scale",
+        guest=CodeFragment("x86-64", 0x1000, "010203", 1),
+        host=CodeFragment("aarch64", 0x2000, "01020304", 1),
+        input_registers=(("rdi", "x0"), ("rsi", "x1")),
+        output_registers=(("eax", "w0"),),
+        memory=MemorySpec(
+            slots=(MemorySlot("mem0", 4),),
+            bindings=(MemoryBinding("mem0", "rdi + rsi * 4", "x0 + x1 * 4", "read"),),
+            accesses=(MemoryAccessExpectation("mem0", "read", 4),),
+        ),
+    )
+    report = VerificationReport(
+        candidate_id="reverse-indexed-scale",
+        status="pass",
+        checks=(
+            CheckResult("memory", "pass", "mem0", "mem0"),
+            CheckResult("register", "pass", "eax", "w0"),
+        ),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, window, candidate, report)
+
+    assert rule is not None, (
+        f"rule should emit, skipped as: {dict(diagnostics.skip_reasons)}"
+    )
+    host_line = rule.host_lines[0]
+    # Host shift must derive from guest scale: lsl #${log2(imm1)}.
+    assert "${log2(imm1)}" in host_line, f"unexpected host line: {host_line}"
+    assert "unpaired_host_immediate" not in diagnostics.skip_reasons, (
+        "rule must not be skipped with unpaired_host_immediate"
+    )
+
+
 # ── RegViewOp AST and fingerprint tests ──────────────────────────────────
 
 

@@ -110,9 +110,12 @@ Host:  mov i32_reg1, imm1
 Hexadecimal and decimal immediates are canonicalized to signed integers so
 that `#-0xc` (AArch64) and `- 0xc` (x86-64) share the same `imm{N}`.
 
-Scale immediates (`lsl #immN` in AArch64) are bindable Guest immediates;
-the corresponding x86 multiplier is a derived expression `${(1 << immN)}`
-that references the guest shift placeholder.
+Scale immediates are bidirectional:
+
+* AArch64 → x86: ``lsl #immN`` (Guest) → ``${(1 << immN)}`` (Host, as
+  ``immN`` multiplier).
+* x86 → AArch64: ``*immN`` scale factor (Guest, value 4 or 8) →
+  ``${log2(immN)}`` (Host, as ``lsl #`` shift amount).
 
 ### Derived Expressions — `${...}`
 
@@ -121,14 +124,15 @@ use a derived expression syntax:
 
 | Expression | Meaning |
 |------------|---------|
-| `${(1 << immN)}` | Power-of-two derived from guest shift bit-position |
-| `${(imm_high << imm_shift) \| imm_low}` | 64-bit constant composed from mov/movk pair |
+| `${(1 << immN)}` | Power-of-two: Guest shift → Host multiplier |
+| `${log2(immN)}` | Log₂ of scale: Guest x86 ``*immN`` → Host AArch64 ``lsl #`` shift |
+| `${(imm_high << imm_shift) \| imm_low}` | 64-bit constant from Guest mov/movk pair |
 
 Derived expressions are only produced by approved instruction-aware
 templates (`tbz`/`tbnz` bit-test, `mov`/`movk` constant construction,
-indexed-address scale).  A host immediate that cannot be expressed
-through these templates causes the rule to be skipped with
-`unpaired_host_immediate`.
+indexed-address scale in both directions).  A host immediate that
+cannot be expressed through these templates causes the rule to be
+skipped with `unpaired_host_immediate`.
 
 ### Branch Label Placeholders — `label{N}`
 

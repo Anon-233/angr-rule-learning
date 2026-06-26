@@ -151,6 +151,7 @@ def _validate_kernel_declaration(kernel, spec):
 
     Raises ``ValueError`` with a clear message on invalid declarations.
     """
+    # First-stage scope: exactly one memory object and one access.
     if len(kernel.memory_objects) != 1:
         raise ValueError(
             f"kernel {kernel.id}: exactly one memory object required, "
@@ -158,67 +159,74 @@ def _validate_kernel_declaration(kernel, spec):
         )
     obj = kernel.memory_objects[0]
 
-    if kernel.memory_accesses:
-        for mem_acc in kernel.memory_accesses:
-            # object reference
-            if mem_acc.object != obj.name:
+    if len(kernel.memory_accesses) != 1:
+        raise ValueError(
+            f"kernel {kernel.id}: first-stage memory kernels require "
+            f"exactly one memory access, got {len(kernel.memory_accesses)}"
+        )
+
+    # Validate the object declaration itself (base exists and is ptr).
+    base_input = _find_value(kernel.signature.inputs, obj.base)
+    if base_input is None:
+        raise ValueError(
+            f"kernel {kernel.id}: memory object base {obj.base!r} "
+            f"not found in kernel signature inputs"
+        )
+    if base_input.type != "ptr":
+        raise ValueError(
+            f"kernel {kernel.id}: memory object base {obj.base!r} "
+            f"has type {base_input.type!r}, expected 'ptr'"
+        )
+
+    # Validate each access against the object.
+    for mem_acc in kernel.memory_accesses:
+        # object reference
+        if mem_acc.object != obj.name:
+            raise ValueError(
+                f"kernel {kernel.id}: memory access object {mem_acc.object!r} "
+                f"does not match declared memory object {obj.name!r}"
+            )
+        # access address base matches object base
+        if mem_acc.address.base != obj.base:
+            raise ValueError(
+                f"kernel {kernel.id}: access address base {mem_acc.address.base!r} "
+                f"does not match memory object base {obj.base!r}"
+            )
+        # index exists in inputs and is i64
+        if mem_acc.address.index is not None:
+            idx_input = _find_value(kernel.signature.inputs, mem_acc.address.index)
+            if idx_input is None:
                 raise ValueError(
-                    f"kernel {kernel.id}: memory access object {mem_acc.object!r} "
-                    f"does not match declared memory object {obj.name!r}"
-                )
-            # object base exists in kernel inputs and is ptr type
-            base_input = _find_value(kernel.signature.inputs, obj.base)
-            if base_input is None:
-                raise ValueError(
-                    f"kernel {kernel.id}: memory object base {obj.base!r} "
+                    f"kernel {kernel.id}: address index {mem_acc.address.index!r} "
                     f"not found in kernel signature inputs"
                 )
-            if base_input.type != "ptr":
+            if idx_input.type != "i64":
                 raise ValueError(
-                    f"kernel {kernel.id}: memory object base {obj.base!r} "
-                    f"has type {base_input.type!r}, expected 'ptr'"
+                    f"kernel {kernel.id}: address index {mem_acc.address.index!r} "
+                    f"must have type 'i64', got {idx_input.type!r}"
                 )
-            # access address base matches object base
-            if mem_acc.address.base != obj.base:
+        # load result exists in outputs
+        if mem_acc.kind == "load":
+            result_output = _find_value(kernel.signature.outputs, mem_acc.result)
+            if result_output is None:
                 raise ValueError(
-                    f"kernel {kernel.id}: access address base {mem_acc.address.base!r} "
-                    f"does not match memory object base {obj.base!r}"
+                    f"kernel {kernel.id}: load result {mem_acc.result!r} "
+                    f"not found in kernel signature outputs"
                 )
-            # index exists in inputs and is i64
-            if mem_acc.address.index is not None:
-                idx_input = _find_value(kernel.signature.inputs, mem_acc.address.index)
-                if idx_input is None:
-                    raise ValueError(
-                        f"kernel {kernel.id}: address index {mem_acc.address.index!r} "
-                        f"not found in kernel signature inputs"
-                    )
-                if idx_input.type != "i64":
-                    raise ValueError(
-                        f"kernel {kernel.id}: address index {mem_acc.address.index!r} "
-                        f"must have type 'i64', got {idx_input.type!r}"
-                    )
-            # load result exists in outputs
-            if mem_acc.kind == "load":
-                result_output = _find_value(kernel.signature.outputs, mem_acc.result)
-                if result_output is None:
-                    raise ValueError(
-                        f"kernel {kernel.id}: load result {mem_acc.result!r} "
-                        f"not found in kernel signature outputs"
-                    )
-            # store value exists in inputs
-            if mem_acc.kind == "store":
-                value_input = _find_value(kernel.signature.inputs, mem_acc.value)
-                if value_input is None:
-                    raise ValueError(
-                        f"kernel {kernel.id}: store value {mem_acc.value!r} "
-                        f"not found in kernel signature inputs"
-                    )
-            # width_bits divisible by 8
-            if mem_acc.width_bits % 8 != 0:
+        # store value exists in inputs
+        if mem_acc.kind == "store":
+            value_input = _find_value(kernel.signature.inputs, mem_acc.value)
+            if value_input is None:
                 raise ValueError(
-                    f"kernel {kernel.id}: memory access width {mem_acc.width_bits} "
-                    f"must be divisible by 8"
+                    f"kernel {kernel.id}: store value {mem_acc.value!r} "
+                    f"not found in kernel signature inputs"
                 )
+        # width_bits divisible by 8
+        if mem_acc.width_bits % 8 != 0:
+            raise ValueError(
+                f"kernel {kernel.id}: memory access width {mem_acc.width_bits} "
+                f"must be divisible by 8"
+            )
 
 
 def _build_memory_spec(kernel, spec):
