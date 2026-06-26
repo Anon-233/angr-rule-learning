@@ -328,7 +328,7 @@ Detailed verifier behavior and support boundaries are documented in
 
 The canonical rule model lives in `rules/ast.py`.  Every generated rule is
 a dataclass tree of `Rule`, `Instruction`, and typed `Operand` nodes (RegOp,
-ImmOp, TmpOp, LabelOp, LitOp, RegTextOp).  The AST supports:
+ImmOp, TmpOp, LabelOp, LitOp, RegTextOp, RegViewOp).  The AST supports:
 
 - **Structured comparison**: relationship-preserving alpha-equivalence
   (`build_rule_fingerprint` / `rule_alpha_equal`) that recognizes two rules
@@ -434,6 +434,45 @@ The family and covering bit range are queried using the architecture of the
 fragment being inspected. This policy is symmetric: neither Guest nor Host may
 use a fixed-role register as an unexplained boundary value. Learning rules for
 fixed-role values supplied directly at fragment entry remains unsupported.
+
+### Register View / Cast Semantics
+
+Some ISA patterns require a semantic input to appear at a different bit
+width at a specific use point.  For example, when an i32 addition is
+lowered to ``lea eax, [rdi + rsi]`` on x86-64, the 32‑bit semantic inputs
+(``edi``, ``esi``) are accessed through their 64‑bit family registers
+(``rdi``, ``rsi``) in the address expression.
+
+The AST represents this with ``RegViewOp`` — a use‑site width view:
+
+* ``reg64(i32_reg1)`` means: *low 32 bits bind to ``i32_reg1``, high 32
+  bits are unspecified (fresh).*
+* ``reg32(i64_reg1)`` means: *low 32 bits bind to ``i64_reg1``.*
+
+``reg64(i32_regN)`` is **not** zero‑extension.  ``zext64``, ``sext64``,
+and ``lo32`` are reserved for future use.
+
+The view is resolved at rule‑generalization time by
+``rules/register_views.py``, which detects when a physical register in the
+instruction text belongs to the same family as a mapped placeholder but
+has a wider bit range.  On the verifier side,
+``verification/register_views.py`` widens input‑register initialization
+so that the full family register is set to ``Concat(fresh_hi, semantic)``,
+explicitly modelling the partial‑equality contract.
+
+**Current scope** (first phase):
+
+* Integer GPR only.
+* x86‑64 ``lea`` address operands trigger the view resolver.
+* Output verification compares only low bits (e.g. ``eax`` ↔ ``w0``).
+* Guest‑side ``wN``/``xN`` widening is handled generically through the
+  same ``register_family`` / ``register_bit_range`` queries — neither
+  side is hard‑coded.
+
+**Why not directly map ``rdi`` → ``i32_regN``?**  Mapping a 64‑bit
+register to an ``i32`` placeholder would lose the information that only
+the low 32 bits are constrained.  The ``reg64(i32_regN)`` notation makes
+this explicit: a rule consumer knows that the upper 32 bits are free.
 
 ## Candidate Boundary
 
