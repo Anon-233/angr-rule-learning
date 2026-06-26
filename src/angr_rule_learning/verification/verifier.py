@@ -338,7 +338,7 @@ class SemanticVerifier:
     ) -> dict[str, object]:
         from angr_rule_learning.arch.registry import canonical_arch_name as _canonical
         from angr_rule_learning.verification.register_views import (
-            widen_host_input_register,
+            widen_input_register_view,
         )
 
         symbols: dict[str, object] = {}
@@ -348,18 +348,29 @@ class SemanticVerifier:
             )
             symbol = claripy.BVS(guest_reg, width)
 
-            write_reg(guest_state, guest_reg, symbol)
-
-            # If *host_reg* is a sub-register whose family has a wider
-            # canonical form (e.g. edi→rdi), write the semantic symbol
-            # into the full family register with fresh high bits.  This
-            # explicitly models the reg64(i32_regN) semantics.
+            # Side-neutral widening: for each side, if the input register
+            # is a sub-register, write the semantic symbol into the full
+            # family register with fresh high bits.
+            guest_arch_canon = _canonical(guest_state.arch.name)
             host_arch_canon = _canonical(host_state.arch.name)
-            widen_host_input_register(host_state, host_reg, host_arch_canon, symbol)
-            # Always write the original register as well so angr's
-            # register map stays coherent.
+
+            guest_fresh = widen_input_register_view(
+                guest_state, guest_reg, guest_arch_canon, symbol
+            )
+            host_fresh = widen_input_register_view(
+                host_state, host_reg, host_arch_canon, symbol
+            )
+
+            # Write the original sub-register as well so angr's register
+            # map stays coherent.
+            write_reg(guest_state, guest_reg, symbol)
             write_reg(host_state, host_reg, symbol)
 
             symbols[guest_reg] = symbol
             symbols[host_reg] = symbol
+            # Track fresh high-bit symbols for counterexample display.
+            if guest_fresh is not None:
+                symbols[f"{guest_reg}_view_hi"] = guest_fresh
+            if host_fresh is not None:
+                symbols[f"{host_reg}_view_hi"] = host_fresh
         return symbols
