@@ -22,3 +22,12 @@ dev = [
     "pytest>=9.0.3",
     "ruff>=0.15.16",
 ]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:Due to '_pack_', the 'CoffFileHeader' Structure will use memory layout compatible with MSVC \\(Windows\\).*:DeprecationWarning:cle\\.backends\\.coff",
+    "ignore:Due to '_pack_', the 'CoffSectionTableEntry' Structure will use memory layout compatible with MSVC \\(Windows\\).*:DeprecationWarning:cle\\.backends\\.coff",
+    "ignore:Due to '_pack_', the 'CoffSymbolTableEntry' Structure will use memory layout compatible with MSVC \\(Windows\\).*:DeprecationWarning:cle\\.backends\\.coff",
+    "ignore:Due to '_pack_', the 'CoffRelocationTableEntry' Structure will use memory layout compatible with MSVC \\(Windows\\).*:DeprecationWarning:cle\\.backends\\.coff",
+    "ignore:Due to '_pack_', the 'EfiAmdZlibSectionHeader' Structure will use memory layout compatible with MSVC \\(Windows\\).*:DeprecationWarning:uefi_firmware\\.structs\\.uefi_structs",
+]
