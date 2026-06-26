@@ -336,14 +336,30 @@ class SemanticVerifier:
         host_state,
         input_registers: tuple[tuple[str, str], ...],
     ) -> dict[str, object]:
+        from angr_rule_learning.arch.registry import canonical_arch_name as _canonical
+        from angr_rule_learning.verification.register_views import (
+            widen_host_input_register,
+        )
+
         symbols: dict[str, object] = {}
         for guest_reg, host_reg in input_registers:
             width = max(
                 reg_width(guest_state, guest_reg), reg_width(host_state, host_reg)
             )
             symbol = claripy.BVS(guest_reg, width)
+
             write_reg(guest_state, guest_reg, symbol)
+
+            # If *host_reg* is a sub-register whose family has a wider
+            # canonical form (e.g. edi→rdi), write the semantic symbol
+            # into the full family register with fresh high bits.  This
+            # explicitly models the reg64(i32_regN) semantics.
+            host_arch_canon = _canonical(host_state.arch.name)
+            widen_host_input_register(host_state, host_reg, host_arch_canon, symbol)
+            # Always write the original register as well so angr's
+            # register map stays coherent.
             write_reg(host_state, host_reg, symbol)
+
             symbols[guest_reg] = symbol
             symbols[host_reg] = symbol
         return symbols
