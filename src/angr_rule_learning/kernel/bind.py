@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from angr_rule_learning.arch.memory import extract_memory_operands
 from angr_rule_learning.arch.registry import canonical_arch_name
 from angr_rule_learning.extraction.models import InstructionWindow, WindowPair
 from angr_rule_learning.kernel.models import BindingSpec, IRKernel, SnippetPair
@@ -93,6 +94,11 @@ class KernelBindingBuilder:
         # Build memory spec from kernel declarations.
         memory = _build_memory_spec(kernel, spec) if kernel.has_memory else MemorySpec()
 
+        # Sanity check: compiled snippet memory operands should match kernel
+        # declaration for count, kind, and width.
+        if kernel.has_memory:
+            _check_compiled_memory(kernel, snippets)
+
         candidate = VerificationCandidate(
             candidate_id=kernel.id,
             guest=_fragment_for_window(guest_window),
@@ -140,9 +146,90 @@ def _find_value(values, name: str):
     return None
 
 
+def _validate_kernel_declaration(kernel, spec):
+    """Validate memory kernel declarations before building the ``MemorySpec``.
+
+    Raises ``ValueError`` with a clear message on invalid declarations.
+    """
+    if len(kernel.memory_objects) != 1:
+        raise ValueError(
+            f"kernel {kernel.id}: exactly one memory object required, "
+            f"got {len(kernel.memory_objects)}"
+        )
+    obj = kernel.memory_objects[0]
+
+    if kernel.memory_accesses:
+        for mem_acc in kernel.memory_accesses:
+            # object reference
+            if mem_acc.object != obj.name:
+                raise ValueError(
+                    f"kernel {kernel.id}: memory access object {mem_acc.object!r} "
+                    f"does not match declared memory object {obj.name!r}"
+                )
+            # object base exists in kernel inputs and is ptr type
+            base_input = _find_value(kernel.signature.inputs, obj.base)
+            if base_input is None:
+                raise ValueError(
+                    f"kernel {kernel.id}: memory object base {obj.base!r} "
+                    f"not found in kernel signature inputs"
+                )
+            if base_input.type != "ptr":
+                raise ValueError(
+                    f"kernel {kernel.id}: memory object base {obj.base!r} "
+                    f"has type {base_input.type!r}, expected 'ptr'"
+                )
+            # access address base matches object base
+            if mem_acc.address.base != obj.base:
+                raise ValueError(
+                    f"kernel {kernel.id}: access address base {mem_acc.address.base!r} "
+                    f"does not match memory object base {obj.base!r}"
+                )
+            # index exists in inputs and is i64
+            if mem_acc.address.index is not None:
+                idx_input = _find_value(kernel.signature.inputs, mem_acc.address.index)
+                if idx_input is None:
+                    raise ValueError(
+                        f"kernel {kernel.id}: address index {mem_acc.address.index!r} "
+                        f"not found in kernel signature inputs"
+                    )
+                if idx_input.type != "i64":
+                    raise ValueError(
+                        f"kernel {kernel.id}: address index {mem_acc.address.index!r} "
+                        f"must have type 'i64', got {idx_input.type!r}"
+                    )
+            # load result exists in outputs
+            if mem_acc.kind == "load":
+                result_output = _find_value(kernel.signature.outputs, mem_acc.result)
+                if result_output is None:
+                    raise ValueError(
+                        f"kernel {kernel.id}: load result {mem_acc.result!r} "
+                        f"not found in kernel signature outputs"
+                    )
+            # store value exists in inputs
+            if mem_acc.kind == "store":
+                value_input = _find_value(kernel.signature.inputs, mem_acc.value)
+                if value_input is None:
+                    raise ValueError(
+                        f"kernel {kernel.id}: store value {mem_acc.value!r} "
+                        f"not found in kernel signature inputs"
+                    )
+            # width_bits divisible by 8
+            if mem_acc.width_bits % 8 != 0:
+                raise ValueError(
+                    f"kernel {kernel.id}: memory access width {mem_acc.width_bits} "
+                    f"must be divisible by 8"
+                )
+
+
 def _build_memory_spec(kernel, spec):
-    """Construct a ``MemorySpec`` from kernel memory declarations."""
+    """Construct a ``MemorySpec`` from kernel memory declarations.
+
+    Validates the kernel declarations first via ``_validate_kernel_declaration``.
+    """
+    _validate_kernel_declaration(kernel, spec)
+
     # Build name → (guest_reg, host_reg) lookup.
+    # All names validated by _validate_kernel_declaration to exist in spec.
     reg_map: dict[str, tuple[str, str]] = {}
     for name, g, h in spec.inputs:
         reg_map[name] = (g, h)
@@ -175,21 +262,74 @@ def _build_memory_spec(kernel, spec):
 def _build_addr_str(addr, reg_map, side: str) -> str:
     """Build an address expression string for *side* from a ``KernelAddressSpec``.
 
-    *side* is ``"guest"`` or ``"host"``.  The register names are looked
-    up from *reg_map* which stores ``(guest_reg, host_reg)`` tuples.
+    *side* is ``"guest"`` or ``"host"``.  Raises ``ValueError`` when
+    address names are not found in *reg_map*.
     """
-    pair = reg_map.get(addr.base, ("x0", "rdi"))
+    base_key = addr.base
+    if base_key not in reg_map:
+        raise ValueError(f"address base {base_key!r} not in register map")
+    pair = reg_map[base_key]
     base_reg = pair[0] if side == "guest" else pair[1]
 
+    # Handle displacement without index.
     if addr.index is None:
+        if addr.displacement > 0:
+            return f"{base_reg} + {addr.displacement}"
+        elif addr.displacement < 0:
+            return f"{base_reg} - {abs(addr.displacement)}"
         return base_reg
 
-    index_pair = reg_map.get(addr.index, ("x1", "rsi"))
+    # Build indexed expression.
+    index_key = addr.index
+    if index_key not in reg_map:
+        raise ValueError(f"address index {index_key!r} not in register map")
+    index_pair = reg_map[index_key]
     index_reg = index_pair[0] if side == "guest" else index_pair[1]
 
     if addr.scale == 1:
-        return f"{base_reg} + {index_reg}"
-    return f"{base_reg} + {index_reg} * {addr.scale}"
+        expr = f"{base_reg} + {index_reg}"
+    else:
+        expr = f"{base_reg} + {index_reg} * {addr.scale}"
+
+    if addr.displacement > 0:
+        expr = f"{expr} + {addr.displacement}"
+    elif addr.displacement < 0:
+        expr = f"{expr} - {abs(addr.displacement)}"
+    return expr
+
+
+def _check_compiled_memory(kernel, snippets):
+    """Sanity check: compiled snippet memory operands must match declarations.
+
+    Raises ``ValueError`` if the compiled code does not produce the expected
+    number, kind, or width of memory operands.
+    """
+    for side, snippet in (("guest", snippets.guest), ("host", snippets.host)):
+        compiled_ops: list = []
+        for inst in snippet.instructions:
+            compiled_ops.extend(extract_memory_operands(inst))
+
+        declared_count = len(kernel.memory_accesses)
+        if len(compiled_ops) != declared_count:
+            raise ValueError(
+                f"kernel {kernel.id} {side}: compiled has {len(compiled_ops)} "
+                f"memory operands but declared {declared_count}"
+            )
+
+        for i, mem_acc in enumerate(kernel.memory_accesses):
+            op = compiled_ops[i]
+            expected_kind = "read" if mem_acc.kind == "load" else "write"
+            if op.kind != expected_kind:
+                raise ValueError(
+                    f"kernel {kernel.id} {side} access[{i}]: compiled kind "
+                    f"{op.kind!r} != declared {expected_kind!r}"
+                )
+            expected_width = mem_acc.width_bits // 8
+            if op.width != expected_width:
+                raise ValueError(
+                    f"kernel {kernel.id} {side} access[{i}]: compiled width "
+                    f"{op.width} != declared {expected_width}"
+                )
 
 
 def _fragment_for_window(window: InstructionWindow) -> CodeFragment:

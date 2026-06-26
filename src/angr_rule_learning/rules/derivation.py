@@ -305,6 +305,51 @@ def _derive_index_scale(
     return None
 
 
+def _derive_reverse_index_scale(
+    ctx: DerivationContext,
+    imm_id: str,
+    host_idx: int,
+    op_idx: int,
+    span: tuple[int, int] | None,
+) -> str | None:
+    """Derive host AArch64 ``lsl #immN`` shift from guest x86-64 ``*immN`` scale.
+
+    Reverse of ``_derive_index_scale``: guest has ``*4`` or ``*8`` scale
+    factor, host has ``lsl #2`` or ``lsl #3``.  The host shift value is
+    ``log2(guest_scale)``.
+    """
+    target_value = ctx.value_by_id.get(imm_id)
+    if target_value is None:
+        return None
+
+    host_inst = ctx.host_insts[host_idx]
+    operand_text = host_inst.operands[op_idx].to_text()
+
+    # Verify the host operand contains "lsl" adjacent to this immediate.
+    lsl_pattern = re.compile(rf"lsl\s+#imm{re.escape(imm_id)}\b")
+    if not lsl_pattern.search(operand_text):
+        return None
+
+    # Find guest ``*immN`` scale factors where (1 << target_value) == scale.
+    for inst in ctx.guest_insts:
+        for op in inst.operands:
+            if isinstance(op, (LitOp, RegTextOp)):
+                text = op.to_text()
+                for m in IMM_PLACEHOLDER_RE.finditer(text):
+                    candidate_id = m.group(1)
+                    # Verify this occurrence is a scale factor, not displacement.
+                    start = m.start()
+                    if start == 0 or text[start - 1] != "*":
+                        continue
+                    scale_value = ctx.value_by_id.get(candidate_id)
+                    if scale_value is None:
+                        continue
+                    if (1 << target_value) == scale_value:
+                        return f"log2(imm{candidate_id})"
+
+    return None
+
+
 # ── Strategy registry ──────────────────────────────────────────────────
 
 # Strategies registered per (guest_arch, host_arch) pair.
@@ -315,5 +360,8 @@ _STRATEGIES: dict[tuple[str, str], list[DerivationStrategy]] = {
         _derive_tbz_mask,
         _derive_movk_constant,
         _derive_index_scale,
+    ],
+    ("x86-64", "aarch64"): [
+        _derive_reverse_index_scale,
     ],
 }

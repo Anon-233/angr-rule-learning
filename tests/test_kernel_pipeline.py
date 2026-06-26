@@ -100,11 +100,31 @@ def test_memory_kernel_pipeline_emits_load_and_store_rules(tmp_path) -> None:
             f"memory rules should not use addr64_: {rules_text!r}"
         )
 
-        # At least one record should be a memory kernel that emitted a rule.
-        memory_records = [
-            r for r in result.records if "load" in r.kernel_id or "store" in r.kernel_id
+        # Every memory kernel must emit a rule.
+        memory_kernel_ids = [
+            "kernel_load_i32",
+            "kernel_load_i64",
+            "kernel_store_i32",
+            "kernel_store_i64",
+            "kernel_load_i32_idx",
+            "kernel_load_i64_idx",
+            "kernel_store_i32_idx",
+            "kernel_store_i64_idx",
         ]
-        assert memory_records, "no memory kernel records found"
-        assert any(r.status == "rule_emitted" for r in memory_records), (
-            "no memory kernel emitted a rule"
+        memory_records = {
+            r.kernel_id: r for r in result.records if r.kernel_id in memory_kernel_ids
+        }
+        assert len(memory_records) == len(memory_kernel_ids), (
+            f"expected {len(memory_kernel_ids)} memory kernel records, got {len(memory_records)}"
+        )
+        failed: list[str] = []
+        for kid in memory_kernel_ids:
+            rec = memory_records[kid]
+            if rec.status != "rule_emitted":
+                failed.append(f"{kid}: {rec.status} reason={rec.reason}")
+        assert not failed, f"memory kernel failures: {'; '.join(failed)}"
+
+        # Generated memory rules must contain ptr64_regN.
+        assert "ptr64_reg" in rules_text, (
+            f"memory rules should contain ptr64_regN in: {rules_text!r}"
         )

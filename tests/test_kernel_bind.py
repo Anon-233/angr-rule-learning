@@ -165,3 +165,228 @@ def test_store_kernel_binding_has_no_output_and_write_access(tmp_path) -> None:
     role_types = {r.value_type for r in candidate.register_roles}
     assert "ptr" in role_types
     assert "i64" in role_types
+
+
+# ── Validation tests ───────────────────────────────────────────────────
+
+
+def _make_memory_kernel(
+    *,
+    inputs: tuple[tuple[str, str], ...] = (("p", "ptr"),),
+    outputs: tuple[tuple[str, str], ...] = (("v", "i32"),),
+    objects: tuple | None = None,
+    accesses: tuple | None = None,
+) -> IRKernel:
+    """Build a minimal memory kernel for validation tests."""
+    from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
+        KernelMemoryObjectSpec,
+        KernelMetadata,
+        KernelSignature,
+    )
+
+    sig_inputs = tuple(KernelValue(name, typ) for name, typ in inputs)
+    sig_outputs = tuple(KernelValue(name, typ) for name, typ in outputs)
+    kernel_id = "test_mem"
+    return IRKernel(
+        id=kernel_id,
+        name=kernel_id,
+        llvm_ir=f"define i32 @{kernel_id}(ptr %p) {{ ret i32 0 }}",
+        signature=KernelSignature(inputs=sig_inputs, outputs=sig_outputs),
+        metadata=KernelMetadata(op_kind="load", bit_width=32, has_memory=True),
+        memory_objects=objects
+        or (KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),),
+        memory_accesses=accesses
+        or (
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                result="v",
+            ),
+        ),
+    )
+
+
+def _build_memory_spec(kernel, spec):
+    from angr_rule_learning.kernel.bind import _build_memory_spec as bms
+
+    return bms(kernel, spec)
+
+
+def test_validation_rejects_missing_object_base_in_inputs():
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelMemoryObjectSpec,
+    )
+
+    kernel = _make_memory_kernel(
+        objects=(
+            KernelMemoryObjectSpec(name="slot0", base="nonexistent", element_bits=32),
+        ),
+        accesses=(),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="not found in kernel signature inputs"):
+        _build_memory_spec(kernel, spec)
+
+
+def test_validation_rejects_non_ptr_base():
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelMemoryObjectSpec,
+    )
+
+    kernel = _make_memory_kernel(
+        inputs=(("p", "i64"), ("v", "i64")),
+        objects=(KernelMemoryObjectSpec(name="slot0", base="p", element_bits=64),),
+        accesses=(),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="expected 'ptr'"):
+        _build_memory_spec(kernel, spec)
+
+
+def test_validation_rejects_invalid_index_type():
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
+        KernelMemoryObjectSpec,
+    )
+
+    kernel = _make_memory_kernel(
+        inputs=(("p", "ptr"), ("idx", "i32"), ("v", "i32")),
+        objects=(KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),),
+        accesses=(
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p", index="idx", scale=4),
+                result="v",
+            ),
+        ),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="must have type 'i64'"):
+        _build_memory_spec(kernel, spec)
+
+
+def test_validation_rejects_store_without_value():
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
+        KernelMemoryObjectSpec,
+    )
+
+    # Test with a kernel where store value doesn't exist in inputs.
+    kernel2 = IRKernel(
+        id="store_no_val",
+        name="store_no_val",
+        llvm_ir="define void @store_no_val(ptr %p, i32 %v) { ret void }",
+        signature=KernelSignature(
+            inputs=(KernelValue("p", "ptr"), KernelValue("v", "i32")),
+            outputs=(),
+        ),
+        metadata=KernelMetadata(op_kind="store", bit_width=32, has_memory=True),
+        memory_objects=(
+            KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),
+        ),
+        memory_accesses=(
+            KernelMemoryAccessSpec(
+                kind="store",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                value="nonexistent",
+            ),
+        ),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel2, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="not found in kernel signature inputs"):
+        _build_memory_spec(kernel2, spec)
+
+
+def test_validation_rejects_unknown_object_name():
+    from angr_rule_learning.kernel.bind import KernelBindingBuilder
+    from angr_rule_learning.kernel.models import (
+        KernelAddressSpec,
+        KernelMemoryAccessSpec,
+        KernelMemoryObjectSpec,
+    )
+
+    kernel = _make_memory_kernel(
+        objects=(KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),),
+        accesses=(
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="wrong_name",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                result="v",
+            ),
+        ),
+    )
+    spec = KernelBindingBuilder().build_spec(kernel, "aarch64", "x86-64")
+    with pytest.raises(ValueError, match="does not match declared memory object"):
+        _build_memory_spec(kernel, spec)
+
+
+def test_kernel_address_spec_with_displacement():
+    from angr_rule_learning.kernel.models import KernelAddressSpec
+
+    # Displacement without index is now allowed.
+    spec = KernelAddressSpec(base="p", displacement=8)
+    assert spec.base == "p"
+    assert spec.index is None
+    assert spec.displacement == 8
+
+    spec = KernelAddressSpec(base="p", displacement=-16)
+    assert spec.displacement == -16
+
+
+def test_build_addr_str_with_displacement():
+    from angr_rule_learning.kernel.bind import _build_addr_str
+    from angr_rule_learning.kernel.models import KernelAddressSpec
+
+    reg_map = {"p": ("x0", "rdi")}
+
+    # Positive displacement
+    addr = KernelAddressSpec(base="p", displacement=8)
+    assert _build_addr_str(addr, reg_map, "guest") == "x0 + 8"
+    assert _build_addr_str(addr, reg_map, "host") == "rdi + 8"
+
+    # Negative displacement
+    addr = KernelAddressSpec(base="p", displacement=-4)
+    assert _build_addr_str(addr, reg_map, "guest") == "x0 - 4"
+
+    # Zero displacement (base only)
+    addr = KernelAddressSpec(base="p")
+    assert _build_addr_str(addr, reg_map, "guest") == "x0"
+
+
+def test_build_addr_str_with_index_and_displacement():
+    from angr_rule_learning.kernel.bind import _build_addr_str
+    from angr_rule_learning.kernel.models import KernelAddressSpec
+
+    reg_map = {"p": ("x0", "rdi"), "idx": ("x1", "rsi")}
+
+    addr = KernelAddressSpec(base="p", index="idx", scale=4, displacement=8)
+    result = _build_addr_str(addr, reg_map, "guest")
+    assert "x0 +" in result
+    assert "x1 * 4" in result
+    assert "+ 8" in result
+
+
+def test_validation_rejects_unknown_base():
+    from angr_rule_learning.kernel.bind import _build_addr_str
+    from angr_rule_learning.kernel.models import KernelAddressSpec
+
+    reg_map = {"p": ("x0", "rdi")}
+    addr = KernelAddressSpec(base="unknown")
+    with pytest.raises(ValueError, match="not in register map"):
+        _build_addr_str(addr, reg_map, "guest")

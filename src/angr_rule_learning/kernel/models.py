@@ -68,8 +68,7 @@ class KernelAddressSpec:
             object.__setattr__(self, "index", self.index.strip())
         if self.scale not in {1, 2, 4, 8}:
             raise ValueError("kernel address scale must be 1, 2, 4, or 8")
-        if self.index is None and self.displacement != 0:
-            raise ValueError("kernel address displacement requires index")
+        # Displacement without index is allowed for first-stage support.
 
 
 @dataclass(frozen=True)
