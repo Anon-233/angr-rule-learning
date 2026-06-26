@@ -474,6 +474,50 @@ register to an ``i32`` placeholder would lose the information that only
 the low 32 bits are constrained.  The ``reg64(i32_regN)`` notation makes
 this explicit: a rule consumer knows that the upper 32 bits are free.
 
+### Pointer Register Placeholders
+
+Some kernel inputs have type ``ptr`` rather than an integer type.  Rule
+generalization preserves this semantic role through ``RegisterBindingRole``
+hints attached to ``VerificationCandidate.register_roles``.  When a
+register pair has ``value_type == "ptr"``, the generalizer emits
+``ptr64_regN`` instead of ``i64_regN``.
+
+``ptr64_regN`` is semantically a 64-bit pointer — equal in width to
+``i64_regN`` but distinguished in the rule format so that memory
+operands explicitly reference pointer base registers rather than
+general integer values.  The verifier initialises ``ptr64_regN`` as a
+normal 64‑bit symbolic value; the distinction matters for rule matching
+and is enforced only at the rule‑generalization stage.
+
+### Kernel‑Declared Memory Semantics
+
+The IR‑kernel model now supports explicit memory declarations that
+bypass the older assembly‑window‑based memory surface inference.
+Each memory kernel declares:
+
+* **memory objects**: named regions (e.g. ``slot0``) with a base pointer
+  name and element width (e.g. 32 bits for ``i32``).
+* **memory accesses**: load or store operations referencing a memory
+  object, with an address specification (base ± index × scale) and
+  the kernel‐level value name for the loaded/stored value.
+
+``KernelBindingBuilder.build_candidate()`` converts these declarations
+into a ``MemorySpec`` with one slot, one binding, and one access
+expectation per kernel memory access.  The address expressions use
+machine register names resolved from the kernel’s ABI binding, so both
+AArch64 and x86‑64 sides get the correct syntax spontaneously.
+
+**Supported kernel forms (first stage):**
+
+* Single‑slot memory — exactly one base pointer argument
+* Must‑alias only (no ``may_alias``)
+* No stack/frame‑local memory
+* No memory‑to‑memory or read‑modify‑write
+* Pointer arguments are 64‑bit ABI register arguments
+* Indexed access with ``i64`` index and scale 4 (for ``i32``) or 8
+  (for ``i64``)
+* Both directions: AArch64 → x86‑64 and x86‑64 → AArch64
+
 ## Candidate Boundary
 
 The request boundary is JSON-shaped and intentionally strict. All top-level

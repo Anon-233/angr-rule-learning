@@ -27,7 +27,80 @@ def test_builtin_synthesizer_emits_scalar_integer_kernels() -> None:
         "kernel_xor_i32",
         "kernel_xor_i64",
     } <= names
-    assert len(kernels) == 38
+    assert len(kernels) == 46
+
+
+def test_memory_kernels_are_present() -> None:
+    kernels = HardcodedKernelSynthesizer().generate()
+    names = {kernel.name for kernel in kernels}
+
+    assert "kernel_load_i32" in names
+    assert "kernel_load_i64" in names
+    assert "kernel_store_i32" in names
+    assert "kernel_store_i64" in names
+    assert "kernel_load_i32_idx" in names
+    assert "kernel_load_i64_idx" in names
+    assert "kernel_store_i32_idx" in names
+    assert "kernel_store_i64_idx" in names
+
+
+def test_load_kernel_has_memory_and_result() -> None:
+    kernel = next(
+        k
+        for k in HardcodedKernelSynthesizer().generate()
+        if k.name == "kernel_load_i32"
+    )
+
+    assert kernel.metadata.has_memory
+    assert len(kernel.memory_objects) == 1
+    assert kernel.memory_objects[0].base == "p"
+    assert len(kernel.memory_accesses) == 1
+    mem = kernel.memory_accesses[0]
+    assert mem.kind == "load"
+    assert mem.result == "v"
+    assert mem.value is None
+    assert mem.address.base == "p"
+    assert mem.address.index is None
+
+
+def test_store_kernel_has_memory_no_outputs() -> None:
+    kernel = next(
+        k
+        for k in HardcodedKernelSynthesizer().generate()
+        if k.name == "kernel_store_i64"
+    )
+
+    assert kernel.metadata.has_memory
+    assert kernel.signature.outputs == ()
+    assert kernel.memory_accesses[0].kind == "store"
+    assert kernel.memory_accesses[0].value == "v"
+    assert kernel.memory_accesses[0].result is None
+
+
+def test_indexed_load_uses_scale_4_for_i32() -> None:
+    kernel = next(
+        k
+        for k in HardcodedKernelSynthesizer().generate()
+        if k.name == "kernel_load_i32_idx"
+    )
+
+    assert kernel.memory_accesses[0].address.index == "idx"
+    assert kernel.memory_accesses[0].address.scale == 4
+
+    # Verify the input signature has ptr and i64
+    types = [v.type for v in kernel.signature.inputs]
+    assert "ptr" in types
+    assert "i64" in types
+
+
+def test_indexed_load_uses_scale_8_for_i64() -> None:
+    kernel = next(
+        k
+        for k in HardcodedKernelSynthesizer().generate()
+        if k.name == "kernel_load_i64_idx"
+    )
+
+    assert kernel.memory_accesses[0].address.scale == 8
 
 
 def test_builtin_kernel_ir_is_single_function() -> None:

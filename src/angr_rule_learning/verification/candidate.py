@@ -184,6 +184,32 @@ class Clobbers:
 
 
 @dataclass(frozen=True)
+class RegisterBindingRole:
+    """Semantic role hint for a register pair in a ``VerificationCandidate``.
+
+    Preserves the kernel-level type (``"i32"``, ``"i64"``, ``"ptr"``) so
+    that rule generalization can emit type-specific placeholders.
+    """
+
+    guest: str
+    host: str
+    value_name: str
+    value_type: str  # "i32", "i64", "ptr"
+
+    def __post_init__(self) -> None:
+        from angr_rule_learning.verification.candidate import normalize_register
+
+        object.__setattr__(self, "guest", normalize_register(self.guest))
+        object.__setattr__(self, "host", normalize_register(self.host))
+        object.__setattr__(self, "value_name", self.value_name.strip())
+        object.__setattr__(self, "value_type", self.value_type.strip().lower())
+        if not self.value_name:
+            raise ValueError("register role value_name must not be empty")
+        if self.value_type not in {"i8", "i16", "i32", "i64", "ptr"}:
+            raise ValueError(f"unsupported register value_type: {self.value_type}")
+
+
+@dataclass(frozen=True)
 class VerificationCandidate:
     candidate_id: str
     guest: CodeFragment
@@ -194,6 +220,7 @@ class VerificationCandidate:
     memory: MemorySpec = field(default_factory=MemorySpec)
     preconditions: tuple[str, ...] = field(default_factory=tuple)
     clobbers: Clobbers = field(default_factory=Clobbers)
+    register_roles: tuple[RegisterBindingRole, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidate_id", self.candidate_id.strip())

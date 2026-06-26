@@ -37,6 +37,12 @@ Host:  add i32_reg1, i32_reg2
 | `i16_reg1` | 16-bit integer register |
 | `i32_reg1` | 32-bit integer register |
 | `i64_reg1` | 64-bit integer register |
+| `ptr64_reg1` | 64-bit pointer register (address base) |
+
+Pointer placeholders are semantically 64‑bit values like ``i64_regN``,
+but are distinguished in the rule output so that memory operand base
+registers are explicitly identified.  When a kernel input has type
+``ptr``, the generalizer emits ``ptr64_regN`` instead of ``i64_regN``.
 
 Guest and host sides share the same placeholder when the registers are paired
 as semantically equivalent. The `{N}` suffix is a per-rule counter that

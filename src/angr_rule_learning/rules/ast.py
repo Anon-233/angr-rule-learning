@@ -381,7 +381,7 @@ IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 def parse_placeholder(placeholder: str) -> RegOp | TmpOp | RegViewOp:
     """Parse a placeholder string into its AST operand type.
 
-    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp,
+    Supports ``i32_reg1``, ``ptr64_reg1``, ``sp64``, ``fp64`` → RegOp,
     ``i32_tmp1``, ``i64_tmp1`` → TmpOp, and
     ``reg64(i32_reg1)`` → RegViewOp.
     """
@@ -391,6 +391,11 @@ def parse_placeholder(placeholder: str) -> RegOp | TmpOp | RegViewOp:
         inner = m.group(2)
         base = parse_placeholder(inner)  # recursively parse inner
         return RegViewOp(base=base, view_bits=view_bits)
+    m = re.fullmatch(r"(ptr\d+)_reg(\d+)", placeholder)
+    if m:
+        prefix = m.group(1)
+        bits = int(prefix[3:])
+        return RegOp(prefix=prefix, bits=bits, id=int(m.group(2)))
     m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
     if m:
         bits = int(m.group(1)[1:])

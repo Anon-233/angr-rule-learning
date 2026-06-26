@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from angr_rule_learning.kernel.models import (
     IRKernel,
+    KernelAddressSpec,
+    KernelMemoryAccessSpec,
+    KernelMemoryObjectSpec,
     KernelMetadata,
     KernelSignature,
     KernelValue,
@@ -19,6 +22,7 @@ class HardcodedKernelSynthesizer:
             kernels.extend(
                 _shift_integer_kernel(op, bits) for op in ("shl", "lshr", "ashr")
             )
+            kernels.extend(_memory_kernels(bits))
             kernels.append(_add_const_kernel(bits))
             kernels.append(_xor_not_kernel(bits))
             kernels.extend(_icmp_integer_kernel(pred, bits) for pred in ("eq", "slt"))
@@ -264,6 +268,140 @@ entry:
 }}
 """
     return _three_input_kernel(name, llvm_ir, "select_add", bits)
+
+
+def _memory_kernels(bits: int) -> list[IRKernel]:
+    """Return load and store kernels for *bits*-wide element access."""
+    value_type = f"i{bits}"
+    scale = bits // 8
+
+    def _load(has_idx: bool) -> IRKernel:
+        suffix = f"_{value_type}" + ("_idx" if has_idx else "")
+        name = f"kernel_load{suffix}"
+        idx_param = ", i64 %idx" if has_idx else ""
+        idx_gep = (
+            f"  %q = getelementptr {value_type}, ptr %p, i64 %idx\n" if has_idx else ""
+        )
+        idx_args = [KernelValue("idx", "i64")] if has_idx else []
+        idx_addr = (
+            KernelAddressSpec(base="p", index="idx", scale=scale)
+            if has_idx
+            else KernelAddressSpec(base="p")
+        )
+        llvm_ir = (
+            f"""
+define {value_type} @{name}(ptr %p{idx_param}) {{
+entry:
+{idx_gep}  %v = load {value_type}, ptr %q
+  ret {value_type} %v
+}}
+"""
+            if has_idx
+            else f"""
+define {value_type} @{name}(ptr %p) {{
+entry:
+  %v = load {value_type}, ptr %p
+  ret {value_type} %v
+}}
+"""
+        )
+        return IRKernel(
+            id=name,
+            name=name,
+            llvm_ir=llvm_ir,
+            signature=KernelSignature(
+                inputs=(KernelValue("p", "ptr"), *idx_args),
+                outputs=(KernelValue("v", value_type),),
+            ),
+            metadata=KernelMetadata(
+                op_kind="load",
+                bit_width=bits,
+                has_memory=True,
+            ),
+            memory_objects=(
+                KernelMemoryObjectSpec(
+                    name="slot0",
+                    base="p",
+                    element_bits=bits,
+                ),
+            ),
+            memory_accesses=(
+                KernelMemoryAccessSpec(
+                    kind="load",
+                    object="slot0",
+                    width_bits=bits,
+                    address=idx_addr,
+                    result="v",
+                ),
+            ),
+        )
+
+    def _store(has_idx: bool) -> IRKernel:
+        suffix = f"_{value_type}" + ("_idx" if has_idx else "")
+        name = f"kernel_store{suffix}"
+        idx_param = ", i64 %idx" if has_idx else ""
+        idx_gep = (
+            f"  %q = getelementptr {value_type}, ptr %p, i64 %idx\n" if has_idx else ""
+        )
+        idx_args = [KernelValue("idx", "i64")] if has_idx else []
+        idx_addr = (
+            KernelAddressSpec(base="p", index="idx", scale=scale)
+            if has_idx
+            else KernelAddressSpec(base="p")
+        )
+        llvm_ir = (
+            f"""
+define void @{name}(ptr %p{idx_param}, {value_type} %v) {{
+entry:
+{idx_gep}  store {value_type} %v, ptr %q
+  ret void
+}}
+"""
+            if has_idx
+            else f"""
+define void @{name}(ptr %p, {value_type} %v) {{
+entry:
+  store {value_type} %v, ptr %p
+  ret void
+}}
+"""
+        )
+        return IRKernel(
+            id=name,
+            name=name,
+            llvm_ir=llvm_ir,
+            signature=KernelSignature(
+                inputs=(
+                    KernelValue("p", "ptr"),
+                    *idx_args,
+                    KernelValue("v", value_type),
+                ),
+                outputs=(),
+            ),
+            metadata=KernelMetadata(
+                op_kind="store",
+                bit_width=bits,
+                has_memory=True,
+            ),
+            memory_objects=(
+                KernelMemoryObjectSpec(
+                    name="slot0",
+                    base="p",
+                    element_bits=bits,
+                ),
+            ),
+            memory_accesses=(
+                KernelMemoryAccessSpec(
+                    kind="store",
+                    object="slot0",
+                    width_bits=bits,
+                    address=idx_addr,
+                    value="v",
+                ),
+            ),
+        )
+
+    return [_load(False), _load(True), _store(False), _store(True)]
 
 
 def _three_input_kernel(

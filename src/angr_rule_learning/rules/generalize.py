@@ -590,6 +590,12 @@ def _build_placeholder_map(
 
     role_split: dict[tuple[str, str], tuple[str, str]] = {}
 
+    # Build a set of (guest_reg, host_reg) pairs that are ptr-typed.
+    ptr_pairs: set[tuple[str, str]] = set()
+    for role in candidate.register_roles:
+        if role.value_type == "ptr":
+            ptr_pairs.add((role.guest, role.host))
+
     pair_index = 0
     for guest_reg, host_reg in register_pairs:
         pair_index += 1
@@ -690,8 +696,19 @@ def _build_placeholder_map(
         guest_existing = mapping.get(guest_reg)
         host_existing = mapping.get(host_reg)
 
+        # Override placeholder prefix for ptr-typed register pairs.
+        placeholder_prefix = guest_class.placeholder_prefix
+        if (guest_reg, host_reg) in ptr_pairs:
+            placeholder_prefix = "ptr64"
+
+        # If both sides are already mapped (e.g. from a memory-binding
+        # register pair whose registers were already covered by input
+        # or output pairs), we can skip — the mapping is already known.
+        if guest_existing is not None and host_existing is not None:
+            continue
+
         if guest_existing is None and host_existing is None:
-            existing = f"{guest_class.placeholder_prefix}_reg{next_id}"
+            existing = f"{placeholder_prefix}_reg{next_id}"
             next_id += 1
         elif (
             guest_existing is not None
@@ -710,7 +727,7 @@ def _build_placeholder_map(
             if is_input and host_reg in output_guest:
                 out_guest_reg = output_guest[host_reg]
                 if out_guest_reg != guest_reg:
-                    existing = f"{guest_class.placeholder_prefix}_reg{next_id}"
+                    existing = f"{placeholder_prefix}_reg{next_id}"
                     next_id += 1
                     role_split[("host", host_reg)] = (host_existing, existing)
                 else:
@@ -755,12 +772,16 @@ def _build_placeholder_map(
         if out_ph is None:
             continue
         # Create a new input-role placeholder.
-        guest_class = _classify_for_rule(guest_arch, guest_reg)
-        in_ph = f"{guest_class.placeholder_prefix}_reg{next_id}"
+        # Check if this guest-side input pair has a ptr type.
+        host_input_reg = input_host[guest_reg]
+        prefix = (
+            "ptr64"
+            if (guest_reg, host_input_reg) in ptr_pairs
+            else _classify_for_rule(guest_arch, guest_reg).placeholder_prefix
+        )
+        in_ph = f"{prefix}_reg{next_id}"
         next_id += 1
         role_split[("guest", guest_reg)] = (out_ph, in_ph)
-        # Also update the host input register's mapping.
-        host_input_reg = input_host[guest_reg]
         mapping[host_input_reg] = in_ph
 
     # Detect host-side role splits: same host register appears in both
@@ -1542,9 +1563,9 @@ def _generalize_instructions_with_roles(
 
 
 _PARAMETERIZED_TOKEN_RE = re.compile(
-    r"^(?:[ifv]\d+_reg\d+|sp\d+|fp\d+|[ifv]\d+_tmp\d+|imm\d+|label\d+)$"
+    r"^(?:[ifv]\d+_reg\d+|ptr\d+_reg\d+|sp\d+|fp\d+|[ifv]\d+_tmp\d+|imm\d+|label\d+)$"
 )
-_GENERAL_REGISTER_PLACEHOLDER_RE = re.compile(r"^[ifv]\d+_reg\d+$")
+_GENERAL_REGISTER_PLACEHOLDER_RE = re.compile(r"^(?:[ifv]\d+_reg\d+|ptr\d+_reg\d+)$")
 _KEYWORD_TOKENS = frozenset({"dword", "word", "byte", "qword", "ptr", "lsl"})
 # reg64/reg32/etc. are view-cast function keywords in rule text.
 _VIEW_FUNCTION_TOKENS = re.compile(r"^reg\d+$")

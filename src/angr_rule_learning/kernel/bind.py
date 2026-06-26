@@ -6,6 +6,11 @@ from angr_rule_learning.kernel.models import BindingSpec, IRKernel, SnippetPair
 from angr_rule_learning.verification.candidate import (
     Clobbers,
     CodeFragment,
+    MemoryAccessExpectation,
+    MemoryBinding,
+    MemorySlot,
+    MemorySpec,
+    RegisterBindingRole,
     VerificationCandidate,
 )
 
@@ -61,6 +66,33 @@ class KernelBindingBuilder:
             guest=guest_window,
             host=host_window,
         )
+
+        # Build register role hints from the binding spec.
+        register_roles: list[RegisterBindingRole] = []
+        for name, guest_reg, host_reg in spec.inputs:
+            value_obj = _find_value(kernel.signature.inputs, name)
+            register_roles.append(
+                RegisterBindingRole(
+                    guest=guest_reg,
+                    host=host_reg,
+                    value_name=name,
+                    value_type=value_obj.type if value_obj else "i64",
+                )
+            )
+        for name, guest_reg, host_reg in spec.outputs:
+            value_obj = _find_value(kernel.signature.outputs, name)
+            register_roles.append(
+                RegisterBindingRole(
+                    guest=guest_reg,
+                    host=host_reg,
+                    value_name=name,
+                    value_type=value_obj.type if value_obj else "i64",
+                )
+            )
+
+        # Build memory spec from kernel declarations.
+        memory = _build_memory_spec(kernel, spec) if kernel.has_memory else MemorySpec()
+
         candidate = VerificationCandidate(
             candidate_id=kernel.id,
             guest=_fragment_for_window(guest_window),
@@ -68,6 +100,8 @@ class KernelBindingBuilder:
             input_registers=spec.input_registers,
             output_registers=spec.output_registers,
             clobbers=Clobbers(),
+            memory=memory,
+            register_roles=tuple(register_roles),
         )
         return pair, candidate
 
@@ -96,6 +130,66 @@ def _register_table(arch: str, aarch64_table, x86_64_table):
     if arch == "x86-64":
         return x86_64_table
     raise ValueError(f"unsupported kernel ABI architecture: {arch}")
+
+
+def _find_value(values, name: str):
+    """Find a ``KernelValue`` by name in a tuple of values."""
+    for v in values:
+        if v.name == name:
+            return v
+    return None
+
+
+def _build_memory_spec(kernel, spec):
+    """Construct a ``MemorySpec`` from kernel memory declarations."""
+    # Build name → (guest_reg, host_reg) lookup.
+    reg_map: dict[str, tuple[str, str]] = {}
+    for name, g, h in spec.inputs:
+        reg_map[name] = (g, h)
+
+    slots: list[MemorySlot] = []
+    bindings: list[MemoryBinding] = []
+    accesses: list[MemoryAccessExpectation] = []
+    slot_index = 0
+
+    for mem_access in kernel.memory_accesses:
+        slot_name = f"mem{slot_index}"
+        width_bytes = mem_access.width_bits // 8
+
+        slots.append(MemorySlot(slot_name, width_bytes))
+
+        addr = mem_access.address
+        guest_addr = _build_addr_str(addr, reg_map, side="guest")
+        host_addr = _build_addr_str(addr, reg_map, side="host")
+
+        access_kind = "read" if mem_access.kind == "load" else "write"
+        bindings.append(MemoryBinding(slot_name, guest_addr, host_addr, access_kind))
+        accesses.append(MemoryAccessExpectation(slot_name, access_kind, width_bytes))
+        slot_index += 1
+
+    return MemorySpec(
+        slots=tuple(slots), bindings=tuple(bindings), accesses=tuple(accesses)
+    )
+
+
+def _build_addr_str(addr, reg_map, side: str) -> str:
+    """Build an address expression string for *side* from a ``KernelAddressSpec``.
+
+    *side* is ``"guest"`` or ``"host"``.  The register names are looked
+    up from *reg_map* which stores ``(guest_reg, host_reg)`` tuples.
+    """
+    pair = reg_map.get(addr.base, ("x0", "rdi"))
+    base_reg = pair[0] if side == "guest" else pair[1]
+
+    if addr.index is None:
+        return base_reg
+
+    index_pair = reg_map.get(addr.index, ("x1", "rsi"))
+    index_reg = index_pair[0] if side == "guest" else index_pair[1]
+
+    if addr.scale == 1:
+        return f"{base_reg} + {index_reg}"
+    return f"{base_reg} + {index_reg} * {addr.scale}"
 
 
 def _fragment_for_window(window: InstructionWindow) -> CodeFragment:

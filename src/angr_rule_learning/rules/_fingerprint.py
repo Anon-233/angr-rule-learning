@@ -13,8 +13,15 @@ if TYPE_CHECKING:
 
 # ── Regex patterns for embedded placeholders ──────────────────────────
 
-_REG_RE = re.compile(r"\b(i\d+)_reg(\d+)\b")
-_REGVIEW_RE = re.compile(r"\breg(\d+)\(((?:i|f|v)\d+_(?:reg|tmp)\d+)\)")
+_REG_RE = re.compile(r"\b((?:i|ptr)\d+)_reg(\d+)\b")
+
+
+def _prefix_bits(prefix: str) -> int:
+    """Extract bit width from a register prefix (``"i32"`` → 32, ``"ptr64"`` → 64)."""
+    return int("".join(ch for ch in prefix if ch.isdigit()))
+
+
+_REGVIEW_RE = re.compile(r"\breg(\d+)\(((?:(?:i|ptr)\d+|f\d+|v\d+)_(?:reg|tmp)\d+)\)")
 _TMP_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
 _LABEL_RE = re.compile(r"(#?)label(\d+)\b")
 _IMM_RE = re.compile(r"\bimm(\d+)\b")
@@ -123,7 +130,7 @@ class _FingerprintBuilder:
             matches.append((m.start(), m.end(), "T", cid, (prefix, bits)))
         for m in _REG_RE.finditer(text):
             prefix = m.group(1)
-            bits = int(prefix[1:])
+            bits = _prefix_bits(prefix)
             cid = self._cid_reg((prefix, bits, int(m.group(2))))
             matches.append((m.start(), m.end(), "R", cid, (prefix, bits)))
         for m in _IMM_RE.finditer(text):

@@ -61,3 +61,50 @@ def test_kernel_pipeline_emits_verified_rules(tmp_path) -> None:
             assert "reg64(" not in stripped, (
                 f"non-lea instruction must not have reg64: {stripped!r}"
             )
+
+
+@pytest.mark.skipif(shutil.which("clang") is None, reason="clang not installed")
+def test_memory_kernel_pipeline_emits_load_and_store_rules(tmp_path) -> None:
+    """Run the pipeline with both directions and verify memory kernel rules
+    contain ptr64_regN and native ISA memory operands."""
+    for guest_arch, host_arch in [("aarch64", "x86-64"), ("x86-64", "aarch64")]:
+        result = KernelLearningPipeline().run(
+            KernelConfig(
+                work_dir=tmp_path / f"mem_{guest_arch}_{host_arch}",
+                guest_arch=guest_arch,
+                host_arch=host_arch,
+                optimization="1",
+            ),
+            rules_output=tmp_path / f"rules_{guest_arch}_{host_arch}.txt",
+            diagnostics_output=tmp_path / f"diag_{guest_arch}_{host_arch}.json",
+        )
+
+        # At least the memory kernels should pass verification.
+        assert result.diagnostics["verified_pass"] >= 1
+        assert result.rules
+
+        lines: list[str] = []
+        for r in result.rules:
+            for ln in r.guest_lines:
+                lines.append(ln)
+            for ln in r.host_lines:
+                lines.append(ln)
+        rules_text = "\n".join(lines)
+
+        # Memory rules should contain ptr64_regN.
+        assert "ptr64_reg" in rules_text, (
+            f"memory rules should contain ptr64_regN in: {rules_text!r}"
+        )
+        # Memory rules should NOT use addr64 format.
+        assert "addr64_" not in rules_text, (
+            f"memory rules should not use addr64_: {rules_text!r}"
+        )
+
+        # At least one record should be a memory kernel that emitted a rule.
+        memory_records = [
+            r for r in result.records if "load" in r.kernel_id or "store" in r.kernel_id
+        ]
+        assert memory_records, "no memory kernel records found"
+        assert any(r.status == "rule_emitted" for r in memory_records), (
+            "no memory kernel emitted a rule"
+        )
