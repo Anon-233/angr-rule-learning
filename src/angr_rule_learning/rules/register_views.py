@@ -38,6 +38,18 @@ class RegisterViewReplacement:
     """Why the view is applied (e.g. ``"lea_address_operand_same_family_widen"``)."""
 
 
+def _lea_address_operand_text(op_str: str) -> str | None:
+    """Return the text inside the first ``[...]`` bracket pair in *op_str*,
+    or ``None`` when there is no bracket-delimited address expression."""
+    start = op_str.find("[")
+    if start == -1:
+        return None
+    end = op_str.find("]", start)
+    if end == -1:
+        return None
+    return op_str[start + 1 : end]
+
+
 def resolve_register_views(
     arch: str,
     instruction: ExtractedInstruction,
@@ -47,10 +59,11 @@ def resolve_register_views(
 
     A register needs a view cast when:
 
-    1. It appears in the instruction's operand text.
+    1. It appears in the instruction's **address operand** (inside
+       ``[...]``), not the destination.
     2. Another same‑family register is already in *mapping*.
     3. Its bit width is **wider** than the mapped register's width.
-    4. The instruction is eligible (initially: x86‑64 LEA).
+    4. The instruction is an x86‑64 LEA.
 
     Returns a list of replacements; an empty list when no views are needed.
     """
@@ -60,11 +73,20 @@ def resolve_register_views(
     if instruction.mnemonic.strip().lower() != "lea":
         return []
 
-    known = known_register_tokens(canonical)
-    op_tokens = _tokenize(instruction.op_str)
+    # Only inspect the address expression inside brackets.
+    addr_text = _lea_address_operand_text(instruction.op_str)
+    if addr_text is None:
+        return []
 
+    known = known_register_tokens(canonical)
+    op_tokens = _tokenize(addr_text)
+
+    # Build a set of read-register families for the guard.
+    read_families = {
+        register_family(canonical, normalize_register_name(r))
+        for r in instruction.read_registers
+    }
     mappings_by_family: dict[str, tuple[str, str]] = {}
-    # → (mapped_reg, placeholder)
     for mapped_reg, placeholder in mapping.items():
         family = register_family(canonical, mapped_reg)
         if family is not None:
@@ -83,6 +105,13 @@ def resolve_register_views(
 
         family = register_family(canonical, token_n)
         if family is None or family not in mappings_by_family:
+            continue
+
+        # Guard: the token must belong to a read-register family so
+        # that pure destination registers are never view-cast.  The
+        # bracket-only tokenisation already protects the destination,
+        # and this read-family check is a belt-and-suspenders guard.
+        if family not in read_families:
             continue
 
         mapped_reg, placeholder = mappings_by_family[family]

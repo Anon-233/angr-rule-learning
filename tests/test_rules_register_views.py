@@ -9,7 +9,11 @@ from angr_rule_learning.rules.register_views import (
 
 
 def _make_inst(
-    mnemonic: str, op_str: str, arch: str = "x86-64"
+    mnemonic: str,
+    op_str: str,
+    arch: str = "x86-64",
+    read_registers: tuple[str, ...] = (),
+    write_registers: tuple[str, ...] = (),
 ) -> ExtractedInstruction:
     """Minimal ExtractedInstruction factory for view-resolver tests."""
     return ExtractedInstruction(
@@ -20,8 +24,8 @@ def _make_inst(
         op_str=op_str,
         function="test_func",
         arch=arch,
-        read_registers=(),
-        write_registers=(),
+        read_registers=read_registers,
+        write_registers=write_registers,
         source=None,
     )
 
@@ -36,7 +40,12 @@ class TestResolveRegisterViews:
             "esi": "i32_reg3",
         }
         mapping = {normalize_register_name(k): v for k, v in mapping.items()}
-        inst = _make_inst("lea", "eax, [rdi + rsi]")
+        inst = _make_inst(
+            "lea",
+            "eax, [rdi + rsi]",
+            read_registers=("rdi", "rsi"),
+            write_registers=("eax",),
+        )
         views = resolve_register_views("x86-64", inst, mapping)
         assert len(views) == 2
 
@@ -54,11 +63,35 @@ class TestResolveRegisterViews:
                 assert rv.replacement_text == "reg64(i32_reg3)"
 
     @staticmethod
+    def test_lea_destination_not_replaced():
+        """lea rdi, [rsi + rdx] with edi->i32_reg1 mapping: destination rdi
+        must NOT get a reg64(...) replacement."""
+        mapping = {"edi": "i32_reg1"}
+        mapping = {normalize_register_name(k): v for k, v in mapping.items()}
+        inst = _make_inst(
+            "lea",
+            "rdi, [rsi + rdx]",
+            read_registers=("rsi", "rdx"),
+            write_registers=("rdi",),
+        )
+        views = resolve_register_views("x86-64", inst, mapping)
+        # rdi is the destination — it's NOT in the bracket text and
+        # shouldn't appear as a replacement.  Only bracket tokens are
+        # inspected.
+        phys = {rv.physical_register for rv in views}
+        assert "rdi" not in phys, f"destination rdi must not get a view: {views}"
+
+    @staticmethod
     def test_non_lea_returns_no_views():
         """add instruction should not trigger view resolution."""
         mapping = {"edi": "i32_reg2"}
         mapping = {normalize_register_name(k): v for k, v in mapping.items()}
-        inst = _make_inst("add", "eax, edi")
+        inst = _make_inst(
+            "add",
+            "eax, edi",
+            read_registers=("eax", "edi"),
+            write_registers=("eax",),
+        )
         views = resolve_register_views("x86-64", inst, mapping)
         assert views == []
 
@@ -67,10 +100,13 @@ class TestResolveRegisterViews:
         """When both mapped and physical regs are same width, no view."""
         mapping = {"rdi": "i64_reg2"}
         mapping = {normalize_register_name(k): v for k, v in mapping.items()}
-        inst = _make_inst("lea", "rax, [rdi + rsi]")
+        inst = _make_inst(
+            "lea",
+            "rax, [rdi + rsi]",
+            read_registers=("rdi", "rsi"),
+            write_registers=("rax",),
+        )
         views = resolve_register_views("x86-64", inst, mapping)
-        # rdi already mapped to i64_reg2 — no view needed.
-        # rsi is NOT in mapping and not same-family as any mapped reg.
         phys = {rv.physical_register for rv in views}
         assert "rdi" not in phys
 
@@ -79,7 +115,13 @@ class TestResolveRegisterViews:
         """AArch64 instructions are not eligible."""
         mapping = {"w1": "i32_reg2"}
         mapping = {normalize_register_name(k): v for k, v in mapping.items()}
-        inst = _make_inst("add", "w0, w1, w2", arch="aarch64")
+        inst = _make_inst(
+            "add",
+            "w0, w1, w2",
+            arch="aarch64",
+            read_registers=("w1", "w2"),
+            write_registers=("w0",),
+        )
         views = resolve_register_views("aarch64", inst, mapping)
         assert views == []
 
@@ -88,10 +130,13 @@ class TestResolveRegisterViews:
         """If the wider register isn't in the operand text, no view."""
         mapping = {"edi": "i32_reg2"}
         mapping = {normalize_register_name(k): v for k, v in mapping.items()}
-        # lea doesn't use rdi — only r8d/r8 is used.
-        inst = _make_inst("lea", "eax, [r8d + r9d]")
+        inst = _make_inst(
+            "lea",
+            "eax, [r8d + r9d]",
+            read_registers=("r8d", "r9d"),
+            write_registers=("eax",),
+        )
         views = resolve_register_views("x86-64", inst, mapping)
-        # r8d is 32-bit, r8 is 64-bit — but r8 family is not in mapping.
         assert views == []
 
     @staticmethod
@@ -100,6 +145,11 @@ class TestResolveRegisterViews:
         e.g., rdi mapped to i64, edi appears → no view (32 < 64)."""
         mapping = {"rdi": "i64_reg2"}
         mapping = {normalize_register_name(k): v for k, v in mapping.items()}
-        inst = _make_inst("lea", "eax, [edi]")
+        inst = _make_inst(
+            "lea",
+            "eax, [edi]",
+            read_registers=("edi",),
+            write_registers=("eax",),
+        )
         views = resolve_register_views("x86-64", inst, mapping)
         assert views == []
