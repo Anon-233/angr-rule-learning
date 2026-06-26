@@ -409,7 +409,11 @@ def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> Non
     with *different* host registers (eax for output, ecx for input),
     the input role gets a separate placeholder so the distinct guest
     source operand (w0, paired with eax) can safely share the output's
-    placeholder without conflating w8's two roles."""
+    placeholder without conflating w8's two roles.
+
+    Host-side role-split detection also gives w0 its own placeholder
+    because host "eax" is shared between output and input pairs, which
+    prevents accidental aliasing through register-view resolution."""
     diagnostics = RuleDiagnostics()
     pair = _window_pair(
         (_inst("aarch64", 0x1000, "add", "w8, w0, w8"),),
@@ -428,8 +432,10 @@ def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> Non
     )
 
     assert rule is not None
-    assert rule.guest_lines == ("add i32_reg1, i32_reg1, i32_reg2",)
-    assert rule.host_lines == ("add i32_reg1, i32_reg2",)
+    # w0 gets its own placeholder (i32_reg2) because host "eax" is
+    # shared across output and input pairs — side-symmetric role split.
+    assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg3",)
+    assert rule.host_lines == ("add i32_reg1, i32_reg3",)
 
 
 def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
@@ -456,9 +462,10 @@ def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None
 
 def test_generalizer_handles_input_reusing_output_host_register() -> None:
     """When a guest input register maps to a host register that already
-    has a placeholder from an output pair, the input should inherit the
-    same placeholder.  Combined with role-split detection this produces
-    a correct destructive-host rule."""
+    has a placeholder from an output pair, the side-symmetric role-split
+    detection gives the input guest its own placeholder so that
+    register-view resolution cannot accidentally alias an output
+    placeholder into an address view."""
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)
     window = _window_pair(
@@ -473,8 +480,10 @@ def test_generalizer_handles_input_reusing_output_host_register() -> None:
 
     rule = generalizer.generate(1, window, candidate, report)
     assert rule is not None
-    assert rule.guest_lines == ("add i32_reg1, i32_reg1, i32_reg2",)
-    assert rule.host_lines == ("add i32_reg1, i32_reg2",)
+    # w0 gets i32_reg2; w8 write gets i32_reg1; w8 read gets i32_reg3
+    # (from guest-side role split).
+    assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg3",)
+    assert rule.host_lines == ("add i32_reg1, i32_reg3",)
 
 
 def test_splits_guest_register_when_output_and_input_pair_differently() -> None:
@@ -2429,6 +2438,88 @@ def test_no_untyped_temporaries_in_output() -> None:
     # Also verify the temp IS typed correctly (i32 for w9).
     assert "i32_tmp1" in rule.guest_lines[0], (
         f"expected i32_tmp1 in guest: {rule.guest_lines}"
+    )
+
+
+# ── Reverse-direction role split tests ──────────────────────────────────
+
+
+def _candidate_with_arch(
+    guest_arch: str,
+    host_arch: str,
+    *,
+    inputs: tuple[tuple[str, str], ...] = (),
+    outputs: tuple[tuple[str, str], ...] = (),
+) -> VerificationCandidate:
+    return VerificationCandidate(
+        candidate_id="sample:sample.c:1:0:g0:h0",
+        guest=CodeFragment(guest_arch, 0x1000, "01020304", 1),
+        host=CodeFragment(host_arch, 0x2000, "010203", 1),
+        input_registers=inputs,
+        output_registers=outputs,
+    )
+
+
+def test_reverse_add_keeps_output_and_input_placeholders_distinct():
+    """x86-64→AArch64 add: host w0 in both output and input → role split.
+
+    Without a host-side role split the output placeholder leaks into
+    the guest address-source placeholders, producing the aliased form
+    ``lea i32_reg1, [reg64(i32_reg1) + reg64(i32_reg2)]``.
+    """
+    pair = _window_pair(
+        (
+            _inst(
+                "x86-64",
+                0x1000,
+                "lea",
+                "eax, [rdi + rsi]",
+                read_registers=("rdi", "rsi"),
+                write_registers=("eax",),
+            ),
+        ),
+        (
+            _inst(
+                "aarch64",
+                0x2000,
+                "add",
+                "w0, w1, w0",
+                read_registers=("w1", "w0"),
+                write_registers=("w0",),
+            ),
+        ),
+    )
+    candidate = _candidate_with_arch(
+        "x86-64",
+        "aarch64",
+        inputs=(("edi", "w0"), ("esi", "w1")),
+        outputs=(("eax", "w0"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(1, pair, candidate, _passing_report())
+
+    assert rule is not None
+    # The output placeholder must NOT be reused as an address-source
+    # placeholder with a reg64 view.
+    guest_text = "\n".join(rule.guest_lines)
+    host_text = "\n".join(rule.host_lines)
+
+    # Check Guest side: output reg must not appear in reg64(...) view.
+    import re
+
+    guest_output_match = re.search(r"lea (i32_reg\d+)", guest_text)
+    assert guest_output_match, f"could not find lea output in: {guest_text!r}"
+    output_ph = guest_output_match.group(1)
+    assert f"reg64({output_ph})" not in guest_text, (
+        f"output placeholder {output_ph} leaked into address view: {guest_text!r}"
+    )
+
+    # Check Host side: w0 is both read and written → must have two
+    # distinct placeholders (role split).
+    host_placeholders = set(re.findall(r"i32_reg\d+", host_text))
+    assert len(host_placeholders) >= 2, (
+        f"host should have at least 2 distinct placeholders: {host_text!r}"
     )
 
 
