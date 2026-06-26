@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 # ── Regex patterns for embedded placeholders ──────────────────────────
 
 _REG_RE = re.compile(r"\b(i\d+)_reg(\d+)\b")
+_REGVIEW_RE = re.compile(r"\breg(\d+)\(((?:i|f|v)\d+_(?:reg|tmp)\d+)\)")
 _TMP_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
 _LABEL_RE = re.compile(r"(#?)label(\d+)\b")
 _IMM_RE = re.compile(r"\bimm(\d+)\b")
@@ -28,6 +29,7 @@ TAG_TMP = 12
 TAG_LIT = 13
 TAG_LABEL = 14
 TAG_REGTEXT = 15
+TAG_REGVIEW = 16
 TAG_SAVE = 20
 TAG_RESTORE = 21
 TAG_META_BLOCK = 22
@@ -106,6 +108,14 @@ class _FingerprintBuilder:
             is_hash = bool(m.group(1))
             cid = self._cid_label(int(m.group(2)))
             matches.append((m.start(), m.end(), "L", cid, (is_hash,)))
+        # REGVIEW before TMP/REG so that reg64(i32_reg1) is matched as
+        # a single unit rather than its inner placeholder first.
+        for m in _REGVIEW_RE.finditer(text):
+            view_bits = int(m.group(1))
+            inner = m.group(2)
+            # Canonicalize the inner placeholder to get its fingerprint.
+            inner_fp = self._canon_text(inner)
+            matches.append((m.start(), m.end(), "RV", view_bits, (view_bits, inner_fp)))
         for m in _TMP_RE.finditer(text):
             prefix = m.group(1)
             bits = int(prefix[1:])
@@ -120,9 +130,22 @@ class _FingerprintBuilder:
             cid = self._cid_imm(int(m.group(1)))
             matches.append((m.start(), m.end(), "I", cid, ()))
         matches.sort(key=lambda x: x[0])
+        # Remove matches whose span is contained within another match
+        # (e.g. reg64(i32_reg1) contains i32_reg1 — keep only the outer).
+        filtered: list[tuple[int, int, str, int, tuple[object, ...]]] = []
+        for i, m in enumerate(matches):
+            contained = False
+            for j, other in enumerate(matches):
+                if i == j:
+                    continue
+                if other[0] <= m[0] and m[1] <= other[1]:
+                    contained = True
+                    break
+            if not contained:
+                filtered.append(m)
         parts: list[object] = []
         pos = 0
-        for start, end, kind, cid, extra in matches:
+        for start, end, kind, cid, extra in filtered:
             if start > pos:
                 parts.append(text[pos:start])
             parts.append(self._text_tag(kind, cid, *extra))
@@ -132,15 +155,20 @@ class _FingerprintBuilder:
         return tuple(parts)
 
     @staticmethod
-    def _text_tag(kind: str, cid: int, *extra: object) -> tuple[object, ...]:
+    def _text_tag(kind: str, cid_or_bits: int, *extra: object) -> tuple[object, ...]:
         if kind == "L":
-            return ("L", cid, extra[0])
+            return ("L", cid_or_bits, extra[0])
         elif kind == "T":
-            return ("T", cid, extra[0], extra[1])
+            return ("T", cid_or_bits, extra[0], extra[1])
         elif kind == "R":
-            return ("R", cid, extra[0], extra[1])
+            return ("R", cid_or_bits, extra[0], extra[1])
+        elif kind == "RV":
+            # extra is (view_bits, inner_fp) from the match construction.
+            # extra[0] is view_bits (redundant with cid_or_bits),
+            # extra[1] is the canonicalized inner fingerprint.
+            return ("RV", cid_or_bits, extra[1])
         elif kind == "I":
-            return ("I", cid)
+            return ("I", cid_or_bits)
         raise ValueError(f"unknown text kind: {kind!r}")
 
     # ── Operand / meta / instruction fingerprinting ───────────────────
@@ -152,12 +180,16 @@ class _FingerprintBuilder:
             LitOp,
             RegOp,
             RegTextOp,
+            RegViewOp,
             TmpOp,
         )
 
         if isinstance(op, RegOp):
             cid = self._cid_reg((op.prefix, op.bits, op.id))
             return (TAG_REG, cid, op.prefix, op.bits)
+        elif isinstance(op, RegViewOp):
+            base_fp = self._fingerprint_op(op.base)
+            return (TAG_REGVIEW, op.view_bits, op.mode) + base_fp
         elif isinstance(op, ImmOp):
             if op.derived is not None:
                 return (TAG_IMM, 0, "derived") + self._canon_text(op.derived)

@@ -2430,3 +2430,142 @@ def test_no_untyped_temporaries_in_output() -> None:
     assert "i32_tmp1" in rule.guest_lines[0], (
         f"expected i32_tmp1 in guest: {rule.guest_lines}"
     )
+
+
+# ── RegViewOp AST and fingerprint tests ──────────────────────────────────
+
+
+class TestRegViewOpRoundtrip:
+    """Parse/write roundtrip and alpha-equivalence for RegViewOp."""
+
+    @staticmethod
+    def test_parse_regview_roundtrip():
+        from angr_rule_learning.rules.ast import Instruction
+
+        inst = Instruction.from_text(
+            "lea i32_reg1, [reg64(i32_reg2) + reg64(i32_reg3)]"
+        )
+        assert inst.mnemonic == "lea"
+        assert len(inst.operands) == 2
+
+        # First operand: plain RegOp
+        op0 = inst.operands[0]
+        assert isinstance(op0, RegOp)  # noqa: F821
+        assert op0.to_text() == "i32_reg1"
+
+        # Second operand: LitOp with compound text
+        text = inst.to_text()
+        assert "reg64(i32_reg2)" in text
+        assert "reg64(i32_reg3)" in text
+
+    @staticmethod
+    def test_parse_regview_standalone():
+        from angr_rule_learning.rules.ast import parse_placeholder, RegViewOp
+
+        rv = parse_placeholder("reg64(i32_reg1)")
+        assert isinstance(rv, RegViewOp)
+        assert rv.view_bits == 64
+        assert rv.mode == "reg"
+        assert rv.base.to_text() == "i32_reg1"
+        assert rv.to_text() == "reg64(i32_reg1)"
+
+    @staticmethod
+    def test_parse_reg32_view_of_i64():
+        from angr_rule_learning.rules.ast import parse_placeholder, RegViewOp
+
+        rv = parse_placeholder("reg32(i64_reg1)")
+        assert isinstance(rv, RegViewOp)
+        assert rv.view_bits == 32
+        assert rv.base.to_text() == "i64_reg1"
+        assert rv.to_text() == "reg32(i64_reg1)"
+
+    @staticmethod
+    def test_regview_alpha_equivalent_same_structure():
+        from angr_rule_learning.rules.ast import (
+            Rule,
+            rule_alpha_equal,
+        )
+
+        # Alpha-equivalence only canonicalises placeholder numbering
+        # (i32_regN, etc.), not literal text like physical register names.
+        # Guest sides must be identical; Host sides differ only in
+        # placeholder numbering.
+        guest = (Instruction.from_text("add w0, w1, w2"),)
+        a = Rule(
+            rule_id=1,
+            candidate_id="a",
+            guest=guest,
+            host=(
+                Instruction.from_text(
+                    "lea i32_reg1, [reg64(i32_reg2) + reg64(i32_reg3)]"
+                ),
+            ),
+        )
+        b = Rule(
+            rule_id=2,
+            candidate_id="b",
+            guest=guest,
+            host=(
+                Instruction.from_text(
+                    "lea i32_reg10, [reg64(i32_reg11) + reg64(i32_reg12)]"
+                ),
+            ),
+        )
+        assert rule_alpha_equal(a, b)
+
+    @staticmethod
+    def test_regview_not_alpha_equivalent_to_plain_reg():
+        from angr_rule_learning.rules.ast import (
+            Rule,
+            rule_alpha_equal,
+        )
+
+        guest = (Instruction.from_text("add w0, w1, w2"),)
+        a = Rule(
+            rule_id=1,
+            candidate_id="a",
+            guest=guest,
+            host=(
+                Instruction.from_text(
+                    "lea i32_reg1, [reg64(i32_reg2) + reg64(i32_reg3)]"
+                ),
+            ),
+        )
+        b = Rule(
+            rule_id=2,
+            candidate_id="b",
+            guest=guest,
+            host=(Instruction.from_text("lea i32_reg1, [i32_reg2 + i32_reg3]"),),
+        )
+        assert not rule_alpha_equal(a, b)
+
+    @staticmethod
+    def test_regview_different_widths_not_alpha_equivalent():
+        from angr_rule_learning.rules.ast import (
+            Rule,
+            rule_alpha_equal,
+        )
+
+        guest = (Instruction.from_text("add x0, x1, x2"),)
+        # reg32 view of i64 vs reg64 view of i64 — different widths.
+        a = Rule(
+            rule_id=1,
+            candidate_id="a",
+            guest=guest,
+            host=(
+                Instruction.from_text(
+                    "lea i64_reg1, [reg32(i64_reg2) + reg32(i64_reg3)]"
+                ),
+            ),
+        )
+        b = Rule(
+            rule_id=2,
+            candidate_id="b",
+            guest=guest,
+            host=(
+                Instruction.from_text(
+                    "lea i64_reg1, [reg64(i64_reg2) + reg64(i64_reg3)]"
+                ),
+            ),
+        )
+        assert not rule_alpha_equal(a, b)

@@ -89,9 +89,28 @@ class RegTextOp:
         return self.text
 
 
+@dataclass(frozen=True)
+class RegViewOp:
+    """Register view/cast: ``reg64(i32_reg1)``, ``reg32(i64_reg1)``.
+
+    Expresses that a semantic placeholder is accessed at a different bit
+    width at a specific use point.  ``mode="reg"`` means same-family
+    register view: low bits are bound to the base placeholder, high bits
+    are unspecified.  Modes ``"zext"``, ``"sext"``, and ``"lo"`` are
+    reserved for future use.
+    """
+
+    base: RegOp | TmpOp
+    view_bits: int
+    mode: str = "reg"
+
+    def to_text(self) -> str:
+        return f"reg{self.view_bits}({self.base.to_text()})"
+
+
 # ── Operand union ──────────────────────────────────────────────────────
 
-Operand = RegOp | ImmOp | TmpOp | LitOp | LabelOp | RegTextOp
+Operand = RegOp | ImmOp | TmpOp | LitOp | LabelOp | RegTextOp | RegViewOp
 
 
 # ── Meta-operations ────────────────────────────────────────────────────
@@ -212,6 +231,17 @@ class Instruction:
                 aarch64_hash=bool(m.group(1)),
                 neg=bool(m.group(2)),
             )
+
+        # Register view/cast: reg64(i32_reg1)
+        m = re.fullmatch(r"reg(\d+)\((.+)\)", text)
+        if m:
+            view_bits = int(m.group(1))
+            inner_text = m.group(2)
+            base = Instruction._parse_operand(inner_text)
+            if isinstance(base, (RegOp, TmpOp)):
+                return RegViewOp(base=base, view_bits=view_bits)
+            # If the inner text didn't parse as a placeholder, fall through
+            # to LitOp rather than producing an invalid RegViewOp.
 
         # Register: delegate to parse_placeholder
         try:
@@ -348,12 +378,19 @@ def _walk_rule(rule: Rule, visitor):
 IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 
 
-def parse_placeholder(placeholder: str) -> RegOp | TmpOp:
+def parse_placeholder(placeholder: str) -> RegOp | TmpOp | RegViewOp:
     """Parse a placeholder string into its AST operand type.
 
-    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp, and
-    ``i32_tmp1``, ``i64_tmp1`` → TmpOp.
+    Supports ``i32_reg1``, ``sp64``, ``fp64`` → RegOp,
+    ``i32_tmp1``, ``i64_tmp1`` → TmpOp, and
+    ``reg64(i32_reg1)`` → RegViewOp.
     """
+    m = re.fullmatch(r"reg(\d+)\((.+)\)", placeholder)
+    if m:
+        view_bits = int(m.group(1))
+        inner = m.group(2)
+        base = parse_placeholder(inner)  # recursively parse inner
+        return RegViewOp(base=base, view_bits=view_bits)
     m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
     if m:
         bits = int(m.group(1)[1:])
