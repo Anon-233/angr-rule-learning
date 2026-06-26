@@ -250,6 +250,7 @@ class RuleGeneralizer:
                 mapping,
                 role_split,
                 guest_arch,
+                side="guest",
             )
             host_insts = _generalize_instructions_with_roles(
                 host_insts,
@@ -257,6 +258,7 @@ class RuleGeneralizer:
                 mapping,
                 role_split,
                 host_arch,
+                side="host",
                 allowed_literals=fixed_producers,
             )
             # Verify each provenance source placeholder appears in Host AST.
@@ -558,11 +560,11 @@ def _build_placeholder_map(
     candidate: VerificationCandidate,
     guest_arch: str,
     host_arch: str,
-) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+) -> tuple[dict[str, str], dict[tuple[str, str], tuple[str, str]]]:
     """Return ``(mapping, role_split)``.
 
     *mapping* maps register names to placeholders.
-    *role_split* maps a physical register name to
+    *role_split* maps ``(side, physical_register)`` to
     ``(output_placeholder, input_placeholder)`` when the same register
     appears in **both** output and input pairs with **different** paired
     registers.  This is side-symmetric: both guest-side and host-side
@@ -586,7 +588,7 @@ def _build_placeholder_map(
     output_count = len(candidate.output_registers)
     input_count = len(candidate.input_registers)
 
-    role_split: dict[str, tuple[str, str]] = {}
+    role_split: dict[tuple[str, str], tuple[str, str]] = {}
 
     pair_index = 0
     for guest_reg, host_reg in register_pairs:
@@ -710,7 +712,7 @@ def _build_placeholder_map(
                 if out_guest_reg != guest_reg:
                     existing = f"{guest_class.placeholder_prefix}_reg{next_id}"
                     next_id += 1
-                    role_split[host_reg] = (host_existing, existing)
+                    role_split[("host", host_reg)] = (host_existing, existing)
                 else:
                     existing = host_existing
             else:
@@ -732,7 +734,8 @@ def _build_placeholder_map(
                 # output pair and we created a new input-role placeholder
                 # for the guest, the host keeps its output placeholder.
                 # A host-side role split was recorded above.
-                if host_reg in role_split and role_split[host_reg][0] == host_previous:
+                host_split = role_split.get(("host", host_reg))
+                if host_split is not None and host_split[0] == host_previous:
                     pass  # Host keeps output placeholder; guest gets new one.
                 else:
                     raise _RuleSkip("unsupported_rule_shape")
@@ -755,7 +758,7 @@ def _build_placeholder_map(
         guest_class = _classify_for_rule(guest_arch, guest_reg)
         in_ph = f"{guest_class.placeholder_prefix}_reg{next_id}"
         next_id += 1
-        role_split[guest_reg] = (out_ph, in_ph)
+        role_split[("guest", guest_reg)] = (out_ph, in_ph)
         # Also update the host input register's mapping.
         host_input_reg = input_host[guest_reg]
         mapping[host_input_reg] = in_ph
@@ -763,7 +766,7 @@ def _build_placeholder_map(
     # Detect host-side role splits: same host register appears in both
     # output and input pairs but with different guest registers.
     for host_reg in set(output_guest.keys()) & set(input_guest.keys()):
-        if host_reg in role_split:
+        if ("host", host_reg) in role_split:
             continue  # Already handled in the main loop.
         out_guest_reg = output_guest[host_reg]
         in_guest_reg = input_guest[host_reg]
@@ -778,7 +781,7 @@ def _build_placeholder_map(
         guest_class = _classify_for_rule(guest_arch, in_guest_reg)
         in_ph = f"{guest_class.placeholder_prefix}_reg{next_id}"
         next_id += 1
-        role_split[host_reg] = (out_ph, in_ph)
+        role_split[("host", host_reg)] = (out_ph, in_ph)
         # Update the guest input register's mapping.
         mapping[in_guest_reg] = in_ph
 
@@ -1400,9 +1403,10 @@ def _generalize_instructions_with_roles(
     insts: tuple[Instruction, ...],
     extracted: tuple[ExtractedInstruction, ...],
     mapping: dict[str, str],
-    role_split: dict[str, tuple[str, str]],
+    role_split: dict[tuple[str, str], tuple[str, str]],
     arch: str,
     *,
+    side: str,
     allowed_literals: frozenset[str] = frozenset(),
 ) -> tuple[Instruction, ...]:
     """Replace physical register operands in AST instructions with typed placeholders.
@@ -1432,8 +1436,13 @@ def _generalize_instructions_with_roles(
         rewritten = inst_text
 
         # Step 1: Handle role-split registers first (text-level).
-        for register in sorted(role_split, key=lambda r: len(r), reverse=True):
-            out_ph, in_ph = role_split[register]
+        side_splits = {
+            register: placeholders
+            for (split_side, register), placeholders in role_split.items()
+            if split_side == side
+        }
+        for register in sorted(side_splits, key=lambda r: len(r), reverse=True):
+            out_ph, in_ph = side_splits[register]
             is_written = bool(ext.write_registers and register in ext.write_registers)
             is_read = bool(ext.read_registers and register in ext.read_registers)
 

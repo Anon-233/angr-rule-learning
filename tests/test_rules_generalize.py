@@ -715,7 +715,7 @@ def test_generalize_ast_replaces_registers() -> None:
     mapping = {"w8": "i32_reg1", "w0": "i32_reg2", "w1": "i32_reg3"}
     extracted = (_inst("aarch64", 0x1000, "add", "w8, w0, w1"),)
     result = _generalize_instructions_with_roles(
-        (inst,), extracted, mapping, {}, "aarch64"
+        (inst,), extracted, mapping, {}, "aarch64", side="guest"
     )
     assert len(result) == 1
     ops = result[0].operands
@@ -727,7 +727,7 @@ def test_generalize_ast_role_split() -> None:
     different placeholders."""
     inst = Instruction(mnemonic="sub", operands=(LitOp("w0"), LitOp("w0"), LitOp("w1")))
     mapping = {"w1": "i32_reg2"}
-    role_split = {"w0": ("i32_reg1", "i32_reg3")}
+    role_split = {("guest", "w0"): ("i32_reg1", "i32_reg3")}
     extracted = (
         _inst(
             "aarch64",
@@ -739,11 +739,35 @@ def test_generalize_ast_role_split() -> None:
         ),
     )
     result = _generalize_instructions_with_roles(
-        (inst,), extracted, mapping, role_split, "aarch64"
+        (inst,), extracted, mapping, role_split, "aarch64", side="guest"
     )
     assert len(result) == 1
     ops = result[0].operands
     assert ops == (RegOp("i32", 32, 1), RegOp("i32", 32, 3), RegOp("i32", 32, 2))
+
+
+def test_generalize_ast_ignores_role_split_for_other_side() -> None:
+    """A host-side role split must not rewrite a same-named guest register."""
+    inst = Instruction(mnemonic="mov", operands=(LitOp("eax"), LitOp("edi")))
+    mapping = {"eax": "i32_reg1", "edi": "i32_reg2"}
+    role_split = {("host", "eax"): ("i32_reg9", "i32_reg10")}
+    extracted = (
+        _inst(
+            "x86-64",
+            0x1000,
+            "mov",
+            "eax, edi",
+            write_registers=("eax",),
+            read_registers=("edi",),
+        ),
+    )
+
+    result = _generalize_instructions_with_roles(
+        (inst,), extracted, mapping, role_split, "x86-64", side="guest"
+    )
+
+    assert len(result) == 1
+    assert result[0].operands == (RegOp("i32", 32, 1), RegOp("i32", 32, 2))
 
 
 def test_dead_write_produces_meta_ops() -> None:
