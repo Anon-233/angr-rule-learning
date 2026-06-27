@@ -110,6 +110,18 @@ def test_memory_kernel_pipeline_emits_load_and_store_rules(tmp_path) -> None:
             "kernel_load_i64_idx",
             "kernel_store_i32_idx",
             "kernel_store_i64_idx",
+            "kernel_load_i32_disp",
+            "kernel_load_i64_disp",
+            "kernel_store_i32_disp",
+            "kernel_store_i64_disp",
+            "kernel_load_i32_prev",
+            "kernel_load_i64_prev",
+            "kernel_store_i32_prev",
+            "kernel_store_i64_prev",
+            "kernel_load_i32_idx_disp",
+            "kernel_load_i64_idx_disp",
+            "kernel_store_i32_idx_disp",
+            "kernel_store_i64_idx_disp",
         ]
         memory_records = {
             r.kernel_id: r for r in result.records if r.kernel_id in memory_kernel_ids

@@ -27,7 +27,7 @@ def test_builtin_synthesizer_emits_scalar_integer_kernels() -> None:
         "kernel_xor_i32",
         "kernel_xor_i64",
     } <= names
-    assert len(kernels) == 46
+    assert len(kernels) == 58
 
 
 def test_memory_kernels_are_present() -> None:
@@ -40,8 +40,20 @@ def test_memory_kernels_are_present() -> None:
     assert "kernel_store_i64" in names
     assert "kernel_load_i32_idx" in names
     assert "kernel_load_i64_idx" in names
+    assert "kernel_load_i32_disp" in names
+    assert "kernel_load_i64_disp" in names
+    assert "kernel_load_i32_prev" in names
+    assert "kernel_load_i64_prev" in names
+    assert "kernel_load_i32_idx_disp" in names
+    assert "kernel_load_i64_idx_disp" in names
     assert "kernel_store_i32_idx" in names
     assert "kernel_store_i64_idx" in names
+    assert "kernel_store_i32_disp" in names
+    assert "kernel_store_i64_disp" in names
+    assert "kernel_store_i32_prev" in names
+    assert "kernel_store_i64_prev" in names
+    assert "kernel_store_i32_idx_disp" in names
+    assert "kernel_store_i64_idx_disp" in names
 
 
 def test_load_kernel_has_memory_and_result() -> None:
@@ -101,6 +113,49 @@ def test_indexed_load_uses_scale_8_for_i64() -> None:
     )
 
     assert kernel.memory_accesses[0].address.scale == 8
+
+
+def test_displacement_load_uses_element_byte_offset() -> None:
+    kernel = next(
+        k
+        for k in HardcodedKernelSynthesizer().generate()
+        if k.name == "kernel_load_i32_disp"
+    )
+
+    addr = kernel.memory_accesses[0].address
+    assert addr.base == "p"
+    assert addr.index is None
+    assert addr.displacement == 4
+    assert "getelementptr i32, ptr %p, i64 1" in kernel.llvm_ir
+
+
+def test_previous_element_store_uses_negative_displacement() -> None:
+    kernel = next(
+        k
+        for k in HardcodedKernelSynthesizer().generate()
+        if k.name == "kernel_store_i64_prev"
+    )
+
+    addr = kernel.memory_accesses[0].address
+    assert addr.base == "p"
+    assert addr.index is None
+    assert addr.displacement == -8
+    assert "getelementptr i64, ptr %p, i64 -1" in kernel.llvm_ir
+
+
+def test_indexed_displacement_load_keeps_index_and_byte_offset() -> None:
+    kernel = next(
+        k
+        for k in HardcodedKernelSynthesizer().generate()
+        if k.name == "kernel_load_i64_idx_disp"
+    )
+
+    addr = kernel.memory_accesses[0].address
+    assert addr.base == "p"
+    assert addr.index == "idx"
+    assert addr.scale == 8
+    assert addr.displacement == 8
+    assert "%idx_plus = add i64 %idx, 1" in kernel.llvm_ir
 
 
 def test_builtin_kernel_ir_is_single_function() -> None:

@@ -275,36 +275,72 @@ def _memory_kernels(bits: int) -> list[IRKernel]:
     value_type = f"i{bits}"
     scale = bits // 8
 
-    def _load(has_idx: bool) -> IRKernel:
-        suffix = f"_{value_type}" + ("_idx" if has_idx else "")
-        name = f"kernel_load{suffix}"
-        idx_param = ", i64 %idx" if has_idx else ""
-        idx_gep = (
-            f"  %q = getelementptr {value_type}, ptr %p, i64 %idx\n" if has_idx else ""
-        )
-        idx_args = [KernelValue("idx", "i64")] if has_idx else []
-        idx_addr = (
-            KernelAddressSpec(base="p", index="idx", scale=scale)
-            if has_idx
-            else KernelAddressSpec(base="p")
-        )
-        llvm_ir = (
-            f"""
+    def _addr(mode: str) -> KernelAddressSpec:
+        match mode:
+            case "base":
+                return KernelAddressSpec(base="p")
+            case "idx":
+                return KernelAddressSpec(base="p", index="idx", scale=scale)
+            case "disp":
+                return KernelAddressSpec(base="p", displacement=scale)
+            case "prev":
+                return KernelAddressSpec(base="p", displacement=-scale)
+            case "idx_disp":
+                return KernelAddressSpec(
+                    base="p",
+                    index="idx",
+                    scale=scale,
+                    displacement=scale,
+                )
+        raise ValueError(f"unknown memory kernel address mode: {mode}")
+
+    def _suffix(mode: str) -> str:
+        return f"_{value_type}" + ("" if mode == "base" else f"_{mode}")
+
+    def _index_args(mode: str) -> list[KernelValue]:
+        return [KernelValue("idx", "i64")] if "idx" in mode else []
+
+    def _llvm_address_setup(mode: str) -> tuple[str, str, str]:
+        match mode:
+            case "base":
+                return "", "", "%p"
+            case "idx":
+                return (
+                    ", i64 %idx",
+                    (f"  %q = getelementptr {value_type}, ptr %p, i64 %idx\n"),
+                    "%q",
+                )
+            case "disp":
+                return "", (f"  %q = getelementptr {value_type}, ptr %p, i64 1\n"), "%q"
+            case "prev":
+                return (
+                    "",
+                    (f"  %q = getelementptr {value_type}, ptr %p, i64 -1\n"),
+                    "%q",
+                )
+            case "idx_disp":
+                return (
+                    ", i64 %idx",
+                    (
+                        "  %idx_plus = add i64 %idx, 1\n"
+                        f"  %q = getelementptr {value_type}, ptr %p, i64 %idx_plus\n"
+                    ),
+                    "%q",
+                )
+        raise ValueError(f"unknown memory kernel address mode: {mode}")
+
+    def _load(mode: str) -> IRKernel:
+        name = f"kernel_load{_suffix(mode)}"
+        idx_param, addr_setup, addr_value = _llvm_address_setup(mode)
+        idx_args = _index_args(mode)
+        idx_addr = _addr(mode)
+        llvm_ir = f"""
 define {value_type} @{name}(ptr %p{idx_param}) {{
 entry:
-{idx_gep}  %v = load {value_type}, ptr %q
+{addr_setup}  %v = load {value_type}, ptr {addr_value}
   ret {value_type} %v
 }}
 """
-            if has_idx
-            else f"""
-define {value_type} @{name}(ptr %p) {{
-entry:
-  %v = load {value_type}, ptr %p
-  ret {value_type} %v
-}}
-"""
-        )
         return IRKernel(
             id=name,
             name=name,
@@ -336,36 +372,18 @@ entry:
             ),
         )
 
-    def _store(has_idx: bool) -> IRKernel:
-        suffix = f"_{value_type}" + ("_idx" if has_idx else "")
-        name = f"kernel_store{suffix}"
-        idx_param = ", i64 %idx" if has_idx else ""
-        idx_gep = (
-            f"  %q = getelementptr {value_type}, ptr %p, i64 %idx\n" if has_idx else ""
-        )
-        idx_args = [KernelValue("idx", "i64")] if has_idx else []
-        idx_addr = (
-            KernelAddressSpec(base="p", index="idx", scale=scale)
-            if has_idx
-            else KernelAddressSpec(base="p")
-        )
-        llvm_ir = (
-            f"""
+    def _store(mode: str) -> IRKernel:
+        name = f"kernel_store{_suffix(mode)}"
+        idx_param, addr_setup, addr_value = _llvm_address_setup(mode)
+        idx_args = _index_args(mode)
+        idx_addr = _addr(mode)
+        llvm_ir = f"""
 define void @{name}(ptr %p{idx_param}, {value_type} %v) {{
 entry:
-{idx_gep}  store {value_type} %v, ptr %q
+{addr_setup}  store {value_type} %v, ptr {addr_value}
   ret void
 }}
 """
-            if has_idx
-            else f"""
-define void @{name}(ptr %p, {value_type} %v) {{
-entry:
-  store {value_type} %v, ptr %p
-  ret void
-}}
-"""
-        )
         return IRKernel(
             id=name,
             name=name,
@@ -401,7 +419,8 @@ entry:
             ),
         )
 
-    return [_load(False), _load(True), _store(False), _store(True)]
+    modes = ("base", "idx", "disp", "prev", "idx_disp")
+    return [kernel for mode in modes for kernel in (_load(mode), _store(mode))]
 
 
 def _three_input_kernel(
