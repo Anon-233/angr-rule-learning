@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from angr_rule_learning.arch.registry import canonical_arch_name
 from angr_rule_learning.extraction.models import ExtractedInstruction
@@ -19,6 +19,19 @@ _INTEGER_TYPES = {
 }
 
 _PTR_TYPES = {"ptr": 64}
+
+KernelSuite = Literal["stable", "probe", "all"]
+
+_KERNEL_SUITES = {"stable", "probe", "all"}
+_KERNEL_METADATA_SUITES = {"stable", "probe"}
+_EXPECTED_STATUSES = {
+    "rule_emitted",
+    "verified_pass",
+    "verifier_fail",
+    "rule_skipped",
+    "unsupported",
+    "error",
+}
 
 
 @dataclass(frozen=True)
@@ -148,11 +161,31 @@ class KernelMetadata:
     has_branch: bool = False
     has_immediate: bool = False
     notes: str | None = None
+    suite: Literal["stable", "probe"] = "stable"
+    expected_status: str = "rule_emitted"
+    expected_reason: str | None = None
+    tags: tuple[str, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "op_kind", self.op_kind.strip().lower())
         if self.bit_width < 1:
             raise ValueError("kernel bit width must be positive")
+        suite = self.suite.strip().lower()
+        if suite not in _KERNEL_METADATA_SUITES:
+            raise ValueError(f"unsupported kernel metadata suite: {self.suite}")
+        expected_status = self.expected_status.strip().lower()
+        if expected_status not in _EXPECTED_STATUSES:
+            raise ValueError(f"unsupported expected kernel status: {expected_status}")
+        expected_reason = (
+            self.expected_reason.strip() if self.expected_reason is not None else None
+        )
+        if expected_reason == "":
+            expected_reason = None
+        tags = tuple(tag.strip().lower() for tag in self.tags if tag.strip())
+        object.__setattr__(self, "suite", suite)
+        object.__setattr__(self, "expected_status", expected_status)
+        object.__setattr__(self, "expected_reason", expected_reason)
+        object.__setattr__(self, "tags", tags)
 
 
 @dataclass(frozen=True)
@@ -193,6 +226,7 @@ class KernelConfig:
     host_arch: str = "x86-64"
     clang: str = "clang"
     optimization: str = "1"
+    kernel_suite: KernelSuite = "stable"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "guest_arch", canonical_arch_name(self.guest_arch))
@@ -201,6 +235,10 @@ class KernelConfig:
         object.__setattr__(
             self, "optimization", self.optimization.strip().removeprefix("O")
         )
+        suite = self.kernel_suite.strip().lower()
+        if suite not in _KERNEL_SUITES:
+            raise ValueError(f"unsupported kernel suite: {self.kernel_suite}")
+        object.__setattr__(self, "kernel_suite", cast(KernelSuite, suite))
 
 
 @dataclass(frozen=True)
@@ -266,19 +304,35 @@ class KernelRunRecord:
     candidate_id: str | None = None
     rule_id: int | None = None
     reason: str | None = None
+    suite: str = "stable"
+    expected_status: str = "rule_emitted"
+    expected_reason: str | None = None
+
+    @property
+    def expectation_matched(self) -> bool:
+        if self.status != self.expected_status:
+            return False
+        if self.expected_reason is None:
+            return True
+        return self.reason is not None and self.expected_reason in self.reason
 
     def to_json(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "kernel_id": self.kernel_id,
             "kernel_name": self.kernel_name,
             "status": self.status,
+            "suite": self.suite,
+            "expected_status": self.expected_status,
         }
+        if self.expected_reason is not None:
+            payload["expected_reason"] = self.expected_reason
         if self.candidate_id is not None:
             payload["candidate_id"] = self.candidate_id
         if self.rule_id is not None:
             payload["rule_id"] = self.rule_id
         if self.reason is not None:
             payload["reason"] = self.reason
+        payload["expectation_matched"] = self.expectation_matched
         return payload
 
 
@@ -293,12 +347,31 @@ class KernelPipelineResult:
     @property
     def diagnostics(self) -> dict[str, object]:
         verified_pass = sum(1 for report in self.reports if report.status == "pass")
+        by_suite: dict[str, dict[str, int]] = {}
+        for record in self.records:
+            suite_counts = by_suite.setdefault(record.suite, {"kernels_total": 0})
+            suite_counts["kernels_total"] += 1
+            suite_counts[record.status] = suite_counts.get(record.status, 0) + 1
+        mismatches = [
+            {
+                "kernel_id": record.kernel_id,
+                "suite": record.suite,
+                "expected_status": record.expected_status,
+                "expected_reason": record.expected_reason,
+                "actual_status": record.status,
+                "actual_reason": record.reason,
+            }
+            for record in self.records
+            if not record.expectation_matched
+        ]
         return {
             "kernels_total": len(self.records),
             "candidates_total": len(self.candidates),
             "reports_total": len(self.reports),
             "verified_pass": verified_pass,
             "rules_emitted": len(self.rules),
+            "by_suite": by_suite,
+            "expectation_mismatches": mismatches,
             "records": [record.to_json() for record in self.records],
             "rule_diagnostics": self.rule_diagnostics.to_json(),
         }

@@ -1,4 +1,7 @@
-from angr_rule_learning.kernel.synthesize import HardcodedKernelSynthesizer
+from angr_rule_learning.kernel.synthesize import (
+    HardcodedKernelSynthesizer,
+    KernelGenerator,
+)
 
 
 def test_builtin_synthesizer_emits_scalar_integer_kernels() -> None:
@@ -28,6 +31,36 @@ def test_builtin_synthesizer_emits_scalar_integer_kernels() -> None:
         "kernel_xor_i64",
     } <= names
     assert len(kernels) == 58
+
+
+def test_kernel_generator_defaults_to_stable_suite() -> None:
+    kernels = KernelGenerator().generate()
+
+    assert kernels
+    assert {kernel.metadata.suite for kernel in kernels} == {"stable"}
+    assert all(kernel.metadata.expected_status == "rule_emitted" for kernel in kernels)
+
+
+def test_kernel_generator_can_select_probe_and_all_suites() -> None:
+    generator = KernelGenerator()
+    stable = generator.generate("stable")
+    probe = generator.generate("probe")
+    all_kernels = generator.generate("all")
+
+    assert stable
+    assert probe
+    assert {kernel.metadata.suite for kernel in probe} == {"probe"}
+    assert len(all_kernels) == len(stable) + len(probe)
+    assert {kernel.metadata.suite for kernel in all_kernels} == {"stable", "probe"}
+
+
+def test_probe_kernels_have_expected_status_and_tags() -> None:
+    kernels = KernelGenerator().generate("probe")
+
+    assert any("partial-register" in kernel.metadata.tags for kernel in kernels)
+    assert any("cast" in kernel.metadata.tags for kernel in kernels)
+    assert any("memory" in kernel.metadata.tags for kernel in kernels)
+    assert all(kernel.metadata.expected_status != "rule_emitted" for kernel in kernels)
 
 
 def test_memory_kernels_are_present() -> None:

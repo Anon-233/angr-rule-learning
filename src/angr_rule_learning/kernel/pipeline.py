@@ -68,7 +68,7 @@ class KernelLearningPipeline:
         rules: list[GeneratedRule] = []
         records: list[KernelRunRecord] = []
 
-        for kernel in self._synthesizer.generate():
+        for kernel in self._generate_kernels(config):
             try:
                 pair, candidate = self._candidate_for_kernel(kernel, config)
                 candidates.append(candidate)
@@ -76,10 +76,9 @@ class KernelLearningPipeline:
                 reports.append(report)
                 if report.status != "pass":
                     records.append(
-                        KernelRunRecord(
-                            kernel.id,
-                            kernel.name,
-                            report.status,
+                        _record_for_kernel(
+                            kernel,
+                            _status_for_report(report.status),
                             candidate_id=candidate.candidate_id,
                             reason=",".join(report.failure_reasons) or None,
                         )
@@ -93,9 +92,8 @@ class KernelLearningPipeline:
                 )
                 if rule is None:
                     records.append(
-                        KernelRunRecord(
-                            kernel.id,
-                            kernel.name,
+                        _record_for_kernel(
+                            kernel,
                             "rule_skipped",
                             candidate_id=candidate.candidate_id,
                         )
@@ -103,9 +101,8 @@ class KernelLearningPipeline:
                     continue
                 rules.append(rule)
                 records.append(
-                    KernelRunRecord(
-                        kernel.id,
-                        kernel.name,
+                    _record_for_kernel(
+                        kernel,
                         "rule_emitted",
                         candidate_id=candidate.candidate_id,
                         rule_id=rule.rule_id,
@@ -113,10 +110,9 @@ class KernelLearningPipeline:
                 )
             except Exception as exc:  # noqa: BLE001 - diagnostics must keep going.
                 records.append(
-                    KernelRunRecord(
-                        kernel.id,
-                        kernel.name,
-                        "error",
+                    _record_for_kernel(
+                        kernel,
+                        _status_for_exception(kernel, exc),
                         reason=str(exc),
                     )
                 )
@@ -156,6 +152,12 @@ class KernelLearningPipeline:
         snippets = self._extractor.extract_pair(compiled, config)
         return self._binding_builder.build_candidate(kernel, snippets)
 
+    def _generate_kernels(self, config: KernelConfig) -> tuple[IRKernel, ...]:
+        try:
+            return self._synthesizer.generate(config.kernel_suite)
+        except TypeError:
+            return self._synthesizer.generate()
+
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -163,3 +165,37 @@ def _write_json(path: Path, payload: dict[str, object]) -> None:
         json.dumps(payload, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+
+
+def _record_for_kernel(
+    kernel: IRKernel,
+    status: str,
+    *,
+    candidate_id: str | None = None,
+    rule_id: int | None = None,
+    reason: str | None = None,
+) -> KernelRunRecord:
+    metadata = kernel.metadata
+    return KernelRunRecord(
+        kernel.id,
+        kernel.name,
+        status,
+        candidate_id=candidate_id,
+        rule_id=rule_id,
+        reason=reason,
+        suite=metadata.suite,
+        expected_status=metadata.expected_status,
+        expected_reason=metadata.expected_reason,
+    )
+
+
+def _status_for_report(status: str) -> str:
+    if status == "fail":
+        return "verifier_fail"
+    return status
+
+
+def _status_for_exception(kernel: IRKernel, exc: Exception) -> str:
+    if kernel.metadata.expected_status == "unsupported":
+        return "unsupported"
+    return "error"

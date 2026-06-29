@@ -6,38 +6,72 @@ from angr_rule_learning.kernel.models import (
     KernelMemoryAccessSpec,
     KernelMemoryObjectSpec,
     KernelMetadata,
+    KernelSuite,
     KernelSignature,
     KernelValue,
 )
 
 
+class KernelGenerator:
+    def generate(self, suite: KernelSuite = "stable") -> tuple[IRKernel, ...]:
+        if suite == "stable":
+            return tuple(_stable_kernels())
+        if suite == "probe":
+            return tuple(_probe_kernels())
+        if suite == "all":
+            return tuple((*_stable_kernels(), *_probe_kernels()))
+        raise ValueError(f"unsupported kernel suite: {suite}")
+
+
 class HardcodedKernelSynthesizer:
-    def generate(self) -> tuple[IRKernel, ...]:
-        kernels: list[IRKernel] = []
-        for bits in (32, 64):
-            kernels.extend(
-                _binary_integer_kernel(op, bits)
-                for op in ("add", "sub", "and", "or", "xor", "mul")
+    def __init__(self, generator: KernelGenerator | None = None) -> None:
+        self._generator = generator or KernelGenerator()
+
+    def generate(self, suite: KernelSuite = "stable") -> tuple[IRKernel, ...]:
+        return self._generator.generate(suite)
+
+
+def _stable_kernels() -> list[IRKernel]:
+    kernels: list[IRKernel] = []
+    for bits in (32, 64):
+        kernels.extend(
+            _binary_integer_kernel(op, bits)
+            for op in ("add", "sub", "and", "or", "xor", "mul")
+        )
+        kernels.extend(
+            _shift_integer_kernel(op, bits) for op in ("shl", "lshr", "ashr")
+        )
+        kernels.extend(_memory_kernels(bits))
+        kernels.append(_add_const_kernel(bits))
+        kernels.append(_xor_not_kernel(bits))
+        kernels.extend(_icmp_integer_kernel(pred, bits) for pred in ("eq", "slt"))
+        kernels.append(_select_eq_kernel(bits))
+        kernels.extend(
+            factory(bits)
+            for factory in (
+                _mul_add_kernel,
+                _add_xor_kernel,
+                _and_or_kernel,
+                _shift_add_kernel,
+                _select_add_kernel,
             )
-            kernels.extend(
-                _shift_integer_kernel(op, bits) for op in ("shl", "lshr", "ashr")
-            )
-            kernels.extend(_memory_kernels(bits))
-            kernels.append(_add_const_kernel(bits))
-            kernels.append(_xor_not_kernel(bits))
-            kernels.extend(_icmp_integer_kernel(pred, bits) for pred in ("eq", "slt"))
-            kernels.append(_select_eq_kernel(bits))
-            kernels.extend(
-                factory(bits)
-                for factory in (
-                    _mul_add_kernel,
-                    _add_xor_kernel,
-                    _and_or_kernel,
-                    _shift_add_kernel,
-                    _select_add_kernel,
-                )
-            )
-        return tuple(kernels)
+        )
+    return kernels
+
+
+def _probe_kernels() -> list[IRKernel]:
+    kernels: list[IRKernel] = []
+    for bits in (8, 16):
+        kernels.append(_probe_partial_add_kernel(bits))
+    kernels.extend(
+        (
+            _probe_trunc_kernel(),
+            _probe_zext_kernel(),
+            _probe_sext_kernel(),
+            _probe_multi_access_memory_kernel(),
+        )
+    )
+    return kernels
 
 
 def _binary_integer_kernel(op: str, bits: int) -> IRKernel:
@@ -450,5 +484,165 @@ def _three_input_kernel(
             bit_width=bits,
             has_immediate=has_immediate,
             notes=notes,
+        ),
+    )
+
+
+def _probe_partial_add_kernel(bits: int) -> IRKernel:
+    value_type = f"i{bits}"
+    name = f"probe_add_{value_type}"
+    llvm_ir = f"""
+define {value_type} @{name}({value_type} %a, {value_type} %b) {{
+entry:
+  %r = add {value_type} %a, %b
+  ret {value_type} %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", value_type), KernelValue("b", value_type)),
+            outputs=(KernelValue("r", value_type),),
+        ),
+        metadata=KernelMetadata(
+            op_kind="add",
+            bit_width=bits,
+            suite="probe",
+            expected_status="unsupported",
+            expected_reason="unsupported ABI argument width",
+            tags=("integer", "partial-register"),
+        ),
+    )
+
+
+def _probe_trunc_kernel() -> IRKernel:
+    name = "probe_trunc_i64_to_i16"
+    llvm_ir = f"""
+define i16 @{name}(i64 %a) {{
+entry:
+  %r = trunc i64 %a to i16
+  ret i16 %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", "i64"),),
+            outputs=(KernelValue("r", "i16"),),
+        ),
+        metadata=KernelMetadata(
+            op_kind="trunc",
+            bit_width=16,
+            suite="probe",
+            expected_status="unsupported",
+            tags=("cast", "partial-register"),
+        ),
+    )
+
+
+def _probe_zext_kernel() -> IRKernel:
+    name = "probe_zext_i16_to_i64"
+    llvm_ir = f"""
+define i64 @{name}(i16 %a) {{
+entry:
+  %r = zext i16 %a to i64
+  ret i64 %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", "i16"),),
+            outputs=(KernelValue("r", "i64"),),
+        ),
+        metadata=KernelMetadata(
+            op_kind="zext",
+            bit_width=64,
+            suite="probe",
+            expected_status="unsupported",
+            tags=("cast", "partial-register"),
+        ),
+    )
+
+
+def _probe_sext_kernel() -> IRKernel:
+    name = "probe_sext_i16_to_i64"
+    llvm_ir = f"""
+define i64 @{name}(i16 %a) {{
+entry:
+  %r = sext i16 %a to i64
+  ret i64 %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", "i16"),),
+            outputs=(KernelValue("r", "i64"),),
+        ),
+        metadata=KernelMetadata(
+            op_kind="sext",
+            bit_width=64,
+            suite="probe",
+            expected_status="unsupported",
+            tags=("cast", "partial-register"),
+        ),
+    )
+
+
+def _probe_multi_access_memory_kernel() -> IRKernel:
+    name = "probe_load_store_i32"
+    llvm_ir = f"""
+define void @{name}(ptr %p, i32 %v) {{
+entry:
+  %old = load i32, ptr %p
+  %r = add i32 %old, %v
+  store i32 %r, ptr %p
+  ret void
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("p", "ptr"), KernelValue("v", "i32")),
+            outputs=(),
+        ),
+        metadata=KernelMetadata(
+            op_kind="load_store",
+            bit_width=32,
+            has_memory=True,
+            suite="probe",
+            expected_status="unsupported",
+            expected_reason="exactly one memory access",
+            tags=("memory", "multi-access"),
+        ),
+        memory_objects=(
+            KernelMemoryObjectSpec(name="slot0", base="p", element_bits=32),
+        ),
+        memory_accesses=(
+            KernelMemoryAccessSpec(
+                kind="load",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                result="old",
+            ),
+            KernelMemoryAccessSpec(
+                kind="store",
+                object="slot0",
+                width_bits=32,
+                address=KernelAddressSpec(base="p"),
+                value="v",
+            ),
         ),
     )

@@ -201,12 +201,15 @@ def test_learn_cli_propagates_kernel_config_and_outputs(tmp_path, monkeypatch) -
             "arm64",
             "--optimization",
             "1",
+            "--kernel-suite",
+            "probe",
         ]
     )
 
     assert captured["config"].guest_arch == "x86-64"
     assert captured["config"].host_arch == "aarch64"
     assert captured["config"].optimization == "1"
+    assert captured["config"].kernel_suite == "probe"
     assert captured["kwargs"]["rules_output"] == tmp_path / "rules.txt"
     assert captured["kwargs"]["diagnostics_output"] == tmp_path / "diagnostics.json"
 

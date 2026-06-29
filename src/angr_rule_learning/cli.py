@@ -46,6 +46,11 @@ def main(argv: list[str] | None = None) -> None:
     learn_parser.add_argument("--rules-debug-diagnostics", type=Path)
     learn_parser.add_argument("--clang", default="clang")
     learn_parser.add_argument("--optimization", default="1")
+    learn_parser.add_argument(
+        "--kernel-suite",
+        choices=("stable", "probe", "all"),
+        default="stable",
+    )
     _add_architecture_arguments(learn_parser)
 
     extract_parser = subparsers.add_parser(
@@ -102,6 +107,7 @@ def main(argv: list[str] | None = None) -> None:
             host_arch=args.host_arch,
             clang=args.clang,
             optimization=args.optimization,
+            kernel_suite=args.kernel_suite,
         )
         KernelLearningPipeline().run(
             config,

@@ -8,6 +8,7 @@ from angr_rule_learning.kernel.models import (
     KernelConfig,
     KernelMemoryAccessSpec,
     KernelMemoryObjectSpec,
+    KernelMetadata,
     KernelSignature,
     KernelValue,
 )
@@ -41,6 +42,22 @@ def test_kernel_config_canonicalizes_architectures(tmp_path: Path) -> None:
     assert config.host_arch == "x86-64"
 
 
+def test_kernel_config_defaults_to_stable_suite(tmp_path: Path) -> None:
+    config = KernelConfig(work_dir=tmp_path)
+
+    assert config.kernel_suite == "stable"
+
+
+def test_kernel_config_accepts_probe_and_all_suites(tmp_path: Path) -> None:
+    assert KernelConfig(work_dir=tmp_path, kernel_suite="probe").kernel_suite == "probe"
+    assert KernelConfig(work_dir=tmp_path, kernel_suite="all").kernel_suite == "all"
+
+
+def test_kernel_config_rejects_unknown_suite(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unsupported kernel suite"):
+        KernelConfig(work_dir=tmp_path, kernel_suite="unknown")
+
+
 def test_signature_allows_void_output() -> None:
     signature = KernelSignature(inputs=(KernelValue("a", "i32"),), outputs=())
 
@@ -53,6 +70,30 @@ def test_binding_spec_allows_no_register_outputs() -> None:
 
     assert spec.input_registers == (("w0", "edi"),)
     assert spec.output_registers == ()
+
+
+def test_kernel_metadata_defaults_to_stable_rule_emitted() -> None:
+    metadata = KernelMetadata(op_kind="add", bit_width=32, tags=("integer",))
+
+    assert metadata.suite == "stable"
+    assert metadata.expected_status == "rule_emitted"
+    assert metadata.expected_reason is None
+    assert metadata.tags == ("integer",)
+
+
+def test_kernel_metadata_accepts_probe_expectation() -> None:
+    metadata = KernelMetadata(
+        op_kind="trunc",
+        bit_width=16,
+        suite="probe",
+        expected_status="unsupported",
+        expected_reason="unsupported ABI argument width",
+        tags=("cast", "partial-register"),
+    )
+
+    assert metadata.suite == "probe"
+    assert metadata.expected_status == "unsupported"
+    assert metadata.expected_reason == "unsupported ABI argument width"
 
 
 # ── Memory spec model tests ─────────────────────────────────────────────

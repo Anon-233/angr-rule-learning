@@ -2,8 +2,13 @@ import shutil
 
 import pytest
 
-from angr_rule_learning.kernel.models import KernelConfig
+from angr_rule_learning.kernel.models import (
+    KernelConfig,
+    KernelPipelineResult,
+    KernelRunRecord,
+)
 from angr_rule_learning.kernel.pipeline import KernelLearningPipeline
+from angr_rule_learning.rules.generalize import RuleDiagnostics
 
 
 @pytest.mark.skipif(shutil.which("clang") is None, reason="clang not installed")
@@ -63,6 +68,71 @@ def test_kernel_pipeline_emits_verified_rules(tmp_path) -> None:
             )
 
 
+def test_kernel_diagnostics_group_records_by_suite() -> None:
+    result = KernelPipelineResult(
+        candidates=(),
+        reports=(),
+        rules=(),
+        rule_diagnostics=RuleDiagnostics(),
+        records=(
+            KernelRunRecord(
+                "stable_ok",
+                "stable_ok",
+                "rule_emitted",
+                suite="stable",
+                expected_status="rule_emitted",
+            ),
+            KernelRunRecord(
+                "probe_skip",
+                "probe_skip",
+                "unsupported",
+                suite="probe",
+                expected_status="unsupported",
+                expected_reason="unsupported ABI argument width",
+                reason="unsupported ABI argument width: x86-64:16",
+            ),
+        ),
+    )
+
+    diagnostics = result.diagnostics
+
+    assert diagnostics["by_suite"]["stable"]["rule_emitted"] == 1
+    assert diagnostics["by_suite"]["probe"]["unsupported"] == 1
+    assert diagnostics["expectation_mismatches"] == []
+
+
+def test_kernel_diagnostics_report_expectation_mismatch() -> None:
+    result = KernelPipelineResult(
+        candidates=(),
+        reports=(),
+        rules=(),
+        rule_diagnostics=RuleDiagnostics(),
+        records=(
+            KernelRunRecord(
+                "probe_changed",
+                "probe_changed",
+                "rule_emitted",
+                suite="probe",
+                expected_status="unsupported",
+                expected_reason="unsupported ABI argument width",
+            ),
+        ),
+    )
+
+    diagnostics = result.diagnostics
+
+    assert diagnostics["expectation_mismatches"] == [
+        {
+            "kernel_id": "probe_changed",
+            "suite": "probe",
+            "expected_status": "unsupported",
+            "expected_reason": "unsupported ABI argument width",
+            "actual_status": "rule_emitted",
+            "actual_reason": None,
+        }
+    ]
+
+
 @pytest.mark.skipif(shutil.which("clang") is None, reason="clang not installed")
 def test_memory_kernel_pipeline_emits_load_and_store_rules(tmp_path) -> None:
     """Run the pipeline with both directions and verify memory kernel rules
@@ -95,6 +165,7 @@ def test_memory_kernel_pipeline_emits_load_and_store_rules(tmp_path) -> None:
         assert "ptr64_reg" in rules_text, (
             f"memory rules should contain ptr64_regN in: {rules_text!r}"
         )
+
         # Memory rules should NOT use addr64 format.
         assert "addr64_" not in rules_text, (
             f"memory rules should not use addr64_: {rules_text!r}"
@@ -140,3 +211,24 @@ def test_memory_kernel_pipeline_emits_load_and_store_rules(tmp_path) -> None:
         assert "ptr64_reg" in rules_text, (
             f"memory rules should contain ptr64_regN in: {rules_text!r}"
         )
+
+
+@pytest.mark.skipif(shutil.which("clang") is None, reason="clang not installed")
+def test_probe_kernel_pipeline_reports_expected_unsupported(tmp_path) -> None:
+    result = KernelLearningPipeline().run(
+        KernelConfig(
+            work_dir=tmp_path / "probe",
+            kernel_suite="probe",
+            optimization="1",
+        ),
+        rules_output=tmp_path / "probe-rules.txt",
+        diagnostics_output=tmp_path / "probe-diagnostics.json",
+    )
+
+    diagnostics = result.diagnostics
+
+    assert result.records
+    assert {record.suite for record in result.records} == {"probe"}
+    assert diagnostics["by_suite"]["probe"]["unsupported"] == len(result.records)
+    assert diagnostics["expectation_mismatches"] == []
+    assert all(record.expectation_matched for record in result.records)
