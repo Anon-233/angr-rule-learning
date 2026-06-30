@@ -155,6 +155,12 @@ class RuleDiagnostics:
         return payload
 
 
+@dataclass(frozen=True)
+class _FixedRolePlan:
+    producers: frozenset[str] = frozenset()
+    sources: frozenset[str] = frozenset()
+
+
 class _RuleSkip(ValueError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -230,8 +236,19 @@ class RuleGeneralizer:
         try:
             guest_arch = candidate.guest.arch
             host_arch = candidate.host.arch
-            fixed_producers, fixed_sources = _require_fixed_role_producers(
-                window, candidate
+            guest_fixed_roles = _plan_fixed_roles_for_fragment(
+                window.guest.instructions,
+                guest_arch,
+                frozenset(
+                    normalize_register_name(gr) for gr, _hr in candidate.input_registers
+                ),
+            )
+            host_fixed_roles = _plan_fixed_roles_for_fragment(
+                window.host.instructions,
+                host_arch,
+                frozenset(
+                    normalize_register_name(hr) for _gr, hr in candidate.input_registers
+                ),
             )
             mapping, role_split = _build_placeholder_map(
                 candidate, guest_arch, host_arch
@@ -240,8 +257,9 @@ class RuleGeneralizer:
             mapping.update(internal_temps)
             # Fixed-role producer targets must retain their register-family
             # identity (e.g. ecx→cl); override any temp placeholders.
-            for reg in fixed_producers:
-                mapping[reg] = reg
+            for plan in (guest_fixed_roles, host_fixed_roles):
+                for reg in plan.producers:
+                    mapping[reg] = reg
             guest_insts = _instructions_to_ast(window.guest.instructions)
             host_insts = _instructions_to_ast(window.host.instructions)
             guest_insts = _generalize_instructions_with_roles(
@@ -251,6 +269,7 @@ class RuleGeneralizer:
                 role_split,
                 guest_arch,
                 side="guest",
+                allowed_literals=guest_fixed_roles.producers,
             )
             host_insts = _generalize_instructions_with_roles(
                 host_insts,
@@ -259,10 +278,16 @@ class RuleGeneralizer:
                 role_split,
                 host_arch,
                 side="host",
-                allowed_literals=fixed_producers,
+                allowed_literals=host_fixed_roles.producers,
             )
-            # Verify each provenance source placeholder appears in Host AST.
-            _verify_fixed_role_sources_in_host(host_insts, fixed_sources, mapping)
+            # Verify each provenance source placeholder appears in the same
+            # ISA fragment that consumes the fixed-role register.
+            _verify_fixed_role_sources_in_ast(
+                guest_insts, guest_fixed_roles.sources, mapping
+            )
+            _verify_fixed_role_sources_in_ast(
+                host_insts, host_fixed_roles.sources, mapping
+            )
             # Annotate dead writes via MetaOp on AST, then apply label/immediate
             # replacement directly on AST.
             guest_insts, host_insts = _annotate_dead_writes(
@@ -372,12 +397,12 @@ def _writer_covers_consumer(arch: str, writer: str, consumer: str) -> bool:
     return w_range[0] <= c_range[0] and w_range[1] >= c_range[1]
 
 
-def _collect_fixed_role_sources(
+def _trace_fixed_role_sources(
     reg: str,
     before_idx: int,
-    window: WindowPair,
-    host_arch: str,
-    host_inputs: frozenset[str],
+    instructions: tuple[ExtractedInstruction, ...],
+    arch: str,
+    inputs: frozenset[str],
     *,
     visited: frozenset[tuple[str, int]] = frozenset(),
 ) -> frozenset[str]:
@@ -385,7 +410,7 @@ def _collect_fixed_role_sources(
     at instruction index *before_idx*.
 
     Each element of the returned set is a register name that appears in
-    *host_inputs*.  Raises ``_RuleSkip("unbound_fixed_role_register")``
+    *inputs*.  Raises ``_RuleSkip("unbound_fixed_role_register")``
     if any dependency cannot be resolved to a mapped input.
     """
     reg_n = normalize_register_name(reg)
@@ -396,21 +421,21 @@ def _collect_fixed_role_sources(
 
     # Search backward for the nearest covering writer FIRST.
     for prev_idx in range(before_idx - 1, -1, -1):
-        prev_inst = window.host.instructions[prev_idx]
+        prev_inst = instructions[prev_idx]
         for w in prev_inst.write_registers:
             w_n = normalize_register_name(w)
-            if not _writer_covers_consumer(host_arch, w_n, reg_n):
+            if not _writer_covers_consumer(arch, w_n, reg_n):
                 continue
             # Found a writer.  Resolve ALL of its read dependencies.
             all_sources: set[str] = set()
             for src in prev_inst.read_registers:
                 src_n = normalize_register_name(src)
-                sources = _collect_fixed_role_sources(
+                sources = _trace_fixed_role_sources(
                     src_n,
                     prev_idx,
-                    window,
-                    host_arch,
-                    host_inputs,
+                    instructions,
+                    arch,
+                    inputs,
                     visited=visited,
                 )
                 all_sources.update(sources)
@@ -422,54 +447,52 @@ def _collect_fixed_role_sources(
     # input serve as a provenance source, and only if it is NOT in
     # a fixed-role register family.
     in_fixed_family = (
-        is_fixed_role_register(host_arch, reg_n)
-        or fixed_role_family(host_arch, reg_n) is not None
+        is_fixed_role_register(arch, reg_n)
+        or fixed_role_family(arch, reg_n) is not None
     )
-    if reg_n in host_inputs and not in_fixed_family:
+    if reg_n in inputs and not in_fixed_family:
         return frozenset({reg_n})
 
     raise _RuleSkip("unbound_fixed_role_register")
 
 
-def _require_fixed_role_producers(
-    window: WindowPair,
-    candidate: VerificationCandidate,
-) -> tuple[frozenset[str], frozenset[str]]:
-    """Verify fixed-role provenance and return ``(producers, sources)``.
+def _plan_fixed_roles_for_fragment(
+    instructions: tuple[ExtractedInstruction, ...],
+    arch: str,
+    inputs: frozenset[str],
+) -> _FixedRolePlan:
+    """Analyze one ISA fragment for fixed-role register requirements.
 
-    *producers* are register names to keep as literals.
-    *sources* are external input registers whose placeholders must
-    appear in the emitted Host rule.
+    Fixed-role semantics are architectural: x86-64 ``cl`` is special
+    regardless of whether the fragment is used as Guest or Host.  The
+    caller supplies the fragment's arch, instruction stream, and external
+    input registers for that same fragment.
     """
-    host_arch = candidate.host.arch
-    host_inputs = frozenset(
-        normalize_register_name(hr) for _gr, hr in candidate.input_registers
-    )
     producers: set[str] = set()
     all_sources: set[str] = set()
 
-    for inst_idx, inst in enumerate(window.host.instructions):
+    for inst_idx, inst in enumerate(instructions):
         for read_reg in inst.read_registers:
             read_n = normalize_register_name(read_reg)
-            if not is_fixed_role_register(host_arch, read_n):
+            if not is_fixed_role_register(arch, read_n):
                 continue
 
             # Find backward reaching definition.
             has_producer = False
             for prev_idx in range(inst_idx - 1, -1, -1):
-                prev_inst = window.host.instructions[prev_idx]
+                prev_inst = instructions[prev_idx]
                 for w in prev_inst.write_registers:
                     w_n = normalize_register_name(w)
-                    if _writer_covers_consumer(host_arch, w_n, read_n):
+                    if _writer_covers_consumer(arch, w_n, read_n):
                         has_producer = True
                         producers.add(w_n)
                         # Collect ALL external sources.
-                        deps = _collect_fixed_role_sources(
+                        deps = _trace_fixed_role_sources(
                             w_n,
                             prev_idx + 1,
-                            window,
-                            host_arch,
-                            host_inputs,
+                            instructions,
+                            arch,
+                            inputs,
                         )
                         all_sources.update(deps)
                         break
@@ -479,7 +502,7 @@ def _require_fixed_role_producers(
             if not has_producer:
                 raise _RuleSkip("unbound_fixed_role_register")
 
-    return frozenset(producers), frozenset(all_sources)
+    return _FixedRolePlan(frozenset(producers), frozenset(all_sources))
 
 
 def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
@@ -535,7 +558,7 @@ def _verify_host_registers_bound(
         raise _RuleSkip("unbound_host_register")
 
 
-def _verify_fixed_role_sources_in_host(
+def _verify_fixed_role_sources_in_ast(
     host_insts: tuple[Instruction, ...],
     sources: frozenset[str],
     mapping: dict[str, str],
@@ -1346,8 +1369,8 @@ def _annotate_dead_writes(
             prefix = m.group(1)
             bits = int(prefix[1:])
             return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
-        # Fixed-role producer targets (validated by
-        # _require_fixed_role_producers) are kept as literal register
+        # Fixed-role producer targets (validated by the fragment-level
+        # fixed-role plan) are kept as literal register
         # names.  For save/restore, normalise to the widest family
         # register so that save rcx / restore rcx preserves the full
         # register even when the instruction writes a sub-register.

@@ -18,7 +18,7 @@ from angr_rule_learning.rules.generalize import (
     _annotate_dead_writes,
     _build_placeholder_map,
     _verify_host_registers_bound,
-    _verify_fixed_role_sources_in_host,
+    _verify_fixed_role_sources_in_ast,
     _writer_covers_consumer,
     GeneratedRule,
     RuleDiagnostics,
@@ -91,6 +91,69 @@ def test_host_fixed_role_cannot_be_used_as_input_mapping() -> None:
         _build_placeholder_map(candidate, "aarch64", "x86-64")
 
     assert excinfo.value.reason == "unsupported_rule_shape"
+
+
+def test_reverse_fixed_role_shift_keeps_ecx_literal_producer() -> None:
+    pair = _window_pair(
+        (
+            _inst(
+                "x86-64",
+                0x1000,
+                "mov",
+                "ecx, edx",
+                write_registers=("ecx",),
+                read_registers=("edx",),
+            ),
+            _inst(
+                "x86-64",
+                0x1002,
+                "mov",
+                "eax, esi",
+                write_registers=("eax",),
+                read_registers=("esi",),
+            ),
+            _inst(
+                "x86-64",
+                0x1004,
+                "shl",
+                "eax, cl",
+                write_registers=("eax", "rflags"),
+                read_registers=("eax", "cl"),
+            ),
+        ),
+        (
+            _inst(
+                "aarch64",
+                0x2000,
+                "lsl",
+                "w0, w1, w2",
+                write_registers=("w0",),
+                read_registers=("w1", "w2"),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="reverse-fixed-role-shift",
+        guest=CodeFragment("x86-64", 0x1000, "89 d1 89 f0 d3 e0", 3),
+        host=CodeFragment("aarch64", 0x2000, "2000221a", 1),
+        input_registers=(("esi", "w1"), ("edx", "w2")),
+        output_registers=(("eax", "w0"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+
+    assert rule is not None
+    assert rule.guest_lines == (
+        "save rcx",
+        "mov ecx, i32_reg3",
+        "mov i32_reg1, i32_reg2",
+        "shl i32_reg1, cl",
+        "restore rcx",
+    )
+    assert rule.host_lines == ("lsl i32_reg1, i32_reg2, i32_reg3",)
+    assert "i32_tmp" not in "\n".join((*rule.guest_lines, *rule.host_lines))
 
 
 def _inst(
@@ -2187,11 +2250,11 @@ def test_fixed_role_save_restore_uses_full_rcx() -> None:
 
 def test_collect_sources_edx_via_mov_returns_esi() -> None:
     """mov edx,esi; mov ecx,edx; shl eax,cl:
-    _collect_fixed_role_sources("edx", before_idx=1) must return {esi}
+    _trace_fixed_role_sources("edx", before_idx=1) must return {esi}
     because mov edx,esi is the backward writer for edx."""
-    from angr_rule_learning.rules.generalize import _collect_fixed_role_sources
+    from angr_rule_learning.rules.generalize import _trace_fixed_role_sources
 
-    host_mov_edx = ExtractedInstruction(
+    mov_edx = ExtractedInstruction(
         arch="x86-64",
         address=0x2000,
         size=3,
@@ -2203,7 +2266,7 @@ def test_collect_sources_edx_via_mov_returns_esi() -> None:
         write_registers=("edx",),
         read_registers=("esi",),
     )
-    host_mov_ecx = ExtractedInstruction(
+    mov_ecx = ExtractedInstruction(
         arch="x86-64",
         address=0x2003,
         size=3,
@@ -2215,7 +2278,7 @@ def test_collect_sources_edx_via_mov_returns_esi() -> None:
         write_registers=("ecx",),
         read_registers=("edx",),
     )
-    host_shl = ExtractedInstruction(
+    shl = ExtractedInstruction(
         arch="x86-64",
         address=0x2006,
         size=3,
@@ -2227,31 +2290,12 @@ def test_collect_sources_edx_via_mov_returns_esi() -> None:
         write_registers=("eax",),
         read_registers=("eax", "cl"),
     )
-    window = WindowPair(
-        "s",
-        (1, 3),
-        InstructionWindow(
-            "s",
-            "guest",
-            (
-                _inst(
-                    "aarch64",
-                    0x1000,
-                    "lsl",
-                    "w0, w0, w1",
-                    write_registers=("w0",),
-                    read_registers=("w0", "w1"),
-                ),
-            ),
-        ),
-        InstructionWindow("s", "host", (host_mov_edx, host_mov_ecx, host_shl)),
-    )
-    sources = _collect_fixed_role_sources(
+    sources = _trace_fixed_role_sources(
         "edx",
         1,
-        window,
+        (mov_edx, mov_ecx, shl),
         "x86-64",
-        host_inputs=frozenset({"edx", "esi"}),
+        inputs=frozenset({"edx", "esi"}),
     )
     assert sources == frozenset({"esi"})
     assert "edx" not in sources
@@ -2259,9 +2303,9 @@ def test_collect_sources_edx_via_mov_returns_esi() -> None:
 
 def test_collect_sources_add_edx_esi_returns_both() -> None:
     """add edx,esi is RMW: old edx and esi are both sources."""
-    from angr_rule_learning.rules.generalize import _collect_fixed_role_sources
+    from angr_rule_learning.rules.generalize import _trace_fixed_role_sources
 
-    host_add = ExtractedInstruction(
+    add = ExtractedInstruction(
         arch="x86-64",
         address=0x2000,
         size=3,
@@ -2273,7 +2317,7 @@ def test_collect_sources_add_edx_esi_returns_both() -> None:
         write_registers=("edx", "rflags"),
         read_registers=("edx", "esi"),
     )
-    host_shl = ExtractedInstruction(
+    shl = ExtractedInstruction(
         arch="x86-64",
         address=0x2003,
         size=3,
@@ -2285,42 +2329,23 @@ def test_collect_sources_add_edx_esi_returns_both() -> None:
         write_registers=("eax",),
         read_registers=("eax", "cl"),
     )
-    window = WindowPair(
-        "s",
-        (1, 2),
-        InstructionWindow(
-            "s",
-            "guest",
-            (
-                _inst(
-                    "aarch64",
-                    0x1000,
-                    "lsl",
-                    "w0, w0, w1",
-                    write_registers=("w0",),
-                    read_registers=("w0", "w1"),
-                ),
-            ),
-        ),
-        InstructionWindow("s", "host", (host_add, host_shl)),
-    )
-    sources = _collect_fixed_role_sources(
+    sources = _trace_fixed_role_sources(
         "edx",
         1,
-        window,
+        (add, shl),
         "x86-64",
-        host_inputs=frozenset({"edx", "esi"}),
+        inputs=frozenset({"edx", "esi"}),
     )
     assert sources == frozenset({"edx", "esi"})
 
 
 def test_verify_sources_rejects_placeholder_not_in_ast() -> None:
-    """Host AST only contains i32_reg20 but source requires i32_reg2."""
+    """AST only contains i32_reg20 but source requires i32_reg2."""
     from angr_rule_learning.rules.ast import Instruction as AstInst
 
     inst = AstInst.from_text("mov i32_reg20, i32_reg1")
     with pytest.raises(_RuleSkip) as exc:
-        _verify_fixed_role_sources_in_host(
+        _verify_fixed_role_sources_in_ast(
             (inst,),
             frozenset({"esi"}),
             {"esi": "i32_reg2"},
@@ -2334,7 +2359,7 @@ def test_verify_sources_rejects_missing_mapping() -> None:
 
     inst = AstInst.from_text("mov i32_reg2, i32_reg1")
     with pytest.raises(_RuleSkip) as exc:
-        _verify_fixed_role_sources_in_host(
+        _verify_fixed_role_sources_in_ast(
             (inst,),
             frozenset({"esi"}),
             {},
