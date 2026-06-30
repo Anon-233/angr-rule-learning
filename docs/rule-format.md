@@ -181,11 +181,11 @@ A register is classified as a temporary when it satisfies **all** of:
 `tmp{N}` numbering is global within a rule — the counter increments for
 each new temporary across both guest and host sides.
 
-### Dead-Write Lifespan Annotations — `save` / `restore`
+### Host Dead-Write Lifespan Annotations — `save` / `restore`
 
-Some instructions write to a register that is **not** live-out of the
-window.  Rather than discarding the write, the generalizer wraps the
-affected lines with lifespan annotations:
+Some Host-side instructions write to a register that is **not** live-out of
+the window.  Rather than discarding the write, the generalizer wraps the
+affected Host lines with lifespan annotations:
 
 ```
 Guest: tbz i32_reg1, #0, #label1
@@ -197,13 +197,15 @@ Host:  save i32_reg1
 ```
 
 - `save r` marks the point where the register's old value must be preserved.
-  It appears as a pre-instruction annotation on the first instruction that
-  writes the dead register.
+  It appears as a Host pre-instruction annotation on the first instruction
+  that writes the dead register.
 - `restore r` marks the point where the old value is restored.  It appears
-  as a post-instruction annotation on the instruction that performs the last
-  access (read or write) of the overwritten register.
+  as a Host post-instruction annotation on the instruction that performs the
+  last access (read or write) of the overwritten register.
 - Annotations are emitted in proper execution order: `save` before the
   instruction, instruction text, then `restore` after.
+- Guest instructions are match patterns for source binaries and never receive
+  generated `save`/`restore` annotations.
 
 Temporary registers (`i32_tmpN`, `i64_tmpN`, etc.) are **not** annotated
 with `save`/`restore` — they are introduced specifically to hold transient

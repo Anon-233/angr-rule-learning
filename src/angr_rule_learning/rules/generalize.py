@@ -1428,7 +1428,7 @@ def _annotate_dead_writes(
         return tuple(result)
 
     return (
-        _apply(guest_insts, window.guest.instructions, guest_arch),
+        guest_insts,
         _apply(host_insts, window.host.instructions, host_arch),
     )
 

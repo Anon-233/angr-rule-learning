@@ -146,11 +146,9 @@ def test_reverse_fixed_role_shift_keeps_ecx_literal_producer() -> None:
 
     assert rule is not None
     assert rule.guest_lines == (
-        "save rcx",
         "mov ecx, i32_reg3",
         "mov i32_reg1, i32_reg2",
         "shl i32_reg1, cl",
-        "restore rcx",
     )
     assert rule.host_lines == ("lsl i32_reg1, i32_reg2, i32_reg3",)
     assert "i32_tmp" not in "\n".join((*rule.guest_lines, *rule.host_lines))
@@ -845,7 +843,7 @@ def test_dead_write_produces_meta_ops() -> None:
     assert "save i32_reg1" in inst_with_save.to_text()
 
 
-def test_dead_write_save_restore_uses_guest_architecture() -> None:
+def test_dead_write_save_restore_is_not_emitted_on_guest_side() -> None:
     window = _window_pair(
         (
             _inst(
@@ -890,8 +888,7 @@ def test_dead_write_save_restore_uses_guest_architecture() -> None:
         "aarch64",
     )
 
-    assert "save rcx" in guest[0].to_text()
-    assert "restore rcx" in guest[0].to_text()
+    assert guest[0].to_text() == "mov ecx, edi"
 
 
 def test_is_branch_instruction():
