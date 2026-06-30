@@ -7,6 +7,7 @@ from angr_rule_learning.extraction.models import (
     WindowPair,
 )
 from angr_rule_learning.rules.ast import (
+    GuestRegViewOp,
     ImmOp,
     Instruction,
     LitOp,
@@ -91,6 +92,46 @@ def test_host_fixed_role_cannot_be_used_as_input_mapping() -> None:
         _build_placeholder_map(candidate, "aarch64", "x86-64")
 
     assert excinfo.value.reason == "unsupported_rule_shape"
+
+
+def test_guest_fixed_role_view_source_is_emitted_for_reverse_shift() -> None:
+    pair = _window_pair(
+        (
+            _inst(
+                "x86-64",
+                0x1000,
+                "shl",
+                "eax, cl",
+                write_registers=("eax", "rflags"),
+                read_registers=("eax", "cl"),
+            ),
+        ),
+        (
+            _inst(
+                "aarch64",
+                0x2000,
+                "lsl",
+                "w0, w0, w1",
+                write_registers=("w0",),
+                read_registers=("w0", "w1"),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="guest-fixed-role-view-shift",
+        guest=CodeFragment("x86-64", 0x1000, "d3 e0", 1),
+        host=CodeFragment("aarch64", 0x2000, "00000000", 1),
+        input_registers=(("eax", "w0"), ("ecx", "w1")),
+        output_registers=(("eax", "w0"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+
+    assert rule is not None
+    assert rule.guest_lines == ("shl i32_reg1, cl",)
+    assert rule.host_lines == ("lsl i32_reg1, i32_reg1, lo8(guest.rcx)",)
 
 
 def test_reverse_fixed_role_shift_keeps_ecx_literal_producer() -> None:
@@ -2779,4 +2820,37 @@ class TestRegViewOpRoundtrip:
                 ),
             ),
         )
+        assert not rule_alpha_equal(a, b)
+
+    @staticmethod
+    def test_parse_guest_physical_view_roundtrip():
+        inst = Instruction.from_text("lsl i32_reg1, i32_reg1, lo8(guest.rcx)")
+
+        assert isinstance(inst.operands[2], GuestRegViewOp)
+        assert inst.operands[2].bits == 8
+        assert inst.operands[2].scope == "guest"
+        assert inst.operands[2].register == "rcx"
+        assert inst.to_text() == "lsl i32_reg1, i32_reg1, lo8(guest.rcx)"
+
+    @staticmethod
+    def test_guest_physical_views_are_not_alpha_equivalent_across_registers():
+        from angr_rule_learning.rules.ast import (
+            Rule,
+            rule_alpha_equal,
+        )
+
+        guest = (Instruction.from_text("shl i32_reg1, cl"),)
+        a = Rule(
+            rule_id=1,
+            candidate_id="a",
+            guest=guest,
+            host=(Instruction.from_text("lsl i32_reg1, i32_reg1, lo8(guest.rcx)"),),
+        )
+        b = Rule(
+            rule_id=2,
+            candidate_id="b",
+            guest=guest,
+            host=(Instruction.from_text("lsl i32_reg1, i32_reg1, lo8(guest.rdx)"),),
+        )
+
         assert not rule_alpha_equal(a, b)

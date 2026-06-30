@@ -108,9 +108,28 @@ class RegViewOp:
         return f"reg{self.view_bits}({self.base.to_text()})"
 
 
+@dataclass(frozen=True)
+class GuestRegViewOp:
+    """View of a physical Guest register: ``lo8(guest.rcx)``.
+
+    This expresses fixed-role or partial-register semantics that must be
+    read from the Guest instruction stream rather than from a regular
+    cross-ISA placeholder.  The first-stage use is x86 ``cl`` shift counts.
+    """
+
+    scope: str
+    register: str
+    bits: int
+
+    def to_text(self) -> str:
+        return f"lo{self.bits}({self.scope}.{self.register})"
+
+
 # ── Operand union ──────────────────────────────────────────────────────
 
-Operand = RegOp | ImmOp | TmpOp | LitOp | LabelOp | RegTextOp | RegViewOp
+Operand = (
+    RegOp | ImmOp | TmpOp | LitOp | LabelOp | RegTextOp | RegViewOp | GuestRegViewOp
+)
 
 
 # ── Meta-operations ────────────────────────────────────────────────────
@@ -230,6 +249,15 @@ class Instruction:
                 id=int(m.group(3)),
                 aarch64_hash=bool(m.group(1)),
                 neg=bool(m.group(2)),
+            )
+
+        # Physical Guest register view: lo8(guest.rcx)
+        m = re.fullmatch(r"lo(\d+)\((guest|host)\.([A-Za-z][A-Za-z0-9]*)\)", text)
+        if m:
+            return GuestRegViewOp(
+                scope=m.group(2).lower(),
+                register=m.group(3).lower(),
+                bits=int(m.group(1)),
             )
 
         # Register view/cast: reg64(i32_reg1)

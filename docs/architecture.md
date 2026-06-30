@@ -417,14 +417,20 @@ is the only valid shift-count register on x86-64).  Such registers are
 classified via ``is_fixed_role_register()`` in ``arch/registers.py`` and are
 emitted as literals in rule output.
 
-For correctness, every fixed-role register *read* must have a visible
-reaching definition earlier on the same side of the window. Surface inference
-rejects an unbound read before candidate verification, and fixed-role registers
-cannot appear in cross-ISA `input_registers` pairs. The producer target register
-(e.g. ``ecx`` feeding into ``cl``) is preserved as a literal rather than
-generalised to a ``tmpN`` placeholder, so the family relationship
-(``ecx`` → ``cl``) is explicit in the emitted rule.  Rules lacking a
-producer are rejected with ``unbound_fixed_role_register``.
+For Host-side fixed-role consumers, every fixed-role register *read* must have
+a visible reaching definition earlier on the Host side of the window.  The
+producer target register (e.g. ``ecx`` feeding into ``cl``) is preserved as a
+literal rather than generalised to a ``tmpN`` placeholder, so the family
+relationship (``ecx`` → ``cl``) is explicit in the emitted rule.  Host rules
+lacking a producer are rejected with ``unbound_fixed_role_register`` because
+the translator would have no instruction that materializes the required
+physical register.
+
+For Guest-side fixed-role consumers, the value is part of the source match
+pattern rather than something the Host must materialize.  The generalizer can
+therefore expose the value to the Host rule with a physical Guest register
+view, currently ``lo8(guest.rcx)`` for x86 ``cl``.  This form is not a
+normal ``i32_regN`` placeholder and is not alpha-renumbered.
 
 **Provenance tracing** resolves the full backward slice of a fixed-role
 consumer to its external inputs.  A producer's target must have a
@@ -439,9 +445,10 @@ correctly preserve the full physical register, even when the instruction
 text writes a sub-register (``ecx``, ``cx``, ``cl``).
 
 The family and covering bit range are queried using the architecture of the
-fragment being inspected. This policy is symmetric: neither Guest nor Host may
-use a fixed-role register as an unexplained boundary value. Learning rules for
-fixed-role values supplied directly at fragment entry remains unsupported.
+fragment being inspected.  The ISA capability query is side-neutral, but the
+rule semantics are role-aware: Host fixed-role values must be produced inside
+the Host rule, while Guest fixed-role values may be referenced through an
+explicit ``loN(guest.<family>)`` view.
 
 ### Register View / Cast Semantics
 

@@ -159,6 +159,7 @@ class RuleDiagnostics:
 class _FixedRolePlan:
     producers: frozenset[str] = frozenset()
     sources: frozenset[str] = frozenset()
+    external_views: frozenset[tuple[str, int]] = frozenset()
 
 
 class _RuleSkip(ValueError):
@@ -242,6 +243,7 @@ class RuleGeneralizer:
                 frozenset(
                     normalize_register_name(gr) for gr, _hr in candidate.input_registers
                 ),
+                allow_external_views=True,
             )
             host_fixed_roles = _plan_fixed_roles_for_fragment(
                 window.host.instructions,
@@ -252,6 +254,9 @@ class RuleGeneralizer:
             )
             mapping, role_split = _build_placeholder_map(
                 candidate, guest_arch, host_arch
+            )
+            _apply_guest_fixed_role_view_mappings(
+                mapping, candidate, guest_arch, guest_fixed_roles
             )
             internal_temps = _identify_internal_temps(window, candidate)
             mapping.update(internal_temps)
@@ -460,6 +465,8 @@ def _plan_fixed_roles_for_fragment(
     instructions: tuple[ExtractedInstruction, ...],
     arch: str,
     inputs: frozenset[str],
+    *,
+    allow_external_views: bool = False,
 ) -> _FixedRolePlan:
     """Analyze one ISA fragment for fixed-role register requirements.
 
@@ -470,6 +477,7 @@ def _plan_fixed_roles_for_fragment(
     """
     producers: set[str] = set()
     all_sources: set[str] = set()
+    external_views: set[tuple[str, int]] = set()
 
     for inst_idx, inst in enumerate(instructions):
         for read_reg in inst.read_registers:
@@ -500,9 +508,61 @@ def _plan_fixed_roles_for_fragment(
                     break
 
             if not has_producer:
+                if allow_external_views:
+                    view = _fixed_role_external_view(arch, read_n, inputs)
+                    if view is not None:
+                        external_views.add(view)
+                        continue
                 raise _RuleSkip("unbound_fixed_role_register")
 
-    return _FixedRolePlan(frozenset(producers), frozenset(all_sources))
+    return _FixedRolePlan(
+        frozenset(producers),
+        frozenset(all_sources),
+        frozenset(external_views),
+    )
+
+
+def _fixed_role_external_view(
+    arch: str,
+    fixed_register: str,
+    inputs: frozenset[str],
+) -> tuple[str, int] | None:
+    fixed_range = register_bit_range(arch, fixed_register)
+    if fixed_range is None or fixed_range[0] != 0:
+        return None
+    family = fixed_role_family(arch, fixed_register)
+    if family is None:
+        return None
+
+    for input_reg in inputs:
+        input_range = register_bit_range(arch, input_reg)
+        if input_range is None:
+            continue
+        if register_family(arch, input_reg) != family:
+            continue
+        if input_range[0] <= fixed_range[0] and input_range[1] >= fixed_range[1]:
+            return (family, fixed_range[1] - fixed_range[0] + 1)
+    return None
+
+
+def _apply_guest_fixed_role_view_mappings(
+    mapping: dict[str, str],
+    candidate: VerificationCandidate,
+    guest_arch: str,
+    guest_fixed_roles: _FixedRolePlan,
+) -> None:
+    for family, bits in guest_fixed_roles.external_views:
+        view_text = f"lo{bits}(guest.{family})"
+        for guest_reg, host_reg in candidate.input_registers:
+            guest_reg_n = normalize_register_name(guest_reg)
+            host_reg_n = normalize_register_name(host_reg)
+            guest_range = register_bit_range(guest_arch, guest_reg_n)
+            if guest_range is None:
+                continue
+            if register_family(guest_arch, guest_reg_n) != family:
+                continue
+            if guest_range[0] <= 0 and guest_range[1] >= bits - 1:
+                mapping[host_reg_n] = view_text
 
 
 def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:

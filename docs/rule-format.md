@@ -220,11 +220,24 @@ register.  The instruction text retains the original sub-register name
 (e.g. mov ecx, i32_reg2; shl i32_reg1, cl with save rcx /
 restore rcx annotations).
 
-Fixed-role registers are never generalized through cross-ISA input bindings.
-For example, `w1` cannot be paired directly with `cl`. A rule containing
-`shl ..., cl` must also contain an earlier producer whose write covers `cl`,
-such as `mov ecx, i32_reg2`; otherwise extraction rejects the window with
-`unbound_fixed_role_register`.
+Fixed-role registers are never generalized as ordinary `i32_regN`
+cross-ISA input bindings.  When the fixed-role register is on the Host side,
+a rule containing `shl ..., cl` must also contain an earlier Host producer
+whose write covers `cl`, such as `mov ecx, i32_reg2`; otherwise the rule is
+rejected with `unbound_fixed_role_register`.
+
+When the fixed-role register is on the Guest side, the Host rule may refer
+to a physical Guest register view:
+
+```
+Guest: shl i32_reg1, cl
+Host:  lsl i32_reg1, i32_reg1, lo8(guest.rcx)
+```
+
+`lo8(guest.rcx)` means "the low 8 bits of the Guest `rcx` register family".
+It is not a general-register placeholder and is not alpha-renumbered.
+This form lets Host-side code generation read a source-ISA fixed-role value
+without pretending it is an arbitrary `i32_regN`.
 
 ## Semantic Contract
 

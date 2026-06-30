@@ -22,6 +22,7 @@ def _prefix_bits(prefix: str) -> int:
 
 
 _REGVIEW_RE = re.compile(r"\breg(\d+)\(((?:(?:i|ptr)\d+|f\d+|v\d+)_(?:reg|tmp)\d+)\)")
+_GUEST_REGVIEW_RE = re.compile(r"\blo(\d+)\((guest|host)\.([A-Za-z][A-Za-z0-9]*)\)")
 _TMP_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
 _LABEL_RE = re.compile(r"(#?)label(\d+)\b")
 _IMM_RE = re.compile(r"\bimm(\d+)\b")
@@ -37,6 +38,7 @@ TAG_LIT = 13
 TAG_LABEL = 14
 TAG_REGTEXT = 15
 TAG_REGVIEW = 16
+TAG_GUEST_REGVIEW = 17
 TAG_SAVE = 20
 TAG_RESTORE = 21
 TAG_META_BLOCK = 22
@@ -123,6 +125,11 @@ class _FingerprintBuilder:
             # Canonicalize the inner placeholder to get its fingerprint.
             inner_fp = self._canon_text(inner)
             matches.append((m.start(), m.end(), "RV", view_bits, (view_bits, inner_fp)))
+        for m in _GUEST_REGVIEW_RE.finditer(text):
+            bits = int(m.group(1))
+            scope = m.group(2).lower()
+            register = m.group(3).lower()
+            matches.append((m.start(), m.end(), "GRV", bits, (scope, register)))
         for m in _TMP_RE.finditer(text):
             prefix = m.group(1)
             bits = int(prefix[1:])
@@ -174,6 +181,8 @@ class _FingerprintBuilder:
             # extra[0] is view_bits (redundant with cid_or_bits),
             # extra[1] is the canonicalized inner fingerprint.
             return ("RV", cid_or_bits, extra[1])
+        elif kind == "GRV":
+            return ("GRV", cid_or_bits, extra[0], extra[1])
         elif kind == "I":
             return ("I", cid_or_bits)
         raise ValueError(f"unknown text kind: {kind!r}")
@@ -183,6 +192,7 @@ class _FingerprintBuilder:
     def _fingerprint_op(self, op: Operand) -> tuple[object, ...]:
         from angr_rule_learning.rules.ast import (
             ImmOp,
+            GuestRegViewOp,
             LabelOp,
             LitOp,
             RegOp,
@@ -197,6 +207,8 @@ class _FingerprintBuilder:
         elif isinstance(op, RegViewOp):
             base_fp = self._fingerprint_op(op.base)
             return (TAG_REGVIEW, op.view_bits, op.mode) + base_fp
+        elif isinstance(op, GuestRegViewOp):
+            return (TAG_GUEST_REGVIEW, op.bits, op.scope, op.register)
         elif isinstance(op, ImmOp):
             if op.derived is not None:
                 return (TAG_IMM, 0, "derived") + self._canon_text(op.derived)
