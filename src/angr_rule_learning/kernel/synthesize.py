@@ -36,13 +36,28 @@ def _stable_kernels() -> list[IRKernel]:
     for bits in (32, 64):
         kernels.extend(
             _binary_integer_kernel(op, bits)
-            for op in ("add", "sub", "and", "or", "xor", "mul")
+            for op in (
+                "add",
+                "sub",
+                "and",
+                "or",
+                "xor",
+                "mul",
+            )
+        )
+        kernels.extend(
+            _divrem_const_kernel(op, bits) for op in ("udiv", "sdiv", "urem", "srem")
         )
         kernels.extend(
             _shift_integer_kernel(op, bits) for op in ("shl", "lshr", "ashr")
         )
         kernels.extend(_memory_kernels(bits))
         kernels.append(_add_const_kernel(bits))
+        kernels.append(_neg_kernel(bits))
+        kernels.extend(
+            _const_integer_kernel(op, bits) for op in ("sub", "and", "or", "xor", "mul")
+        )
+        kernels.extend(_shift_const_kernel(op, bits) for op in ("shl", "lshr", "ashr"))
         kernels.append(_xor_not_kernel(bits))
         kernels.extend(_icmp_integer_kernel(pred, bits) for pred in ("eq", "slt"))
         kernels.append(_select_eq_kernel(bits))
@@ -121,6 +136,37 @@ entry:
             bit_width=bits,
             has_immediate=True,
             notes="shift count is masked to avoid LLVM poison for oversized counts",
+        ),
+    )
+
+
+def _divrem_const_kernel(op: str, bits: int) -> IRKernel:
+    value_type = f"i{bits}"
+    name = f"kernel_{op}_{value_type}"
+    constant = 3
+    llvm_ir = f"""
+define {value_type} @{name}({value_type} %a) {{
+entry:
+  %r = {op} {value_type} %a, {constant}
+  ret {value_type} %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", value_type),),
+            outputs=(KernelValue("r", value_type),),
+        ),
+        metadata=KernelMetadata(
+            op_kind=op,
+            bit_width=bits,
+            has_immediate=True,
+            notes=(
+                "first-stage div/rem kernels use a constant divisor to avoid "
+                "symbolic division cost in the verifier"
+            ),
         ),
     )
 
@@ -486,6 +532,109 @@ def _three_input_kernel(
             notes=notes,
         ),
     )
+
+
+def _neg_kernel(bits: int) -> IRKernel:
+    value_type = f"i{bits}"
+    name = f"kernel_neg_{value_type}"
+    llvm_ir = f"""
+define {value_type} @{name}({value_type} %a) {{
+entry:
+  %r = sub {value_type} 0, %a
+  ret {value_type} %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", value_type),),
+            outputs=(KernelValue("r", value_type),),
+        ),
+        metadata=KernelMetadata(
+            op_kind="neg",
+            bit_width=bits,
+            has_immediate=True,
+        ),
+    )
+
+
+def _const_integer_kernel(op: str, bits: int) -> IRKernel:
+    value_type = f"i{bits}"
+    name = f"kernel_{op}_const_{value_type}"
+    constant = _constant_for(op, bits)
+    llvm_ir = f"""
+define {value_type} @{name}({value_type} %a) {{
+entry:
+  %r = {op} {value_type} %a, {constant}
+  ret {value_type} %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", value_type),),
+            outputs=(KernelValue("r", value_type),),
+        ),
+        metadata=KernelMetadata(
+            op_kind=f"{op}_const",
+            bit_width=bits,
+            has_immediate=True,
+        ),
+    )
+
+
+def _shift_const_kernel(op: str, bits: int) -> IRKernel:
+    value_type = f"i{bits}"
+    name = f"kernel_{op}_const_{value_type}"
+    constant = 3
+    llvm_ir = f"""
+define {value_type} @{name}({value_type} %a) {{
+entry:
+  %r = {op} {value_type} %a, {constant}
+  ret {value_type} %r
+}}
+"""
+    return IRKernel(
+        id=name,
+        name=name,
+        llvm_ir=llvm_ir,
+        signature=KernelSignature(
+            inputs=(KernelValue("a", value_type),),
+            outputs=(KernelValue("r", value_type),),
+        ),
+        metadata=KernelMetadata(
+            op_kind=f"{op}_const",
+            bit_width=bits,
+            has_immediate=True,
+        ),
+    )
+
+
+def _constant_for(op: str, bits: int) -> int:
+    constants = {
+        32: {
+            "sub": 7,
+            "and": 0xFF,
+            "or": 0x10,
+            "xor": 0xFF,
+            "mul": 3,
+        },
+        64: {
+            "sub": 13,
+            "and": 0xFFFF,
+            "or": 0x100,
+            "xor": 0xFFFF,
+            "mul": 5,
+        },
+    }
+    try:
+        return constants[bits][op]
+    except KeyError as exc:
+        raise ValueError(f"unsupported const kernel: {op} i{bits}") from exc
 
 
 def _probe_partial_add_kernel(bits: int) -> IRKernel:

@@ -29,8 +29,74 @@ def test_builtin_synthesizer_emits_scalar_integer_kernels() -> None:
         "kernel_select_add_i32",
         "kernel_xor_i32",
         "kernel_xor_i64",
+        "kernel_udiv_i32",
+        "kernel_srem_i64",
+        "kernel_neg_i32",
+        "kernel_mul_const_i64",
+        "kernel_shl_const_i32",
     } <= names
-    assert len(kernels) == 58
+    assert len(kernels) == 84
+
+
+def test_stable_synthesizer_emits_extended_arithmetic_kernels() -> None:
+    kernels = KernelGenerator().generate("stable")
+    names = {kernel.name for kernel in kernels}
+
+    assert {
+        "kernel_udiv_i32",
+        "kernel_sdiv_i32",
+        "kernel_urem_i32",
+        "kernel_srem_i32",
+        "kernel_udiv_i64",
+        "kernel_sdiv_i64",
+        "kernel_urem_i64",
+        "kernel_srem_i64",
+        "kernel_neg_i32",
+        "kernel_neg_i64",
+        "kernel_sub_const_i32",
+        "kernel_and_const_i32",
+        "kernel_or_const_i32",
+        "kernel_xor_const_i32",
+        "kernel_mul_const_i32",
+        "kernel_sub_const_i64",
+        "kernel_and_const_i64",
+        "kernel_or_const_i64",
+        "kernel_xor_const_i64",
+        "kernel_mul_const_i64",
+        "kernel_shl_const_i32",
+        "kernel_lshr_const_i32",
+        "kernel_ashr_const_i32",
+        "kernel_shl_const_i64",
+        "kernel_lshr_const_i64",
+        "kernel_ashr_const_i64",
+    } <= names
+
+
+def test_stable_division_kernels_use_constant_denominators() -> None:
+    kernels = KernelGenerator().generate("stable")
+    divrem = {
+        kernel.name: kernel
+        for kernel in kernels
+        if kernel.name
+        in {
+            "kernel_udiv_i32",
+            "kernel_sdiv_i32",
+            "kernel_urem_i64",
+            "kernel_srem_i64",
+        }
+    }
+
+    assert set(divrem) == {
+        "kernel_udiv_i32",
+        "kernel_sdiv_i32",
+        "kernel_urem_i64",
+        "kernel_srem_i64",
+    }
+    assert all(len(kernel.signature.inputs) == 1 for kernel in divrem.values())
+    assert "udiv i32 %a, 3" in divrem["kernel_udiv_i32"].llvm_ir
+    assert "sdiv i32 %a, 3" in divrem["kernel_sdiv_i32"].llvm_ir
+    assert "urem i64 %a, 3" in divrem["kernel_urem_i64"].llvm_ir
+    assert "srem i64 %a, 3" in divrem["kernel_srem_i64"].llvm_ir
 
 
 def test_kernel_generator_defaults_to_stable_suite() -> None:
