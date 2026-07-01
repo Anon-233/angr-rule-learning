@@ -573,29 +573,39 @@ def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
     ``i32_reg1`` from ``reg64(i32_reg1)``), because that is the semantic
     binding point.
     """
-    from angr_rule_learning.rules.ast import LitOp, RegOp, RegTextOp, RegViewOp, TmpOp
+    from angr_rule_learning.rules.ast import (
+        BitSliceOp,
+        ExtOp,
+        LitOp,
+        RegOp,
+        RegTextOp,
+        RegViewOp,
+        TmpOp,
+    )
 
     result: set[str] = set()
+
+    def _collect(op: Operand) -> None:
+        if isinstance(op, (RegOp, TmpOp)):
+            result.add(op.to_text())
+        elif isinstance(op, RegViewOp):
+            result.add(op.base.to_text())
+        elif isinstance(op, BitSliceOp):
+            _collect(op.base)
+        elif isinstance(op, ExtOp):
+            _collect(op.value)
+        elif isinstance(op, (LitOp, RegTextOp)):
+            text = op.to_text()
+            for token in _TOKEN_RE.findall(text):
+                if _PARAMETERIZED_TOKEN_RE.match(token):
+                    result.add(token)
+
     for inst in insts:
         operands = list(inst.operands)
         for meta in inst.meta + inst.post_meta:
             operands.extend(meta.regs)
         for op in operands:
-            if isinstance(op, (RegOp, TmpOp)):
-                result.add(op.to_text())
-            elif isinstance(op, RegViewOp):
-                # Collect the *base* placeholder — the semantic binding,
-                # not the view wrapper.
-                result.add(op.base.to_text())
-            elif isinstance(op, (LitOp, RegTextOp)):
-                text = op.to_text()
-                for token in _TOKEN_RE.findall(text):
-                    if _PARAMETERIZED_TOKEN_RE.match(token):
-                        result.add(token)
-                    # Collect base placeholders nested inside reg64(...) text.
-                    # The tokeniser splits reg64(i32_reg1) into "reg64"
-                    # and "i32_reg1", but "i32_reg1" is already matched above.
-                    # reg64 is not a binder itself, so skip it.
+            _collect(op)
     return frozenset(result)
 
 

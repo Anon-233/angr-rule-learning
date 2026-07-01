@@ -125,10 +125,42 @@ class GuestRegViewOp:
         return f"lo{self.bits}({self.scope}.{self.register})"
 
 
+@dataclass(frozen=True)
+class BitSliceOp:
+    """Low-bit slice of a semantic operand: ``lo8(i32_reg1)``."""
+
+    base: Operand
+    bits: int
+
+    def to_text(self) -> str:
+        return f"lo{self.bits}({self.base.to_text()})"
+
+
+@dataclass(frozen=True)
+class ExtOp:
+    """Zero/sign extension: ``zext32(lo8(i32_reg1))``."""
+
+    kind: str
+    bits: int
+    value: Operand
+
+    def to_text(self) -> str:
+        return f"{self.kind}{self.bits}({self.value.to_text()})"
+
+
 # ── Operand union ──────────────────────────────────────────────────────
 
 Operand = (
-    RegOp | ImmOp | TmpOp | LitOp | LabelOp | RegTextOp | RegViewOp | GuestRegViewOp
+    RegOp
+    | ImmOp
+    | TmpOp
+    | LitOp
+    | LabelOp
+    | RegTextOp
+    | RegViewOp
+    | GuestRegViewOp
+    | BitSliceOp
+    | ExtOp
 )
 
 
@@ -259,6 +291,18 @@ class Instruction:
                 register=m.group(3).lower(),
                 bits=int(m.group(1)),
             )
+
+        # Zero/sign extension: zext32(lo8(i32_reg1)), sext64(i32_reg1)
+        m = re.fullmatch(r"(zext|sext)(\d+)\((.+)\)", text)
+        if m:
+            inner = Instruction._parse_operand(m.group(3))
+            return ExtOp(kind=m.group(1), bits=int(m.group(2)), value=inner)
+
+        # Low-bit slice: lo8(i32_reg1)
+        m = re.fullmatch(r"lo(\d+)\((.+)\)", text)
+        if m:
+            inner = Instruction._parse_operand(m.group(2))
+            return BitSliceOp(base=inner, bits=int(m.group(1)))
 
         # Register view/cast: reg64(i32_reg1)
         m = re.fullmatch(r"reg(\d+)\((.+)\)", text)
@@ -392,12 +436,21 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
 
 
 def _walk_rule(rule: Rule, visitor):
+    def _walk(op: Operand) -> None:
+        visitor(op)
+        if isinstance(op, RegViewOp):
+            _walk(op.base)
+        elif isinstance(op, BitSliceOp):
+            _walk(op.base)
+        elif isinstance(op, ExtOp):
+            _walk(op.value)
+
     for inst in rule.guest + rule.host:
         for op in inst.operands:
-            visitor(op)
+            _walk(op)
         for meta in inst.meta + inst.post_meta:
             for op in meta.regs:
-                visitor(op)
+                _walk(op)
 
 
 # ── Placeholder parsing and collection ─────────────────────────────────
@@ -406,7 +459,7 @@ def _walk_rule(rule: Rule, visitor):
 IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 
 
-def parse_placeholder(placeholder: str) -> RegOp | TmpOp | RegViewOp:
+def parse_placeholder(placeholder: str) -> RegOp | TmpOp | RegViewOp | BitSliceOp | ExtOp:
     """Parse a placeholder string into its AST operand type.
 
     Supports ``i32_reg1``, ``ptr64_reg1``, ``sp64``, ``fp64`` → RegOp,
@@ -418,7 +471,17 @@ def parse_placeholder(placeholder: str) -> RegOp | TmpOp | RegViewOp:
         view_bits = int(m.group(1))
         inner = m.group(2)
         base = parse_placeholder(inner)  # recursively parse inner
-        return RegViewOp(base=base, view_bits=view_bits)
+        if isinstance(base, (RegOp, TmpOp)):
+            return RegViewOp(base=base, view_bits=view_bits)
+        raise ValueError(f"invalid register view base: {placeholder!r}")
+    m = re.fullmatch(r"(zext|sext)(\d+)\((.+)\)", placeholder)
+    if m:
+        value = Instruction._parse_operand(m.group(3))
+        return ExtOp(kind=m.group(1), bits=int(m.group(2)), value=value)
+    m = re.fullmatch(r"lo(\d+)\((.+)\)", placeholder)
+    if m:
+        base = Instruction._parse_operand(m.group(2))
+        return BitSliceOp(base=base, bits=int(m.group(1)))
     m = re.fullmatch(r"(ptr\d+)_reg(\d+)", placeholder)
     if m:
         prefix = m.group(1)

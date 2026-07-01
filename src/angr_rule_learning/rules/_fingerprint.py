@@ -23,6 +23,10 @@ def _prefix_bits(prefix: str) -> int:
 
 _REGVIEW_RE = re.compile(r"\breg(\d+)\(((?:(?:i|ptr)\d+|f\d+|v\d+)_(?:reg|tmp)\d+)\)")
 _GUEST_REGVIEW_RE = re.compile(r"\blo(\d+)\((guest|host)\.([A-Za-z][A-Za-z0-9]*)\)")
+_BITS_SLICE_RE = re.compile(r"\blo(\d+)\(((?:(?:i|ptr)\d+|f\d+|v\d+)_(?:reg|tmp)\d+)\)")
+_EXT_RE = re.compile(
+    r"\b(zext|sext)(\d+)\((lo\d+\((?:(?:i|ptr)\d+|f\d+|v\d+)_(?:reg|tmp)\d+\)|(?:(?:i|ptr)\d+|f\d+|v\d+)_(?:reg|tmp)\d+)\)"
+)
 _TMP_RE = re.compile(r"\b(i\d+|f\d+|v\d+)_tmp(\d+)\b")
 _LABEL_RE = re.compile(r"(#?)label(\d+)\b")
 _IMM_RE = re.compile(r"\bimm(\d+)\b")
@@ -39,6 +43,8 @@ TAG_LABEL = 14
 TAG_REGTEXT = 15
 TAG_REGVIEW = 16
 TAG_GUEST_REGVIEW = 17
+TAG_BITSLICE = 18
+TAG_EXT = 19
 TAG_SAVE = 20
 TAG_RESTORE = 21
 TAG_META_BLOCK = 22
@@ -130,6 +136,15 @@ class _FingerprintBuilder:
             scope = m.group(2).lower()
             register = m.group(3).lower()
             matches.append((m.start(), m.end(), "GRV", bits, (scope, register)))
+        for m in _EXT_RE.finditer(text):
+            kind = m.group(1)
+            bits = int(m.group(2))
+            inner_fp = self._canon_text(m.group(3))
+            matches.append((m.start(), m.end(), "EXT", bits, (kind, inner_fp)))
+        for m in _BITS_SLICE_RE.finditer(text):
+            bits = int(m.group(1))
+            inner_fp = self._canon_text(m.group(2))
+            matches.append((m.start(), m.end(), "LO", bits, (inner_fp,)))
         for m in _TMP_RE.finditer(text):
             prefix = m.group(1)
             bits = int(prefix[1:])
@@ -183,6 +198,10 @@ class _FingerprintBuilder:
             return ("RV", cid_or_bits, extra[1])
         elif kind == "GRV":
             return ("GRV", cid_or_bits, extra[0], extra[1])
+        elif kind == "LO":
+            return ("LO", cid_or_bits, extra[0])
+        elif kind == "EXT":
+            return ("EXT", extra[0], cid_or_bits, extra[1])
         elif kind == "I":
             return ("I", cid_or_bits)
         raise ValueError(f"unknown text kind: {kind!r}")
@@ -191,6 +210,8 @@ class _FingerprintBuilder:
 
     def _fingerprint_op(self, op: Operand) -> tuple[object, ...]:
         from angr_rule_learning.rules.ast import (
+            BitSliceOp,
+            ExtOp,
             ImmOp,
             GuestRegViewOp,
             LabelOp,
@@ -209,6 +230,12 @@ class _FingerprintBuilder:
             return (TAG_REGVIEW, op.view_bits, op.mode) + base_fp
         elif isinstance(op, GuestRegViewOp):
             return (TAG_GUEST_REGVIEW, op.bits, op.scope, op.register)
+        elif isinstance(op, BitSliceOp):
+            base_fp = self._fingerprint_op(op.base)
+            return (TAG_BITSLICE, op.bits) + base_fp
+        elif isinstance(op, ExtOp):
+            value_fp = self._fingerprint_op(op.value)
+            return (TAG_EXT, op.kind, op.bits) + value_fp
         elif isinstance(op, ImmOp):
             if op.derived is not None:
                 return (TAG_IMM, 0, "derived") + self._canon_text(op.derived)

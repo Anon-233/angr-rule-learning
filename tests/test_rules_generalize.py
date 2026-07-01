@@ -2854,3 +2854,72 @@ class TestRegViewOpRoundtrip:
         )
 
         assert not rule_alpha_equal(a, b)
+
+    @staticmethod
+    def test_parse_low_bit_slice_roundtrip():
+        from angr_rule_learning.rules.ast import BitSliceOp
+
+        inst = Instruction.from_text("movzx i32_reg1, lo8(i32_reg2)")
+
+        assert isinstance(inst.operands[1], BitSliceOp)
+        assert inst.operands[1].bits == 8
+        assert inst.operands[1].base.to_text() == "i32_reg2"
+        assert inst.to_text() == "movzx i32_reg1, lo8(i32_reg2)"
+
+    @staticmethod
+    def test_parse_nested_zero_extension_roundtrip():
+        from angr_rule_learning.rules.ast import BitSliceOp, ExtOp
+
+        inst = Instruction.from_text("mov i32_reg1, zext32(lo8(i32_reg2))")
+
+        assert isinstance(inst.operands[1], ExtOp)
+        assert inst.operands[1].kind == "zext"
+        assert inst.operands[1].bits == 32
+        assert isinstance(inst.operands[1].value, BitSliceOp)
+        assert inst.to_text() == "mov i32_reg1, zext32(lo8(i32_reg2))"
+
+    @staticmethod
+    def test_slice_width_affects_alpha_equivalence():
+        from angr_rule_learning.rules.ast import (
+            Rule,
+            rule_alpha_equal,
+        )
+
+        guest = (Instruction.from_text("and i32_reg1, i32_reg2, #0xff"),)
+        a = Rule(
+            rule_id=1,
+            candidate_id="a",
+            guest=guest,
+            host=(Instruction.from_text("movzx i32_reg1, lo8(i32_reg2)"),),
+        )
+        b = Rule(
+            rule_id=2,
+            candidate_id="b",
+            guest=guest,
+            host=(Instruction.from_text("movzx i32_reg1, lo16(i32_reg2)"),),
+        )
+
+        assert not rule_alpha_equal(a, b)
+
+    @staticmethod
+    def test_slice_alpha_equivalent_renumbers_base_placeholder():
+        from angr_rule_learning.rules.ast import (
+            Rule,
+            rule_alpha_equal,
+        )
+
+        guest = (Instruction.from_text("and i32_reg1, i32_reg2, #0xff"),)
+        a = Rule(
+            rule_id=1,
+            candidate_id="a",
+            guest=guest,
+            host=(Instruction.from_text("movzx i32_reg1, lo8(i32_reg2)"),),
+        )
+        b = Rule(
+            rule_id=2,
+            candidate_id="b",
+            guest=(Instruction.from_text("and i32_reg9, i32_reg10, #0xff"),),
+            host=(Instruction.from_text("movzx i32_reg9, lo8(i32_reg10)"),),
+        )
+
+        assert rule_alpha_equal(a, b)
