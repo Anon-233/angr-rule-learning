@@ -459,7 +459,9 @@ def _walk_rule(rule: Rule, visitor):
 IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 
 
-def parse_placeholder(placeholder: str) -> RegOp | TmpOp | RegViewOp | BitSliceOp | ExtOp:
+def parse_placeholder(
+    placeholder: str,
+) -> RegOp | TmpOp | RegViewOp | BitSliceOp | ExtOp:
     """Parse a placeholder string into its AST operand type.
 
     Supports ``i32_reg1``, ``ptr64_reg1``, ``sp64``, ``fp64`` → RegOp,

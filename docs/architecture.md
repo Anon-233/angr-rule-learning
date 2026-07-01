@@ -328,7 +328,8 @@ Detailed verifier behavior and support boundaries are documented in
 
 The canonical rule model lives in `rules/ast.py`.  Every generated rule is
 a dataclass tree of `Rule`, `Instruction`, and typed `Operand` nodes (RegOp,
-ImmOp, TmpOp, LabelOp, LitOp, RegTextOp, RegViewOp).  The AST supports:
+ImmOp, TmpOp, LabelOp, LitOp, RegTextOp, RegViewOp, BitSliceOp, ExtOp).
+The AST supports:
 
 - **Structured comparison**: relationship-preserving alpha-equivalence
   (`build_rule_fingerprint` / `rule_alpha_equal`) that recognizes two rules
@@ -464,8 +465,9 @@ The AST represents this with ``RegViewOp`` — a use‑site width view:
   bits are unspecified (fresh).*
 * ``reg32(i64_reg1)`` means: *low 32 bits bind to ``i64_reg1``.*
 
-``reg64(i32_regN)`` is **not** zero‑extension.  ``zext64``, ``sext64``,
-and ``lo32`` are reserved for future use.
+``reg64(i32_regN)`` is **not** zero‑extension.  Explicit low-bit and
+extension semantics are represented with separate AST nodes such as
+``lo8(i32_reg1)``, ``zext64(i32_reg1)``, and ``sext64(i32_reg1)``.
 
 The view is resolved at rule‑generalization time by
 ``rules/register_views.py``, which detects when a physical register in the
@@ -488,6 +490,37 @@ explicitly modelling the partial‑equality contract.
 register to an ``i32`` placeholder would lose the information that only
 the low 32 bits are constrained.  The ``reg64(i32_regN)`` notation makes
 this explicit: a rule consumer knows that the upper 32 bits are free.
+
+### Host Semantic Partial-Register Operands
+
+The Host side may use semantic partial-register operands when the verified
+machine snippet used an ISA sub-register but the rule must describe the
+semantic value rather than the physical register name.  The first supported
+forms are x86-64 low-bit operations:
+
+* Host partial reads, e.g. ``movzx eax, dil`` becomes
+  ``movzx i32_reg1, lo8(i32_reg2)``.
+* Host partial writes, e.g. ``xor eax, eax; sete al`` becomes
+  ``xor i32_reg1, i32_reg1; sete lo8(i32_reg1)``.
+
+Partial writes are emitted only when the Host fragment already contains a
+reaching full-width or zero-extending definition for the same output family.
+This prevents rules such as a lone ``sete al`` from claiming to define the
+entire ``i32_regN`` output while leaving the upper bits unconstrained.
+
+The generalizer implements this in ``rules.partial_registers`` after normal
+placeholder mapping and before use-site register view resolution.  It relies
+on ``arch.registers.register_write_effect()`` for side-neutral ISA facts:
+x86-64 ``al`` is a partial 8-bit write, x86-64 ``eax`` is a zero-extending
+32-bit write to the ``rax`` family, and AArch64 ``w0`` is a zero-extending
+32-bit write to the ``x0`` family.
+
+One AArch64 disassembly quirk is handled in the rule role-splitting layer:
+aliases such as ``cmp``, ``cmn``, and ``tst`` are treated as read-only
+operand instructions even if the disassembler reports their underlying
+``subs``/``adds``/``ands`` destination alias as a write.  This keeps
+``cmp w0, w1; cset w0, eq`` from confusing the input ``w0`` with the output
+``w0`` during rule text generation.
 
 ### Pointer Register Placeholders
 

@@ -239,6 +239,36 @@ It is not a general-register placeholder and is not alpha-renumbered.
 This form lets Host-side code generation read a source-ISA fixed-role value
 without pretending it is an arbitrary `i32_regN`.
 
+### Semantic Bit Views — `lo{bits}(...)`, `zext{bits}(...)`, `sext{bits}(...)`
+
+Host rules may contain semantic bit views over rule placeholders:
+
+```
+Guest: and i32_reg1, i32_reg2, #imm1
+Host:  movzx i32_reg1, lo8(i32_reg2)
+```
+
+`lo8(i32_reg2)` means "the low 8 bits of the semantic value represented by
+`i32_reg2`."  It is different from `lo8(guest.rcx)`: the former slices a
+rule placeholder, while the latter references a physical Guest fixed-role
+register family.
+
+The Rule AST also supports explicit extension operands:
+
+| Form | Meaning |
+|------|---------|
+| `loN(value)` | Low `N` bits of `value` |
+| `zextN(value)` | Zero-extend `value` to `N` bits |
+| `sextN(value)` | Sign-extend `value` to `N` bits |
+
+The current generalizer emits `loN(...)` for Host-side partial-register
+reads and safe Host-side partial writes.  A partial write is considered safe
+only when the Host snippet already contains a reaching full-width or
+zero-extending definition for the same output family.  For example,
+`xor eax, eax; sete al` may be emitted as `xor i32_reg1, i32_reg1;
+sete lo8(i32_reg1)`.  A lone `sete al` is rejected because the rule would
+not define the upper output bits.
+
 ## Semantic Contract
 
 A rule describes an equivalence: if the guest and host share the same
@@ -269,6 +299,7 @@ expressed with the available placeholder vocabulary:
 | `unpaired_host_immediate` | A host-side immediate placeholder has no guest-side counterpart and cannot be derived through any approved template.  This applies to all rule types, not just frame-relative memory rules. |
 | `unbound_host_register` | A Host general-register placeholder has no Guest-side occurrence, so rule application could not bind its value. |
 | `unmapped_register_surface` | The instruction text contains a register that was not classified (should only occur when no `tmp` heuristic applies). |
+| `unsafe_partial_register_write` | A Host partial-register write lacks a reaching full-width or zero-extending definition for the output family. |
 | `duplicate_rule` | The generated rule text is identical to a previously emitted rule. |
 | `mismatched_branch_targets` | Guest and host branch targets use different label sets. |
 

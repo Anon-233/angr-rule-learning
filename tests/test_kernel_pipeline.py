@@ -30,6 +30,17 @@ def test_kernel_pipeline_emits_verified_rules(tmp_path) -> None:
         record.kernel_id == "kernel_add_i32" and record.status == "rule_emitted"
         for record in result.records
     )
+    record_status = {record.kernel_id: record.status for record in result.records}
+    partial_register_kernel_ids = {
+        "kernel_and_const_i32",
+        "kernel_and_const_i64",
+        "kernel_icmp_eq_i32",
+        "kernel_icmp_slt_i32",
+    }
+    assert {
+        kernel_id: record_status.get(kernel_id)
+        for kernel_id in partial_register_kernel_ids
+    } == {kernel_id: "rule_emitted" for kernel_id in partial_register_kernel_ids}
     assert result.diagnostics["kernels_total"] >= 1
     assert result.diagnostics["verified_pass"] >= 1
 
@@ -66,6 +77,14 @@ def test_kernel_pipeline_emits_verified_rules(tmp_path) -> None:
             assert "reg64(" not in stripped, (
                 f"non-lea instruction must not have reg64: {stripped!r}"
             )
+
+    # ── Host semantic partial-register regression assertions ──────────
+    assert "movzx i32_reg1, lo8(i32_reg2)" in rules_text
+    assert "movzx i64_reg1, lo16(i64_reg2)" in rules_text
+    assert "sete lo8(i32_reg1)" in rules_text
+    assert "setl lo8(i32_reg1)" in rules_text
+    assert "sete al" not in rules_text
+    assert "setl al" not in rules_text
 
 
 def test_kernel_diagnostics_group_records_by_suite() -> None:
