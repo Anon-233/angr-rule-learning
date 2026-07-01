@@ -912,6 +912,123 @@ def test_host_movzx_source_uses_low_bit_slice() -> None:
     assert rule.host_lines == ("movzx i32_reg1, lo8(i32_reg2)",)
 
 
+def test_host_setcc_destination_uses_low_bit_slice_after_full_def() -> None:
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "cmp",
+                "w0, w1",
+                read_registers=("w0", "w1"),
+            ),
+            _inst(
+                "aarch64",
+                0x1004,
+                "cset",
+                "w0, eq",
+                write_registers=("w0",),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "xor",
+                "eax, eax",
+                write_registers=("eax", "rflags"),
+                read_registers=("eax",),
+            ),
+            _inst(
+                "x86-64",
+                0x2002,
+                "cmp",
+                "edi, esi",
+                read_registers=("edi", "esi"),
+                write_registers=("rflags",),
+            ),
+            _inst(
+                "x86-64",
+                0x2004,
+                "sete",
+                "al",
+                write_registers=("al",),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="setcc-write-view",
+        guest=CodeFragment("aarch64", 0x1000, "0000000000000000", 2),
+        host=CodeFragment("x86-64", 0x2000, "000000", 3),
+        input_registers=(("w0", "edi"), ("w1", "esi")),
+        output_registers=(("w0", "eax"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+
+    assert rule is not None
+    assert rule.host_lines == (
+        "xor i32_reg1, i32_reg1",
+        "cmp i32_reg3, i32_reg2",
+        "sete lo8(i32_reg1)",
+    )
+
+
+def test_host_setcc_partial_output_without_full_def_is_rejected() -> None:
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "cmp",
+                "w0, w1",
+                read_registers=("w0", "w1"),
+            ),
+            _inst(
+                "aarch64",
+                0x1004,
+                "cset",
+                "w0, eq",
+                write_registers=("w0",),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2002,
+                "cmp",
+                "edi, esi",
+                read_registers=("edi", "esi"),
+                write_registers=("rflags",),
+            ),
+            _inst(
+                "x86-64",
+                0x2004,
+                "sete",
+                "al",
+                write_registers=("al",),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="unsafe-setcc-write-view",
+        guest=CodeFragment("aarch64", 0x1000, "0000000000000000", 2),
+        host=CodeFragment("x86-64", 0x2000, "0000", 2),
+        input_registers=(("w0", "edi"), ("w1", "esi")),
+        output_registers=(("w0", "eax"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(diagnostics).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+
+    assert rule is None
+    assert diagnostics.skip_reasons.get("unsafe_partial_register_write", 0) == 1
+
+
 def test_dead_write_produces_meta_ops() -> None:
     inst = Instruction("mov", (RegOp("i32", 32, 1), RegOp("i32", 32, 2)))
     inst_with_save = Instruction(

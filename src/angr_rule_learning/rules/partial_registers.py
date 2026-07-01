@@ -8,6 +8,7 @@ from angr_rule_learning.arch.registers import (
     normalize_register_name,
     register_bit_range,
     register_family,
+    register_write_effect,
 )
 from angr_rule_learning.arch.registry import canonical_arch_name
 from angr_rule_learning.extraction.models import ExtractedInstruction
@@ -21,12 +22,19 @@ class PartialRegisterReplacement:
     reason: str
 
 
+class PartialRegisterRewriteError(ValueError):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
 def resolve_partial_register_views(
     arch: str,
     instruction: ExtractedInstruction,
     mapping: dict[str, str],
     *,
     side: str,
+    prior_instructions: tuple[ExtractedInstruction, ...] = (),
 ) -> list[PartialRegisterReplacement]:
     """Return Host-only low-slice replacements for partial register operands."""
     if side != "host":
@@ -37,25 +45,49 @@ def resolve_partial_register_views(
         return []
 
     mnemonic = instruction.mnemonic.strip().lower()
-    if mnemonic != "movzx":
-        return []
-
     known = known_register_tokens(canonical)
     replacements: list[PartialRegisterReplacement] = []
-    for register in instruction.read_registers:
-        reg_n = normalize_register_name(register)
-        if reg_n not in known:
-            continue
-        replacement = _low_slice_replacement(canonical, reg_n, mapping)
-        if replacement is None:
-            continue
-        replacements.append(
-            PartialRegisterReplacement(
-                physical_register=reg_n,
-                replacement_text=replacement,
-                reason="movzx_low_slice_source",
+
+    if mnemonic == "movzx":
+        for register in instruction.read_registers:
+            reg_n = normalize_register_name(register)
+            if reg_n not in known:
+                continue
+            replacement = _low_slice_replacement(canonical, reg_n, mapping)
+            if replacement is None:
+                continue
+            replacements.append(
+                PartialRegisterReplacement(
+                    physical_register=reg_n,
+                    replacement_text=replacement,
+                    reason="movzx_low_slice_source",
+                )
             )
-        )
+
+    if mnemonic.startswith("set"):
+        for register in instruction.write_registers:
+            reg_n = normalize_register_name(register)
+            if reg_n not in known:
+                continue
+            replacement = _low_slice_replacement(canonical, reg_n, mapping)
+            if replacement is None:
+                continue
+            family = register_family(canonical, reg_n)
+            placeholder = _placeholder_for_family(canonical, family, mapping)
+            if placeholder is None:
+                continue
+            if not _has_prior_full_definition(
+                canonical, family, placeholder, prior_instructions, mapping
+            ):
+                raise PartialRegisterRewriteError("unsafe_partial_register_write")
+            replacements.append(
+                PartialRegisterReplacement(
+                    physical_register=reg_n,
+                    replacement_text=replacement,
+                    reason="setcc_low_slice_destination",
+                )
+            )
+
     return replacements
 
 
@@ -80,3 +112,35 @@ def _low_slice_replacement(
             continue
         return f"lo{reg_bits}({placeholder})"
     return None
+
+
+def _placeholder_for_family(
+    arch: str,
+    family: str,
+    mapping: dict[str, str],
+) -> str | None:
+    for mapped_reg, placeholder in sorted(mapping.items()):
+        if register_family(arch, mapped_reg) == family:
+            return placeholder
+    return None
+
+
+def _has_prior_full_definition(
+    arch: str,
+    family: str,
+    placeholder: str,
+    prior_instructions: tuple[ExtractedInstruction, ...],
+    mapping: dict[str, str],
+) -> bool:
+    for instruction in reversed(prior_instructions):
+        for written in instruction.write_registers:
+            written_n = normalize_register_name(written)
+            effect = register_write_effect(arch, written_n)
+            if effect is None or effect.family != family:
+                continue
+            if effect.kind not in {"full", "zero_extend"}:
+                continue
+            written_placeholder = _placeholder_for_family(arch, effect.family, mapping)
+            if written_placeholder == placeholder:
+                return True
+    return False

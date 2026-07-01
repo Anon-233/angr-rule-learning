@@ -23,7 +23,10 @@ from angr_rule_learning.rules.derivation import (
     DerivationContext,
     derive_host_expressions,
 )
-from angr_rule_learning.rules.partial_registers import resolve_partial_register_views
+from angr_rule_learning.rules.partial_registers import (
+    PartialRegisterRewriteError,
+    resolve_partial_register_views,
+)
 from angr_rule_learning.rules.register_views import resolve_register_views
 from angr_rule_learning.rules.registers import (
     RegisterClass,
@@ -1544,7 +1547,7 @@ def _generalize_instructions_with_roles(
 
     result: list[AstInstruction] = []
 
-    for inst, ext in zip(insts, extracted, strict=True):
+    for inst_idx, (inst, ext) in enumerate(zip(insts, extracted, strict=True)):
         # Work on a text copy so we can detect whether an operand became
         # a pure placeholder after all replacements are applied.
         inst_text = inst.to_text()
@@ -1613,7 +1616,16 @@ def _generalize_instructions_with_roles(
             )
 
         # Step 3: Apply Host partial-register semantic replacements.
-        partial_views = resolve_partial_register_views(arch, ext, mapping, side=side)
+        try:
+            partial_views = resolve_partial_register_views(
+                arch,
+                ext,
+                mapping,
+                side=side,
+                prior_instructions=extracted[:inst_idx],
+            )
+        except PartialRegisterRewriteError as exc:
+            raise _RuleSkip(exc.reason) from exc
         for rv in sorted(
             partial_views, key=lambda r: len(r.physical_register), reverse=True
         ):
@@ -1777,10 +1789,13 @@ def _identify_internal_temps(
             host_inputs,
         ),
     ):
+        output_families = {family_for_register(arch, reg) for reg in outputs}
         for inst in window_insts:
             for reg in inst.write_registers:
                 reg_n = normalize_register_name(reg)
                 if reg_n in outputs or reg_n in inputs:
+                    continue
+                if family_for_register(arch, reg_n) in output_families:
                     continue
                 if is_allowed_literal_register(arch, reg_n):
                     continue
