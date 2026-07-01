@@ -912,6 +912,46 @@ def test_host_movzx_source_uses_low_bit_slice() -> None:
     assert rule.host_lines == ("movzx i32_reg1, lo8(i32_reg2)",)
 
 
+def test_host_movzx_zero_extending_write_can_define_i64_output() -> None:
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "and",
+                "x0, x0, #0xffff",
+                write_registers=("x0",),
+                read_registers=("x0",),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "movzx",
+                "eax, di",
+                write_registers=("eax",),
+                read_registers=("di",),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="movzx-i64-read-view",
+        guest=CodeFragment("aarch64", 0x1000, "00000000", 1),
+        host=CodeFragment("x86-64", 0x2000, "0000", 1),
+        input_registers=(("x0", "rdi"),),
+        output_registers=(("x0", "rax"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+
+    assert rule is not None
+    assert rule.guest_lines == ("and i64_reg1, i64_reg2, #imm1",)
+    assert rule.host_lines == ("movzx i64_reg1, lo16(i64_reg2)",)
+
+
 def test_host_setcc_destination_uses_low_bit_slice_after_full_def() -> None:
     pair = _window_pair(
         (

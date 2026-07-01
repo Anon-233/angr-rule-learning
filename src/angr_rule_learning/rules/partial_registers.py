@@ -48,6 +48,23 @@ def resolve_partial_register_views(
     known = known_register_tokens(canonical)
     replacements: list[PartialRegisterReplacement] = []
 
+    for register in instruction.write_registers:
+        reg_n = normalize_register_name(register)
+        if reg_n not in known:
+            continue
+        replacement = _zero_extending_write_replacement(
+            canonical, instruction, reg_n, mapping
+        )
+        if replacement is None:
+            continue
+        replacements.append(
+            PartialRegisterReplacement(
+                physical_register=reg_n,
+                replacement_text=replacement,
+                reason="zero_extending_output_write",
+            )
+        )
+
     if mnemonic == "movzx":
         for register in instruction.read_registers:
             reg_n = normalize_register_name(register)
@@ -112,6 +129,30 @@ def _low_slice_replacement(
             continue
         return f"lo{reg_bits}({placeholder})"
     return None
+
+
+def _zero_extending_write_replacement(
+    arch: str,
+    instruction: ExtractedInstruction,
+    register: str,
+    mapping: dict[str, str],
+) -> str | None:
+    if register in mapping:
+        return None
+    mnemonic = instruction.mnemonic.strip().lower()
+    if mnemonic not in {"movzx", "xor"}:
+        return None
+    if mnemonic == "xor" and not _is_same_register_binary(instruction.op_str, register):
+        return None
+    effect = register_write_effect(arch, register)
+    if effect is None or effect.kind != "zero_extend":
+        return None
+    return _placeholder_for_family(arch, effect.family, mapping)
+
+
+def _is_same_register_binary(op_str: str, register: str) -> bool:
+    parts = [normalize_register_name(part) for part in op_str.split(",")]
+    return len(parts) == 2 and parts[0] == register and parts[1] == register
 
 
 def _placeholder_for_family(
