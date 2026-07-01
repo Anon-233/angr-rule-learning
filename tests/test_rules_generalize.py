@@ -960,7 +960,8 @@ def test_host_setcc_destination_uses_low_bit_slice_after_full_def() -> None:
                 0x1000,
                 "cmp",
                 "w0, w1",
-                read_registers=("w0", "w1"),
+                read_registers=("w1",),
+                write_registers=("nzcv", "w0"),
             ),
             _inst(
                 "aarch64",
@@ -1024,7 +1025,8 @@ def test_host_setcc_partial_output_without_full_def_is_rejected() -> None:
                 0x1000,
                 "cmp",
                 "w0, w1",
-                read_registers=("w0", "w1"),
+                read_registers=("w1",),
+                write_registers=("nzcv", "w0"),
             ),
             _inst(
                 "aarch64",

@@ -934,6 +934,7 @@ _AARCH64_BRANCH_MNEMONICS = frozenset(
     {"b", "bl", "blr", "cbz", "cbnz", "tbz", "tbnz", "ret"}
 )
 _X86_64_BRANCH_MNEMONICS = frozenset({"jmp", "call", "ret"})
+_AARCH64_READ_ONLY_ALIAS_MNEMONICS = frozenset({"cmp", "cmn", "tst"})
 
 
 def normalize_arch_name(arch: str) -> str:
@@ -953,6 +954,14 @@ def _is_branch_instruction(inst: Instruction, arch: str) -> bool:
             return True
         return mnemonic.startswith("j") and mnemonic != "jmp"
     return False
+
+
+def _is_read_only_alias_instruction(arch: str, mnemonic: str) -> bool:
+    arch_n = normalize_arch_name(arch)
+    return (
+        arch_n == "aarch64"
+        and mnemonic.strip().lower() in _AARCH64_READ_ONLY_ALIAS_MNEMONICS
+    )
 
 
 def _find_hex_operand(inst: Instruction, arch: str) -> tuple[int, str] | None:
@@ -1563,6 +1572,9 @@ def _generalize_instructions_with_roles(
             out_ph, in_ph = side_splits[register]
             is_written = bool(ext.write_registers and register in ext.write_registers)
             is_read = bool(ext.read_registers and register in ext.read_registers)
+            if _is_read_only_alias_instruction(arch, ext.mnemonic):
+                is_written = False
+                is_read = True
 
             if is_written and is_read:
                 occurrence = [0]
