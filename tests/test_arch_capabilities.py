@@ -2,12 +2,14 @@ import pytest
 
 from angr_rule_learning.arch.registry import canonical_arch_name, clang_target
 from angr_rule_learning.arch.registers import (
+    RegisterWriteEffect,
     fixed_role_preserve_register,
     is_compatible_frame_base_pair,
     is_fixed_role_register,
     is_stack_pointer,
     register_bit_range,
     register_family,
+    register_write_effect,
 )
 
 
@@ -60,3 +62,21 @@ def test_frame_base_compatibility_requires_equal_address_widths() -> None:
 
 def test_missing_address_base_is_not_a_stack_pointer() -> None:
     assert not is_stack_pointer("x86-64", None)
+
+
+def test_register_write_effect_describes_partial_and_zero_extending_writes() -> None:
+    assert register_write_effect("x86-64", "al") == RegisterWriteEffect(
+        "partial", 8, "rax"
+    )
+    assert register_write_effect("x86-64", "eax") == RegisterWriteEffect(
+        "zero_extend", 32, "rax"
+    )
+    assert register_write_effect("x86-64", "rax") == RegisterWriteEffect(
+        "full", 64, "rax"
+    )
+    assert register_write_effect("aarch64", "w0") == RegisterWriteEffect(
+        "zero_extend", 32, "x0"
+    )
+    assert register_write_effect("aarch64", "x0") == RegisterWriteEffect(
+        "full", 64, "x0"
+    )

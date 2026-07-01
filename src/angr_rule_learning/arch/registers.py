@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from typing import Literal
 
 from angr_rule_learning.arch.registry import canonical_arch_name
 
@@ -84,6 +86,13 @@ _FIXED_ROLE_FAMILIES = {
 _ZERO_REGISTERS = {
     "aarch64": frozenset({"xzr", "wzr"}),
 }
+
+
+@dataclass(frozen=True)
+class RegisterWriteEffect:
+    kind: Literal["partial", "zero_extend", "full"]
+    written_bits: int
+    family: str
 
 
 def normalize_register_name(register: str) -> str:
@@ -179,6 +188,30 @@ def register_bit_range(arch: str, register: str) -> tuple[int, int] | None:
             None: (0, 63),
         }[suffix]
     return None
+
+
+def register_write_effect(arch: str, register: str) -> RegisterWriteEffect | None:
+    canonical = canonical_arch_name(arch)
+    reg = normalize_register_name(register)
+    reg_range = register_bit_range(canonical, reg)
+    if reg_range is None:
+        return None
+
+    family = register_family(canonical, reg)
+    family_range = register_bit_range(canonical, family)
+    if family_range is None:
+        return None
+
+    written_bits = reg_range[1] - reg_range[0] + 1
+    family_bits = family_range[1] - family_range[0] + 1
+    if reg_range == family_range:
+        return RegisterWriteEffect("full", written_bits, family)
+
+    if canonical == "x86-64" and reg_range == (0, 31) and family_bits == 64:
+        return RegisterWriteEffect("zero_extend", written_bits, family)
+    if canonical == "aarch64" and reg_range == (0, 31) and family_bits == 64:
+        return RegisterWriteEffect("zero_extend", written_bits, family)
+    return RegisterWriteEffect("partial", written_bits, family)
 
 
 def stack_pointer_width(arch: str, register: str | None) -> int | None:
