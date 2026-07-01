@@ -872,6 +872,46 @@ def test_generalize_ast_ignores_role_split_for_other_side() -> None:
     assert result[0].operands == (RegOp("i32", 32, 1), RegOp("i32", 32, 2))
 
 
+def test_host_movzx_source_uses_low_bit_slice() -> None:
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "and",
+                "w0, w0, #0xff",
+                write_registers=("w0",),
+                read_registers=("w0",),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "movzx",
+                "eax, dil",
+                write_registers=("eax",),
+                read_registers=("dil",),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="movzx-read-view",
+        guest=CodeFragment("aarch64", 0x1000, "00000000", 1),
+        host=CodeFragment("x86-64", 0x2000, "0000", 1),
+        input_registers=(("w0", "edi"),),
+        output_registers=(("w0", "eax"),),
+    )
+
+    rule = RuleGeneralizer(RuleDiagnostics()).generate(
+        1, pair, candidate, _passing_report(candidate.candidate_id)
+    )
+
+    assert rule is not None
+    assert rule.guest_lines == ("and i32_reg1, i32_reg2, #imm1",)
+    assert rule.host_lines == ("movzx i32_reg1, lo8(i32_reg2)",)
+
+
 def test_dead_write_produces_meta_ops() -> None:
     inst = Instruction("mov", (RegOp("i32", 32, 1), RegOp("i32", 32, 2)))
     inst_with_save = Instruction(

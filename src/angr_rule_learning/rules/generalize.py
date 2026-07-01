@@ -23,6 +23,7 @@ from angr_rule_learning.rules.derivation import (
     DerivationContext,
     derive_host_expressions,
 )
+from angr_rule_learning.rules.partial_registers import resolve_partial_register_views
 from angr_rule_learning.rules.register_views import resolve_register_views
 from angr_rule_learning.rules.registers import (
     RegisterClass,
@@ -1611,7 +1612,19 @@ def _generalize_instructions_with_roles(
                 flags=re.IGNORECASE,
             )
 
-        # Step 3: Apply register-view replacements.
+        # Step 3: Apply Host partial-register semantic replacements.
+        partial_views = resolve_partial_register_views(arch, ext, mapping, side=side)
+        for rv in sorted(
+            partial_views, key=lambda r: len(r.physical_register), reverse=True
+        ):
+            rewritten = re.sub(
+                rf"(?<![A-Za-z0-9_]){re.escape(rv.physical_register)}(?![A-Za-z0-9_])",
+                rv.replacement_text,
+                rewritten,
+                flags=re.IGNORECASE,
+            )
+
+        # Step 4: Apply register-view replacements.
         # This replaces physical registers that are same-family wider
         # variants of mapped registers with reg64(i32_regN) text.
         views = resolve_register_views(arch, ext, mapping)
@@ -1647,7 +1660,7 @@ def _generalize_instructions_with_roles(
             )
         )
 
-    # Step 4: Validate.
+    # Step 5: Validate.
     _validate_no_remaining_registers(
         tuple(result), arch, allowed_literals=allowed_literals
     )
