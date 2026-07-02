@@ -79,7 +79,9 @@ def test_kernel_pipeline_emits_verified_rules(tmp_path) -> None:
             )
 
     # ── Host semantic partial-register regression assertions ──────────
+    assert "and i32_reg1, i32_reg2, #0xff" in rules_text
     assert "movzx i32_reg1, lo8(i32_reg2)" in rules_text
+    assert "and i64_reg1, i64_reg2, #0xffff" in rules_text
     assert "movzx i64_reg1, lo16(i64_reg2)" in rules_text
     assert "sete lo8(i32_reg1)" in rules_text
     assert "setl lo8(i32_reg1)" in rules_text

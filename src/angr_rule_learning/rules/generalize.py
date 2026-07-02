@@ -332,6 +332,8 @@ class RuleGeneralizer:
             )
             if not _host_immediates_are_derivable(guest_insts, host_insts, candidate):
                 raise _RuleSkip("unpaired_host_immediate")
+            if not _host_partial_register_immediates_are_safe(guest_insts, host_insts):
+                raise _RuleSkip("unpaired_guest_immediate")
             _verify_host_registers_bound(guest_insts, host_insts)
         except _RuleSkip as exc:
             self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
@@ -1151,11 +1153,31 @@ def _replace_immediates_ast(
     except KeyError as exc:
         raise _RuleSkip("unsupported_rule_shape") from exc
 
+    # ---- Phase 1: Collection ----
+    def _collect_side(
+        insts: tuple[Instruction, ...],
+        pattern: re.Pattern[str],
+        arch: str,
+    ) -> list[str]:
+        values: list[str] = []
+        for inst in insts:
+            line = inst.to_text()
+            for match in pattern.finditer(line):
+                canonical = _imm_canonical(match, arch)
+                if canonical in _RESERVED_LITERALS:
+                    continue
+                values.append(canonical)
+        return values
+
+    guest_values = _collect_side(guest_insts, guest_pattern, guest_arch)
+    host_values = _collect_side(host_insts, host_pattern, host_arch)
+    if not guest_values or not host_values:
+        return guest_insts, host_insts
+
     canonical_to_id: dict[str, int] = {}
     value_by_id: dict[str, int] = {}
     next_id = 1
 
-    # ---- Phase 1: Collection ----
     for inst in guest_insts:
         line = inst.to_text()
         for m in guest_pattern.finditer(line):
@@ -1319,6 +1341,30 @@ def _host_immediates_are_derivable(
     guest_imms = collect_instruction_imm_ids(guest_insts)
     host_imms = collect_instruction_imm_ids(host_insts)
     return host_imms <= guest_imms
+
+
+def _host_partial_register_immediates_are_safe(
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
+) -> bool:
+    """Reject parameterized masks hidden by Host partial-register operations.
+
+    ``movzx loN(...)`` has a fixed semantic mask determined by ``N``.  It is
+    only sound to pair it with a Guest immediate when that immediate remains
+    represented in the Host rule text through an explicit operand or derived
+    expression.  Until immediate constraints can express ``immN == 0xff`` or
+    similar predicates, skip these rules conservatively.
+    """
+    guest_imms = collect_instruction_imm_ids(guest_insts)
+    host_imms = collect_instruction_imm_ids(host_insts)
+    if guest_imms <= host_imms:
+        return True
+    for inst in host_insts:
+        if inst.mnemonic.lower() != "movzx":
+            continue
+        if any(op.to_text().startswith("lo") for op in inst.operands):
+            return False
+    return True
 
 
 def consolidate_rules(

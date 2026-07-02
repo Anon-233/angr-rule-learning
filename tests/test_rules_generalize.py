@@ -60,6 +60,18 @@ def test_reverse_immediate_syntax_follows_each_architecture() -> None:
     assert host[0].to_text() == "add w0, w0, #imm1"
 
 
+def test_single_sided_immediate_stays_literal() -> None:
+    guest, host = _replace_immediates_ast(
+        (Instruction("and", (LitOp("w0"), LitOp("w0"), LitOp("#0xff"))),),
+        "aarch64",
+        (Instruction("movzx", (LitOp("eax"), LitOp("dil"))),),
+        "x86-64",
+    )
+
+    assert guest[0].to_text() == "and w0, w0, #0xff"
+    assert host[0].to_text() == "movzx eax, dil"
+
+
 def test_writer_coverage_uses_explicit_architecture() -> None:
     assert _writer_covers_consumer("x86-64", "ecx", "cl")
     assert not _writer_covers_consumer("x86-64", "ch", "cl")
@@ -872,7 +884,7 @@ def test_generalize_ast_ignores_role_split_for_other_side() -> None:
     assert result[0].operands == (RegOp("i32", 32, 1), RegOp("i32", 32, 2))
 
 
-def test_host_movzx_source_uses_low_bit_slice() -> None:
+def test_host_movzx_source_uses_literal_guest_mask() -> None:
     pair = _window_pair(
         (
             _inst(
@@ -908,11 +920,11 @@ def test_host_movzx_source_uses_low_bit_slice() -> None:
     )
 
     assert rule is not None
-    assert rule.guest_lines == ("and i32_reg1, i32_reg2, #imm1",)
+    assert rule.guest_lines == ("and i32_reg1, i32_reg2, #0xff",)
     assert rule.host_lines == ("movzx i32_reg1, lo8(i32_reg2)",)
 
 
-def test_host_movzx_zero_extending_write_can_define_i64_output() -> None:
+def test_host_movzx_i64_source_uses_literal_guest_mask() -> None:
     pair = _window_pair(
         (
             _inst(
@@ -948,7 +960,7 @@ def test_host_movzx_zero_extending_write_can_define_i64_output() -> None:
     )
 
     assert rule is not None
-    assert rule.guest_lines == ("and i64_reg1, i64_reg2, #imm1",)
+    assert rule.guest_lines == ("and i64_reg1, i64_reg2, #0xffff",)
     assert rule.host_lines == ("movzx i64_reg1, lo16(i64_reg2)",)
 
 
