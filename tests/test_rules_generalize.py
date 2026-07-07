@@ -15,6 +15,7 @@ from angr_rule_learning.rules.ast import (
     RegOp,
     RegTextOp,
 )
+from angr_rule_learning.param_verify import ParameterizedVerifyReport
 from angr_rule_learning.rules.generalize import (
     _annotate_dead_writes,
     _build_placeholder_map,
@@ -28,6 +29,7 @@ from angr_rule_learning.rules.generalize import (
     _generalize_instructions_with_roles,
     _instructions_to_ast,
     _replace_immediates_ast,
+    _replace_immediates_with_metadata,
     _validate_no_remaining_registers,
     consolidate_rules,
 )
@@ -70,6 +72,89 @@ def test_single_sided_immediate_stays_literal() -> None:
 
     assert guest[0].to_text() == "and w0, w0, #0xff"
     assert host[0].to_text() == "movzx eax, dil"
+
+
+def test_generalizer_skips_parameterized_verifier_failures() -> None:
+    class RejectingParameterizedVerifier:
+        def verify(self, request):
+            return ParameterizedVerifyReport(
+                status="fail",
+                reason="parameterized_register_mismatch",
+                counterexample={"imm1": 0},
+            )
+
+    pair = _window_pair(
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "mov",
+                "w0, w1",
+                write_registers=("w0",),
+                read_registers=("w1",),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "mov",
+                "eax, edi",
+                write_registers=("eax",),
+                read_registers=("edi",),
+            ),
+        ),
+    )
+    candidate = VerificationCandidate(
+        candidate_id="param-fail",
+        guest=CodeFragment("aarch64", 0x1000, "01020304", 1),
+        host=CodeFragment("x86-64", 0x2000, "010203", 1),
+        input_registers=(("w1", "edi"),),
+        output_registers=(("w0", "eax"),),
+    )
+    diagnostics = RuleDiagnostics()
+
+    rule = RuleGeneralizer(
+        diagnostics,
+        parameterized_verifier=RejectingParameterizedVerifier(),
+    ).generate(1, pair, candidate, _passing_report("param-fail"))
+
+    assert rule is None
+    assert diagnostics.skip_reasons["parameterized_rule_mismatch"] == 1
+
+
+def test_immediate_replacement_records_shared_metadata() -> None:
+    result = _replace_immediates_with_metadata(
+        (Instruction("add", (LitOp("eax"), LitOp("7"))),),
+        "x86-64",
+        (Instruction("add", (LitOp("w0"), LitOp("w0"), LitOp("#7"))),),
+        "aarch64",
+    )
+
+    assert result.guest[0].to_text() == "add eax, imm1"
+    assert result.host[0].to_text() == "add w0, w0, #imm1"
+    assert result.metadata.value_by_id == {"1": 7}
+    assert tuple(
+        (occ.side, occ.instruction_index, occ.operand_index, occ.value, occ.text)
+        for occ in result.metadata.occurrences_by_id["1"]
+    ) == (
+        ("guest", 0, 1, 7, "7"),
+        ("host", 0, 2, 7, "#7"),
+    )
+
+
+def test_immediate_replacement_records_no_metadata_for_single_sided_literal() -> None:
+    result = _replace_immediates_with_metadata(
+        (Instruction("and", (LitOp("w0"), LitOp("w0"), LitOp("#0xff"))),),
+        "aarch64",
+        (Instruction("movzx", (LitOp("eax"), LitOp("dil"))),),
+        "x86-64",
+    )
+
+    assert result.guest[0].to_text() == "and w0, w0, #0xff"
+    assert result.host[0].to_text() == "movzx eax, dil"
+    assert result.metadata.value_by_id == {}
+    assert result.metadata.occurrences_by_id == {}
 
 
 def test_writer_coverage_uses_explicit_architecture() -> None:

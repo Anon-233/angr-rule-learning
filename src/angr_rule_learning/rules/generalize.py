@@ -112,6 +112,30 @@ class RuleSkipDetail:
         }
 
 
+@dataclass(frozen=True)
+class ImmediateOccurrence:
+    side: str
+    instruction_index: int
+    operand_index: int
+    value: int
+    text: str
+
+
+@dataclass(frozen=True)
+class ImmediateMetadata:
+    value_by_id: dict[str, int] = field(default_factory=dict)
+    occurrences_by_id: dict[str, tuple[ImmediateOccurrence, ...]] = field(
+        default_factory=dict
+    )
+
+
+@dataclass(frozen=True)
+class ImmediateReplacementResult:
+    guest: tuple[Instruction, ...]
+    host: tuple[Instruction, ...]
+    metadata: ImmediateMetadata
+
+
 @dataclass
 class RuleDiagnostics:
     collect_details: bool = False
@@ -206,9 +230,21 @@ def _build_skip_detail(
 
 
 class RuleGeneralizer:
-    def __init__(self, diagnostics: RuleDiagnostics | None = None) -> None:
+    def __init__(
+        self,
+        diagnostics: RuleDiagnostics | None = None,
+        *,
+        parameterized_verifier: object | None = None,
+    ) -> None:
         self.diagnostics = diagnostics or RuleDiagnostics()
         self._emitted_fingerprints: list[tuple[object, ...]] = []
+        if parameterized_verifier is None:
+            from angr_rule_learning.param_verify.checker import (
+                ParameterizedRuleVerifier,
+            )
+
+            parameterized_verifier = ParameterizedRuleVerifier()
+        self._parameterized_verifier = parameterized_verifier
 
     def _record_skip(
         self,
@@ -335,6 +371,13 @@ class RuleGeneralizer:
             if not _host_partial_register_immediates_are_safe(guest_insts, host_insts):
                 raise _RuleSkip("unpaired_guest_immediate")
             _verify_host_registers_bound(guest_insts, host_insts)
+            _check_parameterized_rule(
+                self._parameterized_verifier,
+                rule_id,
+                candidate.candidate_id,
+                guest_insts,
+                host_insts,
+            )
         except _RuleSkip as exc:
             self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
             return None
@@ -569,6 +612,30 @@ def _apply_guest_fixed_role_view_mappings(
                 continue
             if guest_range[0] <= 0 and guest_range[1] >= bits - 1:
                 mapping[host_reg_n] = view_text
+
+
+def _check_parameterized_rule(
+    parameterized_verifier: object,
+    rule_id: int,
+    candidate_id: str,
+    guest_insts: tuple[Instruction, ...],
+    host_insts: tuple[Instruction, ...],
+) -> None:
+    from angr_rule_learning.param_verify.model import ParameterizedVerifyRequest
+    from angr_rule_learning.rules.ast import Rule as AstRule
+
+    report = parameterized_verifier.verify(
+        ParameterizedVerifyRequest(
+            AstRule(
+                rule_id=rule_id,
+                candidate_id=candidate_id,
+                guest=guest_insts,
+                host=host_insts,
+            )
+        )
+    )
+    if report.status == "fail":
+        raise _RuleSkip("parameterized_rule_mismatch")
 
 
 def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
@@ -1131,13 +1198,27 @@ def _replace_immediates_ast(
     host_insts: tuple[Instruction, ...],
     host_arch: str,
 ) -> tuple[tuple[Instruction, ...], tuple[Instruction, ...]]:
+    result = _replace_immediates_with_metadata(
+        guest_insts, guest_arch, host_insts, host_arch
+    )
+    return result.guest, result.host
+
+
+def _replace_immediates_with_metadata(
+    guest_insts: tuple[Instruction, ...],
+    guest_arch: str,
+    host_insts: tuple[Instruction, ...],
+    host_arch: str,
+) -> ImmediateReplacementResult:
     """Replace immediate values in AST instructions with ImmOp placeholders.
 
     Collection: scans instruction text for immediate values using the
     existing regex patterns and assigns IDs.
 
     Replacement: substitutes each matched immediate text in the instruction
-    text with ``immN`` placeholders, then re-parses to AST.
+    text with ``immN`` placeholders, then re-parses to AST. The returned
+    metadata records the concrete immediate occurrences that were actually
+    parameterized.
     """
     from angr_rule_learning.rules.ast import Instruction as AstInstruction
 
@@ -1154,7 +1235,7 @@ def _replace_immediates_ast(
         raise _RuleSkip("unsupported_rule_shape") from exc
 
     # ---- Phase 1: Collection ----
-    def _collect_side(
+    def _collect_side_values(
         insts: tuple[Instruction, ...],
         pattern: re.Pattern[str],
         arch: str,
@@ -1169,36 +1250,52 @@ def _replace_immediates_ast(
                 values.append(canonical)
         return values
 
-    guest_values = _collect_side(guest_insts, guest_pattern, guest_arch)
-    host_values = _collect_side(host_insts, host_pattern, host_arch)
+    guest_values = _collect_side_values(guest_insts, guest_pattern, guest_arch)
+    host_values = _collect_side_values(host_insts, host_pattern, host_arch)
     if not guest_values or not host_values:
-        return guest_insts, host_insts
+        return ImmediateReplacementResult(
+            guest=guest_insts,
+            host=host_insts,
+            metadata=ImmediateMetadata(),
+        )
 
     canonical_to_id: dict[str, int] = {}
     value_by_id: dict[str, int] = {}
+    occurrences_by_id: dict[str, list[ImmediateOccurrence]] = {}
     next_id = 1
 
-    for inst in guest_insts:
-        line = inst.to_text()
-        for m in guest_pattern.finditer(line):
-            c = _imm_canonical(m, guest_arch)
-            if c in _RESERVED_LITERALS:
-                continue
-            if c not in canonical_to_id:
-                canonical_to_id[c] = next_id
-                next_id += 1
-            value_by_id[str(canonical_to_id[c])] = int(c)
+    def _record_side(
+        side: str,
+        insts: tuple[Instruction, ...],
+        pattern: re.Pattern[str],
+        arch: str,
+    ) -> None:
+        nonlocal next_id
+        for inst_index, inst in enumerate(insts):
+            for operand_index, operand in enumerate(inst.operands):
+                text = operand.to_text()
+                for match in pattern.finditer(text):
+                    canonical = _imm_canonical(match, arch)
+                    if canonical in _RESERVED_LITERALS:
+                        continue
+                    if canonical not in canonical_to_id:
+                        canonical_to_id[canonical] = next_id
+                        next_id += 1
+                    imm_id = str(canonical_to_id[canonical])
+                    value = int(canonical)
+                    value_by_id[imm_id] = value
+                    occurrences_by_id.setdefault(imm_id, []).append(
+                        ImmediateOccurrence(
+                            side=side,
+                            instruction_index=inst_index,
+                            operand_index=operand_index,
+                            value=value,
+                            text=match.group(0),
+                        )
+                    )
 
-    for inst in host_insts:
-        line = inst.to_text()
-        for m in host_pattern.finditer(line):
-            c = _imm_canonical(m, host_arch)
-            if c in _RESERVED_LITERALS:
-                continue
-            if c not in canonical_to_id:
-                canonical_to_id[c] = next_id
-                next_id += 1
-            value_by_id[str(canonical_to_id[c])] = int(c)
+    _record_side("guest", guest_insts, guest_pattern, guest_arch)
+    _record_side("host", host_insts, host_pattern, host_arch)
 
     # ---- Phase 2: Replacement ----
     def _make_replacer(arch: str, prefix: str):
@@ -1291,7 +1388,17 @@ def _replace_immediates_ast(
     )
     host_result = derive_host_expressions(ctx)
 
-    return guest_result, host_result
+    return ImmediateReplacementResult(
+        guest=guest_result,
+        host=host_result,
+        metadata=ImmediateMetadata(
+            value_by_id=value_by_id,
+            occurrences_by_id={
+                imm_id: tuple(occurrences)
+                for imm_id, occurrences in occurrences_by_id.items()
+            },
+        ),
+    )
 
 
 def _imm_canonical(match: re.Match[str], arch: str) -> str:
