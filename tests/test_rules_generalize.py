@@ -859,8 +859,10 @@ def test_instructions_to_ast_produces_correct_operands() -> None:
     assert len(parsed.operands) == 2
     assert isinstance(parsed.operands[0], LitOp)
     assert parsed.operands[0].value == "w0"
-    assert isinstance(parsed.operands[1], LitOp)
-    assert parsed.operands[1].value == "[x1]"
+    from angr_rule_learning.rules.ast import MemoryOperand
+
+    assert isinstance(parsed.operands[1], MemoryOperand)
+    assert parsed.operands[1].to_text() == "[x1]"
 
 
 def test_validate_remaining_registers_raises() -> None:

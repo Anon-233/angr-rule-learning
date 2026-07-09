@@ -20,6 +20,13 @@ side.
 Lines consist of the original assembly mnemonic in the target ISA's native
 syntax, with concrete operands replaced by typed placeholders.
 
+The file format is intentionally plain text.  Internally, the learner parses
+these lines into the structured Rule AST (`rules/ast.py`) before performing
+deduplication, immediate derivation, parameterized-rule checks, or
+serialization.  Memory operands are represented as `MemoryOperand(AddressExpr)`
+nodes, and `${...}` immediates are represented as `ImmExpr` nodes, then printed
+back to the text forms shown below.
+
 ## Placeholder Catalogue
 
 ### Register Placeholders — `i{bits}_reg{N}`
@@ -133,6 +140,12 @@ templates (`tbz`/`tbnz` bit-test, `mov`/`movk` constant construction,
 indexed-address scale in both directions).  A host immediate that
 cannot be expressed through these templates causes the rule to be
 skipped with `unpaired_host_immediate`.
+
+Inside the Rule AST, these expressions are not stored as opaque text when they
+match a supported expression form.  For example, `${(1 << imm1)}` is represented
+as a `ShiftLeftExpr(IntExpr(1), ImmRefExpr(1))`, and `${log2(imm1)}` is
+represented as `Log2Expr(ImmRefExpr(1))`.  Unknown expression strings are kept
+as raw expression nodes so the text format can still round-trip.
 
 ### Branch Label Placeholders — `label{N}`
 

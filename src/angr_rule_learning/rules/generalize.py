@@ -650,6 +650,7 @@ def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
         BitSliceOp,
         ExtOp,
         LitOp,
+        MemoryOperand,
         RegOp,
         RegTextOp,
         RegViewOp,
@@ -667,6 +668,17 @@ def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
             _collect(op.base)
         elif isinstance(op, ExtOp):
             _collect(op.value)
+        elif isinstance(op, MemoryOperand):
+            if op.address.base is not None:
+                _collect(op.address.base)
+            if op.address.index is not None:
+                _collect(op.address.index)
+            if op.address.scale is not None:
+                _collect(op.address.scale)
+            if op.address.shift is not None:
+                _collect(op.address.shift)
+            if op.address.displacement is not None:
+                _collect(op.address.displacement)
         elif isinstance(op, (LitOp, RegTextOp)):
             text = op.to_text()
             for token in _TOKEN_RE.findall(text):
@@ -1861,48 +1873,51 @@ def _validate_no_remaining_registers(
     *,
     allowed_literals: frozenset[str] = frozenset(),
 ) -> None:
-    from angr_rule_learning.rules.ast import LitOp, RegTextOp
+    from angr_rule_learning.rules.ast import LitOp, MemoryOperand, RegTextOp
 
     known = known_register_tokens(arch)
+
+    def _validate_text(text: str) -> None:
+        # Tokenize: split into brackets, identifiers, numbers,
+        # hex literals, and operators.
+        tokens = _TOKEN_RE.findall(text)
+        for token in tokens:
+            # Skip brackets and operators.
+            if token in {"[", "]", "+", "-", "*", "/", "#"}:
+                continue
+            token_n = normalize_register_name(token)
+            if token_n in _KEYWORD_TOKENS:
+                continue
+            if _PARAMETERIZED_TOKEN_RE.match(token_n):
+                continue
+            if _VIEW_FUNCTION_TOKENS.match(token_n):
+                continue
+            if is_allowed_literal_register(arch, token_n):
+                continue
+            if _RESERVED_LITERALS and token_n in _RESERVED_LITERALS:
+                continue
+            # Fixed-role host registers (e.g. cl for shift counts)
+            # are emitted as literals and should not trigger
+            # unmapped-register errors.
+            if is_fixed_role_register(arch, token_n):
+                continue
+            # Fixed-role producer targets (e.g. ecx that feeds cl)
+            # are kept as literals to preserve register-family identity.
+            if token_n in allowed_literals:
+                continue
+            # Skip bare numeric tokens (decimal or hex).
+            try:
+                int(token_n, 0)
+                continue
+            except ValueError:
+                pass
+            if token_n in known:
+                raise _RuleSkip("unmapped_register_surface")
+
     for inst in insts:
         for op in inst.operands:
-            if isinstance(op, (LitOp, RegTextOp)):
-                text = op.to_text()
-                # Tokenize: split into brackets, identifiers, numbers,
-                # hex literals, and operators.
-                tokens = _TOKEN_RE.findall(text)
-                for token in tokens:
-                    # Skip brackets and operators.
-                    if token in {"[", "]", "+", "-", "*", "/", "#"}:
-                        continue
-                    token_n = normalize_register_name(token)
-                    if token_n in _KEYWORD_TOKENS:
-                        continue
-                    if _PARAMETERIZED_TOKEN_RE.match(token_n):
-                        continue
-                    if _VIEW_FUNCTION_TOKENS.match(token_n):
-                        continue
-                    if is_allowed_literal_register(arch, token_n):
-                        continue
-                    if _RESERVED_LITERALS and token_n in _RESERVED_LITERALS:
-                        continue
-                    # Fixed-role host registers (e.g. cl for shift counts)
-                    # are emitted as literals and should not trigger
-                    # unmapped-register errors.
-                    if is_fixed_role_register(arch, token_n):
-                        continue
-                    # Fixed-role producer targets (e.g. ecx that feeds cl)
-                    # are kept as literals to preserve register-family identity.
-                    if token_n in allowed_literals:
-                        continue
-                    # Skip bare numeric tokens (decimal or hex).
-                    try:
-                        int(token_n, 0)
-                        continue
-                    except ValueError:
-                        pass
-                    if token_n in known:
-                        raise _RuleSkip("unmapped_register_surface")
+            if isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
+                _validate_text(op.to_text())
 
 
 def _instruction_lines(

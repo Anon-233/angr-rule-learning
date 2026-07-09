@@ -49,6 +49,8 @@ TAG_SAVE = 20
 TAG_RESTORE = 21
 TAG_META_BLOCK = 22
 TAG_POST_META_BLOCK = 23
+TAG_MEMORY = 24
+TAG_ADDRESS = 25
 SYN_HASH = 30
 SYN_NEG = 31
 
@@ -216,6 +218,7 @@ class _FingerprintBuilder:
             GuestRegViewOp,
             LabelOp,
             LitOp,
+            MemoryOperand,
             RegOp,
             RegTextOp,
             RegViewOp,
@@ -238,7 +241,7 @@ class _FingerprintBuilder:
             return (TAG_EXT, op.kind, op.bits) + value_fp
         elif isinstance(op, ImmOp):
             if op.derived is not None:
-                return (TAG_IMM, 0, "derived") + self._canon_text(op.derived)
+                return (TAG_IMM, 0, "derived") + self._canon_text(op.derived.to_text())
             cid = self._cid_imm(op.id)
             parts: list[object] = [TAG_IMM, cid]
             if op.aarch64_hash:
@@ -259,8 +262,29 @@ class _FingerprintBuilder:
             return tuple(parts)
         elif isinstance(op, RegTextOp):
             return (TAG_REGTEXT,) + self._canon_text(op.text)
+        elif isinstance(op, MemoryOperand):
+            return (
+                TAG_MEMORY,
+                op.syntax,
+                op.value_bits,
+                op.size_keyword,
+            ) + self._fingerprint_address(op.address)
         else:
             raise TypeError(f"unknown operand type: {type(op)!r}")
+
+    def _fingerprint_address(self, address) -> tuple[object, ...]:
+        parts: list[object] = [TAG_ADDRESS]
+        if address.base is not None:
+            parts.append(("base", self._fingerprint_op(address.base)))
+        if address.index is not None:
+            parts.append(("index", self._fingerprint_op(address.index)))
+        if address.scale is not None:
+            parts.append(("scale", self._fingerprint_op(address.scale)))
+        if address.shift is not None:
+            parts.append(("shift", self._fingerprint_op(address.shift)))
+        if address.displacement is not None:
+            parts.append(("disp", self._fingerprint_op(address.displacement)))
+        return tuple(parts)
 
     def _fingerprint_meta(self, m: MetaOp) -> tuple[object, ...]:
         kind_tag = TAG_SAVE if m.kind == "save" else TAG_RESTORE

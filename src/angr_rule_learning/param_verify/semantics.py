@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-import re
 from dataclasses import dataclass, field
 
 import claripy
@@ -9,12 +7,16 @@ from angr_rule_learning.rules.ast import (
     BitSliceOp,
     ExtOp,
     ImmOp,
+    IntExpr,
     Instruction,
     LitOp,
+    Log2Expr,
+    MemoryOperand,
     Operand,
     RegOp,
     RegTextOp,
     TmpOp,
+    ShiftLeftExpr,
 )
 from angr_rule_learning.smt.solver import fit_width
 
@@ -251,26 +253,45 @@ def _eval_operand(
 def _eval_immediate(op: ImmOp, ctx: EvalContext, bits: int) -> claripy.ast.BV:
     if op.derived is None:
         return ctx.immediate(op.id, bits)
-    text = op.derived.strip()
-    match = re.fullmatch(r"\$\{\(1\s*<<\s*imm(\d+)\)\}", text)
-    if match:
-        imm_id = int(match.group(1))
+    return _eval_imm_expr(op.derived, ctx, bits)
+
+
+def _eval_imm_expr(expr, ctx: EvalContext, bits: int) -> claripy.ast.BV:
+    from angr_rule_learning.rules.ast import ImmRefExpr
+
+    if isinstance(expr, ImmRefExpr):
+        return ctx.immediate(expr.id, bits)
+    if isinstance(expr, IntExpr):
+        return claripy.BVV(expr.value % (1 << bits), bits)
+    if isinstance(expr, ShiftLeftExpr):
+        if not isinstance(expr.left, IntExpr) or expr.left.value != 1:
+            raise UnsupportedRuleSemantics(
+                f"unsupported_derived_immediate:${{{expr.to_text()}}}"
+            )
+        if not isinstance(expr.right, ImmRefExpr):
+            raise UnsupportedRuleSemantics(
+                f"unsupported_derived_immediate:${{{expr.to_text()}}}"
+            )
         return _domain_expression(
             ctx,
-            imm_id,
+            expr.right.id,
             bits,
             lambda value: 1 << value,
         )
-    match = re.fullmatch(r"\$\{log2\(imm(\d+)\)\}", text)
-    if match:
-        imm_id = int(match.group(1))
+    if isinstance(expr, Log2Expr):
+        if not isinstance(expr.value, ImmRefExpr):
+            raise UnsupportedRuleSemantics(
+                f"unsupported_derived_immediate:${{{expr.to_text()}}}"
+            )
         return _domain_expression(
             ctx,
-            imm_id,
+            expr.value.id,
             bits,
             lambda value: value.bit_length() - 1 if value > 0 else 0,
         )
-    raise UnsupportedRuleSemantics(f"unsupported_derived_immediate:{text}")
+    raise UnsupportedRuleSemantics(
+        f"unsupported_derived_immediate:${{{expr.to_text()}}}"
+    )
 
 
 def _domain_expression(
@@ -297,6 +318,10 @@ def _eval_address_operand(
     bits: int,
 ) -> claripy.ast.BV:
     text = op.to_text().strip()
+    if isinstance(op, MemoryOperand):
+        if op.syntax != "x86":
+            raise UnsupportedRuleSemantics(f"unsupported_address:{text}")
+        text = op.address.to_x86_text()
     if not (text.startswith("[") and text.endswith("]")):
         raise UnsupportedRuleSemantics(f"unsupported_address:{text}")
     inner = text[1:-1].replace("-", "+ -")

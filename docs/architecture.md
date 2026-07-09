@@ -327,8 +327,22 @@ Detailed verifier behavior and support boundaries are documented in
 ## Rule AST
 
 The canonical rule model lives in `rules/ast.py`.  Every generated rule is
-a dataclass tree of `Rule`, `Instruction`, and typed `Operand` nodes (RegOp,
-ImmOp, TmpOp, LabelOp, LitOp, RegTextOp, RegViewOp, BitSliceOp, ExtOp).
+a dataclass tree of `Rule`, `Instruction`, and typed `Operand` nodes.  Text
+rules remain the storage/interchange format, but rule generation, immediate
+derivation, alpha-equivalence, and the parameterized-rule verifier operate on
+this AST before serializing with `Rule.to_text()`.
+
+The AST currently includes:
+
+- scalar placeholders: `RegOp`, `TmpOp`, `ImmOp`, `LabelOp`;
+- literal fallbacks: `LitOp`, `RegTextOp`;
+- register/bit-vector views: `RegViewOp`, `GuestRegViewOp`, `BitSliceOp`,
+  `ExtOp`;
+- memory operands: `MemoryOperand(AddressExpr)` for supported x86-style and
+  AArch64-style rule operands;
+- derived immediate expressions: `ImmExpr` nodes such as `ShiftLeftExpr` and
+  `Log2Expr`, serialized back to `${...}` text.
+
 The AST supports:
 
 - **Structured comparison**: relationship-preserving alpha-equivalence
@@ -340,6 +354,9 @@ The AST supports:
   that preserve alias relationships across both sides.
 - **Substitution**: `substitute_imm` replaces an immediate placeholder with a
   literal value for consolidation (subsumed-rule detection).
+- **Structured memory traversal**: placeholders and immediates nested inside
+  memory operands are visible to fingerprinting, derivation, validation, and
+  verifier frontends without reparsing entire instruction lines.
 - **Pre/post metadata ordering**: `Instruction.meta` holds pre-instruction
   annotations (e.g. `save`), `Instruction.post_meta` holds post-instruction
   annotations (e.g. `restore`).  This preserves the correct execution order:

@@ -22,6 +22,7 @@ from angr_rule_learning.rules.ast import (
     ImmOp,
     Instruction,
     LitOp,
+    MemoryOperand,
     RegTextOp,
     collect_instruction_imm_ids,
 )
@@ -91,7 +92,7 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                         aarch64_hash=op.aarch64_hash,
                         neg=op.neg,
                     )
-            elif isinstance(op, (LitOp, RegTextOp)):
+            elif isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
                 text = op.to_text()
                 # Collect all matches first, then process in reverse so
                 # span positions remain valid after each replacement.
@@ -109,8 +110,10 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                     text = text[:start] + repl + text[end:]
                 if isinstance(op, LitOp):
                     op = LitOp(value=text)
-                else:
+                elif isinstance(op, RegTextOp):
                     op = RegTextOp(text=text)
+                else:
+                    op = Instruction._parse_operand(text)
             new_operands.append(op)
         result.append(
             Instruction(
@@ -289,7 +292,7 @@ def _derive_index_scale(
     # Find guest lsl #immN operands.
     for inst in ctx.guest_insts:
         for op in inst.operands:
-            if isinstance(op, (LitOp, RegTextOp)):
+            if isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
                 text = op.to_text()
                 for m in IMM_PLACEHOLDER_RE.finditer(text):
                     candidate_id = m.group(1)
@@ -333,7 +336,7 @@ def _derive_reverse_index_scale(
     # Find guest ``*immN`` scale factors where (1 << target_value) == scale.
     for inst in ctx.guest_insts:
         for op in inst.operands:
-            if isinstance(op, (LitOp, RegTextOp)):
+            if isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
                 text = op.to_text()
                 for m in IMM_PLACEHOLDER_RE.finditer(text):
                     candidate_id = m.group(1)
