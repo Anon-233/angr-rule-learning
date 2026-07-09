@@ -81,6 +81,33 @@ def test_shared_add_immediate_rule_passes() -> None:
     assert report.status == "pass"
 
 
+def test_shared_immediate_add_sub_rule_fails() -> None:
+    rule = _rule(
+        guest=(
+            Instruction(
+                "add",
+                (RegOp("i32", 32, 1), RegOp("i32", 32, 2), ImmOp(1, aarch64_hash=True)),
+            ),
+        ),
+        host=(
+            Instruction(
+                "mov",
+                (RegOp("i32", 32, 1), RegOp("i32", 32, 2)),
+            ),
+            Instruction(
+                "sub",
+                (RegOp("i32", 32, 1), ImmOp(1)),
+            ),
+        ),
+    )
+
+    report = ParameterizedRuleVerifier().verify(ParameterizedVerifyRequest(rule))
+
+    assert report.status == "fail"
+    assert report.reason == "parameterized_register_mismatch"
+    assert "imm1" in report.counterexample
+
+
 def test_derived_shift_scale_rule_passes() -> None:
     rule = _rule(
         guest=(
