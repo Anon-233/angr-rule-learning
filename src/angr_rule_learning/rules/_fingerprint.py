@@ -241,7 +241,16 @@ class _FingerprintBuilder:
             return (TAG_EXT, op.kind, op.bits) + value_fp
         elif isinstance(op, ImmOp):
             if op.derived is not None:
-                return (TAG_IMM, 0, "derived") + self._canon_text(op.derived.to_text())
+                parts: list[object] = [
+                    TAG_IMM,
+                    "derived",
+                    self._fingerprint_imm_expr(op.derived),
+                ]
+                if op.aarch64_hash:
+                    parts.append(SYN_HASH)
+                if op.neg:
+                    parts.append(SYN_NEG)
+                return tuple(parts)
             cid = self._cid_imm(op.id)
             parts: list[object] = [TAG_IMM, cid]
             if op.aarch64_hash:
@@ -271,6 +280,41 @@ class _FingerprintBuilder:
             ) + self._fingerprint_address(op.address)
         else:
             raise TypeError(f"unknown operand type: {type(op)!r}")
+
+    def _fingerprint_imm_expr(self, expr) -> tuple[object, ...]:
+        from angr_rule_learning.rules.ast import (
+            BitOrExpr,
+            ImmRefExpr,
+            IntExpr,
+            Log2Expr,
+            NegExpr,
+            RawImmExpr,
+            ShiftLeftExpr,
+        )
+
+        if isinstance(expr, ImmRefExpr):
+            return ("imm-ref", self._cid_imm(expr.id))
+        if isinstance(expr, IntExpr):
+            return ("int", expr.value)
+        if isinstance(expr, NegExpr):
+            return ("neg", self._fingerprint_imm_expr(expr.value))
+        if isinstance(expr, BitOrExpr):
+            return (
+                "or",
+                self._fingerprint_imm_expr(expr.left),
+                self._fingerprint_imm_expr(expr.right),
+            )
+        if isinstance(expr, ShiftLeftExpr):
+            return (
+                "shl",
+                self._fingerprint_imm_expr(expr.left),
+                self._fingerprint_imm_expr(expr.right),
+            )
+        if isinstance(expr, Log2Expr):
+            return ("log2", self._fingerprint_imm_expr(expr.value))
+        if isinstance(expr, RawImmExpr):
+            return ("raw",) + self._canon_text(expr.text)
+        raise TypeError(f"unknown immediate expression type: {type(expr)!r}")
 
     def _fingerprint_address(self, address) -> tuple[object, ...]:
         parts: list[object] = [TAG_ADDRESS]

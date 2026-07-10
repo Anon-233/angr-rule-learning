@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 import claripy
 
 from angr_rule_learning.rules.ast import (
+    BitOrExpr,
     BitSliceOp,
     ExtOp,
     ImmOp,
@@ -12,8 +13,10 @@ from angr_rule_learning.rules.ast import (
     LitOp,
     Log2Expr,
     MemoryOperand,
+    NegExpr,
     Operand,
     RegOp,
+    RegViewOp,
     RegTextOp,
     TmpOp,
     ShiftLeftExpr,
@@ -62,12 +65,16 @@ class EvaluatedSide:
 def evaluate_instructions(
     instructions: tuple[Instruction, ...],
     ctx: EvalContext,
+    *,
+    namespace: str = "side",
 ) -> EvaluatedSide:
     registers: dict[str, claripy.ast.BV] = {}
     assigned: set[str] = set()
     prestate_reads: set[str] = set()
     for inst in instructions:
-        _evaluate_instruction(inst, ctx, registers, assigned, prestate_reads)
+        _evaluate_instruction(
+            inst, ctx, registers, assigned, prestate_reads, namespace=namespace
+        )
     return EvaluatedSide(
         registers=registers,
         assigned=frozenset(assigned),
@@ -81,6 +88,8 @@ def _evaluate_instruction(
     registers: dict[str, claripy.ast.BV],
     assigned: set[str],
     prestate_reads: set[str],
+    *,
+    namespace: str,
 ) -> None:
     if inst.meta or inst.post_meta:
         raise UnsupportedRuleSemantics("meta_operations_unsupported")
@@ -89,7 +98,13 @@ def _evaluate_instruction(
     if mnemonic == "mov":
         _assign(
             operands[0],
-            _eval_operand(operands[1], ctx, registers, prestate_reads=prestate_reads),
+            _eval_operand(
+                operands[1],
+                ctx,
+                registers,
+                prestate_reads=prestate_reads,
+                namespace=namespace,
+            ),
             registers,
             assigned,
         )
@@ -97,7 +112,11 @@ def _evaluate_instruction(
     if mnemonic == "movzx":
         dst_bits = _operand_bits(operands[0])
         value = _eval_operand(
-            operands[1], ctx, registers, prestate_reads=prestate_reads
+            operands[1],
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
         )
         _assign(operands[0], fit_width(value, dst_bits), registers, assigned)
         return
@@ -105,18 +124,30 @@ def _evaluate_instruction(
         dst = operands[0]
         dst_bits = _operand_bits(dst)
         value = _eval_address_operand(
-            operands[1], ctx, registers, prestate_reads, dst_bits
+            operands[1], ctx, registers, prestate_reads, dst_bits, namespace=namespace
         )
         _assign(dst, fit_width(value, dst_bits), registers, assigned)
         return
     if mnemonic in {"add", "sub", "and", "orr", "or", "eor", "xor", "mul", "imul"}:
         _eval_binary_instruction(
-            mnemonic, operands, ctx, registers, assigned, prestate_reads
+            mnemonic,
+            operands,
+            ctx,
+            registers,
+            assigned,
+            prestate_reads,
+            namespace=namespace,
         )
         return
     if mnemonic in {"lsl", "lsr", "asr", "shl", "shr", "sar"}:
         _eval_shift_instruction(
-            mnemonic, operands, ctx, registers, assigned, prestate_reads
+            mnemonic,
+            operands,
+            ctx,
+            registers,
+            assigned,
+            prestate_reads,
+            namespace=namespace,
         )
         return
     raise UnsupportedRuleSemantics(f"unsupported_instruction:{mnemonic}")
@@ -129,19 +160,47 @@ def _eval_binary_instruction(
     registers: dict[str, claripy.ast.BV],
     assigned: set[str],
     prestate_reads: set[str],
+    *,
+    namespace: str,
 ) -> None:
     if len(operands) == 2:
         dst, rhs_op = operands
-        lhs = _eval_operand(dst, ctx, registers, prestate_reads=prestate_reads)
+        lhs = _eval_operand(
+            dst,
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
+        )
         rhs = fit_width(
-            _eval_operand(rhs_op, ctx, registers, lhs.size(), prestate_reads),
+            _eval_operand(
+                rhs_op,
+                ctx,
+                registers,
+                lhs.size(),
+                prestate_reads,
+                namespace=namespace,
+            ),
             lhs.size(),
         )
     elif len(operands) == 3:
         dst, lhs_op, rhs_op = operands
-        lhs = _eval_operand(lhs_op, ctx, registers, prestate_reads=prestate_reads)
+        lhs = _eval_operand(
+            lhs_op,
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
+        )
         rhs = fit_width(
-            _eval_operand(rhs_op, ctx, registers, lhs.size(), prestate_reads),
+            _eval_operand(
+                rhs_op,
+                ctx,
+                registers,
+                lhs.size(),
+                prestate_reads,
+                namespace=namespace,
+            ),
             lhs.size(),
         )
     else:
@@ -172,17 +231,38 @@ def _eval_shift_instruction(
     registers: dict[str, claripy.ast.BV],
     assigned: set[str],
     prestate_reads: set[str],
+    *,
+    namespace: str,
 ) -> None:
     if len(operands) == 2:
         dst, amount_op = operands
-        value = _eval_operand(dst, ctx, registers, prestate_reads=prestate_reads)
+        value = _eval_operand(
+            dst,
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
+        )
     elif len(operands) == 3:
         dst, value_op, amount_op = operands
-        value = _eval_operand(value_op, ctx, registers, prestate_reads=prestate_reads)
+        value = _eval_operand(
+            value_op,
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
+        )
     else:
         raise UnsupportedRuleSemantics("unsupported_shift_shape")
     amount = fit_width(
-        _eval_operand(amount_op, ctx, registers, value.size(), prestate_reads),
+        _eval_operand(
+            amount_op,
+            ctx,
+            registers,
+            value.size(),
+            prestate_reads,
+            namespace=namespace,
+        ),
         value.size(),
     )
     if mnemonic in {"lsl", "shl"}:
@@ -216,6 +296,8 @@ def _eval_operand(
     registers: dict[str, claripy.ast.BV],
     desired_bits: int | None = None,
     prestate_reads: set[str] | None = None,
+    *,
+    namespace: str,
 ) -> claripy.ast.BV:
     op = _parse_lit_view(op)
     if isinstance(op, (RegOp, TmpOp)):
@@ -224,6 +306,21 @@ def _eval_operand(
         if key not in registers and prestate_reads is not None:
             prestate_reads.add(key)
         return fit_width(registers.get(key, ctx.placeholder(key, op.bits)), bits)
+    if isinstance(op, RegViewOp):
+        base = _eval_operand(
+            op.base,
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
+        )
+        if op.view_bits <= base.size():
+            value = base[op.view_bits - 1 : 0]
+        else:
+            high_bits = op.view_bits - base.size()
+            high_name = f"{namespace}_{op.base.to_text()}_reg{op.view_bits}_high"
+            value = claripy.Concat(ctx.placeholder(high_name, high_bits), base)
+        return fit_width(value, desired_bits or op.view_bits)
     if isinstance(op, ImmOp):
         bits = desired_bits or 64
         value = _eval_immediate(op, ctx, bits)
@@ -237,10 +334,22 @@ def _eval_operand(
         bits = desired_bits or _literal_bits(value)
         return claripy.BVV(value % (1 << bits), bits)
     if isinstance(op, BitSliceOp):
-        base = _eval_operand(op.base, ctx, registers, prestate_reads=prestate_reads)
+        base = _eval_operand(
+            op.base,
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
+        )
         return base[op.bits - 1 : 0]
     if isinstance(op, ExtOp):
-        value = _eval_operand(op.value, ctx, registers, prestate_reads=prestate_reads)
+        value = _eval_operand(
+            op.value,
+            ctx,
+            registers,
+            prestate_reads=prestate_reads,
+            namespace=namespace,
+        )
         if op.bits < value.size():
             return value[op.bits - 1 : 0]
         if op.kind == "zext":
@@ -263,20 +372,15 @@ def _eval_imm_expr(expr, ctx: EvalContext, bits: int) -> claripy.ast.BV:
         return ctx.immediate(expr.id, bits)
     if isinstance(expr, IntExpr):
         return claripy.BVV(expr.value % (1 << bits), bits)
+    if isinstance(expr, NegExpr):
+        return -_eval_imm_expr(expr.value, ctx, bits)
+    if isinstance(expr, BitOrExpr):
+        return _eval_imm_expr(expr.left, ctx, bits) | _eval_imm_expr(
+            expr.right, ctx, bits
+        )
     if isinstance(expr, ShiftLeftExpr):
-        if not isinstance(expr.left, IntExpr) or expr.left.value != 1:
-            raise UnsupportedRuleSemantics(
-                f"unsupported_derived_immediate:${{{expr.to_text()}}}"
-            )
-        if not isinstance(expr.right, ImmRefExpr):
-            raise UnsupportedRuleSemantics(
-                f"unsupported_derived_immediate:${{{expr.to_text()}}}"
-            )
-        return _domain_expression(
-            ctx,
-            expr.right.id,
-            bits,
-            lambda value: 1 << value,
+        return _eval_imm_expr(expr.left, ctx, bits) << _eval_imm_expr(
+            expr.right, ctx, bits
         )
     if isinstance(expr, Log2Expr):
         if not isinstance(expr.value, ImmRefExpr):
@@ -316,12 +420,62 @@ def _eval_address_operand(
     registers: dict[str, claripy.ast.BV],
     prestate_reads: set[str],
     bits: int,
+    *,
+    namespace: str,
 ) -> claripy.ast.BV:
     text = op.to_text().strip()
     if isinstance(op, MemoryOperand):
-        if op.syntax != "x86":
-            raise UnsupportedRuleSemantics(f"unsupported_address:{text}")
-        text = op.address.to_x86_text()
+        address = op.address
+        total = claripy.BVV(0, bits)
+        if address.base is not None:
+            total += _eval_operand(
+                address.base,
+                ctx,
+                registers,
+                bits,
+                prestate_reads,
+                namespace=namespace,
+            )
+        if address.index is not None:
+            index = _eval_operand(
+                address.index,
+                ctx,
+                registers,
+                bits,
+                prestate_reads,
+                namespace=namespace,
+            )
+            if address.scale is not None:
+                scale = _eval_operand(
+                    address.scale,
+                    ctx,
+                    registers,
+                    bits,
+                    prestate_reads,
+                    namespace=namespace,
+                )
+                index *= scale
+            elif address.shift is not None:
+                shift = _eval_operand(
+                    address.shift,
+                    ctx,
+                    registers,
+                    bits,
+                    prestate_reads,
+                    namespace=namespace,
+                )
+                index <<= shift
+            total += index
+        if address.displacement is not None:
+            total += _eval_operand(
+                address.displacement,
+                ctx,
+                registers,
+                bits,
+                prestate_reads,
+                namespace=namespace,
+            )
+        return fit_width(total, bits)
     if not (text.startswith("[") and text.endswith("]")):
         raise UnsupportedRuleSemantics(f"unsupported_address:{text}")
     inner = text[1:-1].replace("-", "+ -")
@@ -333,15 +487,30 @@ def _eval_address_operand(
         if "*" in term:
             left, right = (part.strip() for part in term.split("*", 1))
             lhs = _eval_operand(
-                Instruction._parse_operand(left), ctx, registers, bits, prestate_reads
+                Instruction._parse_operand(left),
+                ctx,
+                registers,
+                bits,
+                prestate_reads,
+                namespace=namespace,
             )
             rhs = _eval_operand(
-                Instruction._parse_operand(right), ctx, registers, bits, prestate_reads
+                Instruction._parse_operand(right),
+                ctx,
+                registers,
+                bits,
+                prestate_reads,
+                namespace=namespace,
             )
             total += lhs * rhs
         else:
             total += _eval_operand(
-                Instruction._parse_operand(term), ctx, registers, bits, prestate_reads
+                Instruction._parse_operand(term),
+                ctx,
+                registers,
+                bits,
+                prestate_reads,
+                namespace=namespace,
             )
     return fit_width(total, bits)
 
@@ -366,6 +535,8 @@ def _operand_bits(op: Operand) -> int:
     op = _parse_lit_view(op)
     if isinstance(op, (RegOp, TmpOp)):
         return op.bits
+    if isinstance(op, RegViewOp):
+        return op.view_bits
     if isinstance(op, BitSliceOp):
         return op.bits
     if isinstance(op, ExtOp):

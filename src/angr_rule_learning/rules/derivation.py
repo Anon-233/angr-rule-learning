@@ -92,7 +92,77 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                         aarch64_hash=op.aarch64_hash,
                         neg=op.neg,
                     )
-            elif isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
+            elif isinstance(op, MemoryOperand):
+                address = op.address
+
+                operand_text = op.to_text()
+
+                def _derive_address_part(part, role: str):
+                    if not isinstance(part, ImmOp) or str(part.id) not in host_only:
+                        return part
+                    spans = [
+                        (match.start(), match.end())
+                        for match in IMM_PLACEHOLDER_RE.finditer(operand_text)
+                        if match.group(1) == str(part.id)
+                    ]
+                    if role == "scale":
+                        span = next(
+                            (
+                                item
+                                for item in spans
+                                if item[0] > 0 and operand_text[item[0] - 1] == "*"
+                            ),
+                            None,
+                        )
+                    elif role == "shift":
+                        span = next(
+                            (
+                                item
+                                for item in spans
+                                if "lsl" in operand_text[max(0, item[0] - 6) : item[0]]
+                            ),
+                            None,
+                        )
+                    else:
+                        span = next(
+                            (
+                                item
+                                for item in spans
+                                if not (
+                                    item[0] > 0 and operand_text[item[0] - 1] == "*"
+                                )
+                                and "lsl"
+                                not in operand_text[max(0, item[0] - 6) : item[0]]
+                            ),
+                            None,
+                        )
+                    derived = _try_strategies(
+                        strategies, ctx, str(part.id), host_idx, op_idx, span
+                    )
+                    if derived is None:
+                        return part
+                    return ImmOp(
+                        id=part.id,
+                        derived=f"${{{derived}}}",
+                        aarch64_hash=part.aarch64_hash,
+                        neg=part.neg,
+                    )
+
+                op = MemoryOperand(
+                    address=type(address)(
+                        base=_derive_address_part(address.base, "base"),
+                        index=_derive_address_part(address.index, "index"),
+                        scale=_derive_address_part(address.scale, "scale"),
+                        shift=_derive_address_part(address.shift, "shift"),
+                        displacement=_derive_address_part(
+                            address.displacement, "displacement"
+                        ),
+                    ),
+                    syntax=op.syntax,
+                    value_bits=op.value_bits,
+                    size_keyword=op.size_keyword,
+                )
+            elif isinstance(op, (LitOp, RegTextOp)):
                 text = op.to_text()
                 # Collect all matches first, then process in reverse so
                 # span positions remain valid after each replacement.
@@ -112,8 +182,6 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                     op = LitOp(value=text)
                 elif isinstance(op, RegTextOp):
                     op = RegTextOp(text=text)
-                else:
-                    op = Instruction._parse_operand(text)
             new_operands.append(op)
         result.append(
             Instruction(
@@ -276,22 +344,31 @@ def _derive_index_scale(
     if target_value is None:
         return None
 
-    # Only apply to embedded immediates inside memory operands.
-    if span is None:
-        return None
     host_inst = ctx.host_insts[host_idx]
     host_op = host_inst.operands[op_idx]
-    operand_text = host_op.to_text()
-
-    # Verify that the character immediately before the match span is "*",
-    # confirming this occurrence is a scale factor, not a displacement.
-    start, _end = span
-    if start == 0 or operand_text[start - 1] != "*":
+    if span is not None:
+        operand_text = host_op.to_text()
+        start, _end = span
+        if start == 0 or operand_text[start - 1] != "*":
+            return None
+    elif isinstance(host_op, MemoryOperand):
+        scale = host_op.address.scale
+        if not isinstance(scale, ImmOp) or str(scale.id) != imm_id:
+            return None
+    else:
         return None
 
     # Find guest lsl #immN operands.
     for inst in ctx.guest_insts:
         for op in inst.operands:
+            if isinstance(op, MemoryOperand):
+                shift = op.address.shift
+                if isinstance(shift, ImmOp) and shift.id != 0:
+                    candidate_id = str(shift.id)
+                    shift_value = ctx.value_by_id.get(candidate_id)
+                    if shift_value is not None and (1 << shift_value) == target_value:
+                        return f"(1 << imm{candidate_id})"
+                continue
             if isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
                 text = op.to_text()
                 for m in IMM_PLACEHOLDER_RE.finditer(text):
@@ -326,16 +403,28 @@ def _derive_reverse_index_scale(
         return None
 
     host_inst = ctx.host_insts[host_idx]
-    operand_text = host_inst.operands[op_idx].to_text()
-
-    # Verify the host operand contains "lsl" adjacent to this immediate.
-    lsl_pattern = re.compile(rf"lsl\s+#imm{re.escape(imm_id)}\b")
-    if not lsl_pattern.search(operand_text):
-        return None
+    host_op = host_inst.operands[op_idx]
+    if isinstance(host_op, MemoryOperand):
+        shift = host_op.address.shift
+        if not isinstance(shift, ImmOp) or str(shift.id) != imm_id:
+            return None
+    else:
+        operand_text = host_op.to_text()
+        lsl_pattern = re.compile(rf"lsl\s+#imm{re.escape(imm_id)}\b")
+        if not lsl_pattern.search(operand_text):
+            return None
 
     # Find guest ``*immN`` scale factors where (1 << target_value) == scale.
     for inst in ctx.guest_insts:
         for op in inst.operands:
+            if isinstance(op, MemoryOperand):
+                scale = op.address.scale
+                if isinstance(scale, ImmOp) and scale.id != 0:
+                    candidate_id = str(scale.id)
+                    scale_value = ctx.value_by_id.get(candidate_id)
+                    if scale_value is not None and (1 << target_value) == scale_value:
+                        return f"log2(imm{candidate_id})"
+                continue
             if isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
                 text = op.to_text()
                 for m in IMM_PLACEHOLDER_RE.finditer(text):

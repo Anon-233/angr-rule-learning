@@ -37,6 +37,29 @@ class IntExpr:
 
 
 @dataclass(frozen=True)
+class NegExpr:
+    value: "ImmExpr"
+
+    def to_text(self) -> str:
+        return f"-{self.value.to_text()}"
+
+    def imm_ids(self) -> set[int]:
+        return self.value.imm_ids()
+
+
+@dataclass(frozen=True)
+class BitOrExpr:
+    left: "ImmExpr"
+    right: "ImmExpr"
+
+    def to_text(self) -> str:
+        return f"{self.left.to_text()} | {self.right.to_text()}"
+
+    def imm_ids(self) -> set[int]:
+        return self.left.imm_ids() | self.right.imm_ids()
+
+
+@dataclass(frozen=True)
 class ShiftLeftExpr:
     left: "ImmExpr"
     right: "ImmExpr"
@@ -70,7 +93,9 @@ class RawImmExpr:
         return {int(m.group(1)) for m in IMM_PLACEHOLDER_RE.finditer(self.text)}
 
 
-ImmExpr = ImmRefExpr | IntExpr | ShiftLeftExpr | Log2Expr | RawImmExpr
+ImmExpr = (
+    ImmRefExpr | IntExpr | NegExpr | BitOrExpr | ShiftLeftExpr | Log2Expr | RawImmExpr
+)
 
 
 def parse_imm_expr(text: str) -> ImmExpr:
@@ -83,6 +108,12 @@ def parse_imm_expr(text: str) -> ImmExpr:
     match = re.fullmatch(r"\d+", inner)
     if match:
         return IntExpr(int(match.group(0)))
+    if inner.startswith("-"):
+        return NegExpr(parse_imm_expr(inner[1:].strip()))
+    split = _split_top_level_expr(inner, "|")
+    if split is not None:
+        left, right = split
+        return BitOrExpr(parse_imm_expr(left), parse_imm_expr(right))
     match = re.fullmatch(r"\((.+)\s*<<\s*(.+)\)", inner)
     if match:
         return ShiftLeftExpr(
@@ -93,6 +124,18 @@ def parse_imm_expr(text: str) -> ImmExpr:
     if match:
         return Log2Expr(parse_imm_expr(match.group(1)))
     return RawImmExpr(inner)
+
+
+def _split_top_level_expr(text: str, operator: str) -> tuple[str, str] | None:
+    depth = 0
+    for index, char in enumerate(text):
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == operator and depth == 0:
+            return text[:index].strip(), text[index + 1 :].strip()
+    return None
 
 
 @dataclass(frozen=True)
@@ -119,12 +162,20 @@ class ImmOp:
     neg: bool = False  # True for negative immediates like #-imm1
 
     def __post_init__(self) -> None:
+        derived = self.derived
         if isinstance(self.derived, str):
-            object.__setattr__(self, "derived", parse_imm_expr(self.derived))
+            derived = parse_imm_expr(self.derived)
+            object.__setattr__(self, "derived", derived)
+        if derived is not None and self.neg:
+            if not isinstance(derived, NegExpr):
+                object.__setattr__(self, "derived", NegExpr(derived))
+            object.__setattr__(self, "neg", False)
 
     def to_text(self) -> str:
         if self.derived is not None:
             prefix = "#" if self.aarch64_hash else ""
+            if isinstance(self.derived, NegExpr):
+                return f"{prefix}-${{{self.derived.value.to_text()}}}"
             return f"{prefix}${{{self.derived.to_text()}}}"
         prefix = "#" if self.aarch64_hash else ""
         sign = "-" if self.neg else ""
@@ -348,7 +399,7 @@ class Instruction:
         return "\n".join(parts)
 
     @classmethod
-    def from_text(cls, line: str) -> "Instruction":
+    def from_text(cls, line: str, *, arch: str | None = None) -> "Instruction":
         """Parse a rule text line into structured form.
 
         This is a best-effort parser for the subset of syntax the
@@ -357,18 +408,18 @@ class Instruction:
         tokens = line.strip().split(maxsplit=1)
         mnemonic = tokens[0]
         ops_text = tokens[1] if len(tokens) > 1 else ""
-        operands = tuple(cls._parse_operands(ops_text))
+        operands = tuple(cls._parse_operands(ops_text, arch=arch))
         return cls(mnemonic=mnemonic, operands=operands, post_meta=())
 
     @classmethod
-    def _parse_operands(cls, text: str) -> list[Operand]:
+    def _parse_operands(cls, text: str, *, arch: str | None = None) -> list[Operand]:
         if not text:
             return []
         # Split on commas that are not inside brackets or ${}.
         parts = cls._split_operands(text)
         result: list[Operand] = []
         for part in parts:
-            result.append(cls._parse_operand(part.strip()))
+            result.append(cls._parse_operand(part.strip(), arch=arch))
         return result
 
     @staticmethod
@@ -391,12 +442,12 @@ class Instruction:
         return parts
 
     @staticmethod
-    def _parse_operand(text: str) -> Operand:
+    def _parse_operand(text: str, *, arch: str | None = None) -> Operand:
         text = text.strip()
         if not text:
             return RegTextOp(text)
 
-        memory = _parse_memory_operand(text)
+        memory = _parse_memory_operand(text, syntax_hint=_memory_syntax_for_arch(arch))
         if memory is not None:
             return memory
 
@@ -413,10 +464,14 @@ class Instruction:
             return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
 
         # Immediate with derivation
-        m = re.fullmatch(r"(#?)\$\{.*\}", text)
+        m = re.fullmatch(r"(#?)(-?)\$\{.*\}", text)
         if m:
+            derived_text = text[len(m.group(1)) + len(m.group(2)) :]
             return ImmOp(
-                id=0, derived=text.removeprefix("#"), aarch64_hash=bool(m.group(1))
+                id=0,
+                derived=derived_text,
+                aarch64_hash=bool(m.group(1)),
+                neg=bool(m.group(2)),
             )
 
         # Immediate: #immN, #-immN, -immN, immN
@@ -477,8 +532,23 @@ _X86_MEMORY_RE = re.compile(
 _SIZE_BITS = {"byte": 8, "word": 16, "dword": 32, "qword": 64}
 
 
-def _parse_memory_operand(text: str) -> MemoryOperand | None:
-    if text.startswith("[") and text.endswith("]") and "," in text:
+def _memory_syntax_for_arch(arch: str | None) -> str | None:
+    if arch is None:
+        return None
+    normalized = arch.strip().lower().replace("_", "-")
+    if normalized in {"aarch64", "arm64"}:
+        return "aarch64"
+    if normalized in {"x86-64", "amd64"}:
+        return "x86"
+    return None
+
+
+def _parse_memory_operand(
+    text: str, *, syntax_hint: str | None = None
+) -> MemoryOperand | None:
+    if (syntax_hint == "aarch64" and text.startswith("[") and text.endswith("]")) or (
+        text.startswith("[") and text.endswith("]") and "," in text
+    ):
         return MemoryOperand(
             address=_parse_aarch64_address(text[1:-1]),
             syntax="aarch64",
@@ -543,7 +613,10 @@ def _parse_aarch64_address(inner: str) -> AddressExpr:
     if len(parts) == 1:
         return AddressExpr(base=base)
     if len(parts) == 2:
-        return AddressExpr(base=base, displacement=Instruction._parse_operand(parts[1]))
+        second = Instruction._parse_operand(parts[1])
+        if _is_address_register_operand(second):
+            return AddressExpr(base=base, index=second)
+        return AddressExpr(base=base, displacement=second)
     if len(parts) == 3:
         shift_text = parts[2]
         if not shift_text.lower().startswith("lsl "):
@@ -598,6 +671,17 @@ def _parse_int_literal_for_address(text: str) -> int | None:
 
 def _negated_operand(op: Operand) -> Operand:
     if isinstance(op, ImmOp):
+        if op.derived is not None:
+            derived = op.derived
+            if isinstance(derived, NegExpr):
+                derived = derived.value
+            else:
+                derived = NegExpr(derived)
+            return ImmOp(
+                id=op.id,
+                derived=derived,
+                aarch64_hash=op.aarch64_hash,
+            )
         return ImmOp(
             id=op.id,
             derived=op.derived,
@@ -683,18 +767,38 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
     nested inside derived ``${...}`` expressions.
     """
 
+    def _literal_expr() -> ImmExpr:
+        try:
+            return IntExpr(int(value, 0))
+        except ValueError:
+            return RawImmExpr(value)
+
+    def _sub_expr(expr: ImmExpr) -> ImmExpr:
+        if isinstance(expr, ImmRefExpr):
+            return _literal_expr() if expr.id == imm_id else expr
+        if isinstance(expr, ShiftLeftExpr):
+            return ShiftLeftExpr(_sub_expr(expr.left), _sub_expr(expr.right))
+        if isinstance(expr, BitOrExpr):
+            return BitOrExpr(_sub_expr(expr.left), _sub_expr(expr.right))
+        if isinstance(expr, NegExpr):
+            return NegExpr(_sub_expr(expr.value))
+        if isinstance(expr, Log2Expr):
+            return Log2Expr(_sub_expr(expr.value))
+        if isinstance(expr, RawImmExpr):
+            text = re.sub(rf"\bimm{imm_id}\b", value, expr.text)
+            return RawImmExpr(text)
+        return expr
+
     def _sub(op: Operand) -> Operand:
         if isinstance(op, ImmOp):
             if op.id == imm_id:
                 prefix = "#" if op.aarch64_hash else ""
-                return LitOp(value=f"{prefix}{value}")
+                sign = "-" if op.neg else ""
+                return LitOp(value=f"{prefix}{sign}{value}")
             if op.derived is not None:
-                new_derived = op.derived.to_text()
-                new_derived = re.sub(rf"#imm{imm_id}\b", f"#{value}", new_derived)
-                new_derived = re.sub(rf"(?<!\$)imm{imm_id}\b", value, new_derived)
                 return ImmOp(
                     id=op.id,
-                    derived=new_derived,
+                    derived=_sub_expr(op.derived),
                     aarch64_hash=op.aarch64_hash,
                     neg=op.neg,
                 )
@@ -705,9 +809,29 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
             text = re.sub(rf"(?<!\$)imm{imm_id}\b", value, text)
             return LitOp(value=text)
         if isinstance(op, MemoryOperand):
-            return Instruction._parse_operand(
-                op.to_text().replace(f"imm{imm_id}", value)
+            address = op.address
+            return MemoryOperand(
+                address=AddressExpr(
+                    base=_sub(address.base) if address.base is not None else None,
+                    index=_sub(address.index) if address.index is not None else None,
+                    scale=_sub(address.scale) if address.scale is not None else None,
+                    shift=_sub(address.shift) if address.shift is not None else None,
+                    displacement=(
+                        _sub(address.displacement)
+                        if address.displacement is not None
+                        else None
+                    ),
+                ),
+                syntax=op.syntax,
+                value_bits=op.value_bits,
+                size_keyword=op.size_keyword,
             )
+        if isinstance(op, RegViewOp):
+            return RegViewOp(base=op.base, view_bits=op.view_bits, mode=op.mode)
+        if isinstance(op, BitSliceOp):
+            return BitSliceOp(base=_sub(op.base), bits=op.bits)
+        if isinstance(op, ExtOp):
+            return ExtOp(kind=op.kind, bits=op.bits, value=_sub(op.value))
         return op
 
     def _sub_inst(inst: Instruction) -> Instruction:

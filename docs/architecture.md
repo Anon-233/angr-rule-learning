@@ -340,8 +340,8 @@ The AST currently includes:
   `ExtOp`;
 - memory operands: `MemoryOperand(AddressExpr)` for supported x86-style and
   AArch64-style rule operands;
-- derived immediate expressions: `ImmExpr` nodes such as `ShiftLeftExpr` and
-  `Log2Expr`, serialized back to `${...}` text.
+- derived immediate expressions: `ImmExpr` nodes such as `ShiftLeftExpr`,
+  `BitOrExpr`, `NegExpr`, and `Log2Expr`, serialized back to `${...}` text.
 
 The AST supports:
 
@@ -493,6 +493,10 @@ has a wider bit range.  On the verifier side,
 ``verification/register_views.py`` widens input‑register initialization
 so that the full family register is set to ``Concat(fresh_hi, semantic)``,
 explicitly modelling the partial‑equality contract.
+The parameterized rule verifier applies the same contract.  It reuses the
+low semantic placeholder and creates side-specific fresh high bits, so a
+32-bit observable result may prove equivalent while an unjustified 64-bit
+result does not.
 
 **Current scope** (first phase):
 

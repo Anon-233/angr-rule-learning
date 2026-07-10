@@ -144,8 +144,11 @@ skipped with `unpaired_host_immediate`.
 Inside the Rule AST, these expressions are not stored as opaque text when they
 match a supported expression form.  For example, `${(1 << imm1)}` is represented
 as a `ShiftLeftExpr(IntExpr(1), ImmRefExpr(1))`, and `${log2(imm1)}` is
-represented as `Log2Expr(ImmRefExpr(1))`.  Unknown expression strings are kept
-as raw expression nodes so the text format can still round-trip.
+represented as `Log2Expr(ImmRefExpr(1))`.  Composed mov/movk constants use a
+`BitOrExpr` containing the shifted and low parts.  Negative derived values use
+`NegExpr`, so their sign remains part of the expression during substitution,
+fingerprinting, and SMT evaluation.  Unknown expression strings are kept as
+raw expression nodes so the text format can still round-trip.
 
 ### Branch Label Placeholders — `label{N}`
 

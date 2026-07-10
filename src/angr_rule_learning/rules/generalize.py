@@ -270,8 +270,12 @@ class RuleGeneralizer:
         if report.status != "pass" or not report.equivalent:
             return None
 
-        guest_raw_insts = _instructions_to_ast(window.guest.instructions)
-        host_raw_insts = _instructions_to_ast(window.host.instructions)
+        guest_raw_insts = _instructions_to_ast(
+            window.guest.instructions, candidate.guest.arch
+        )
+        host_raw_insts = _instructions_to_ast(
+            window.host.instructions, candidate.host.arch
+        )
 
         self.diagnostics.record_considered()
         try:
@@ -305,8 +309,8 @@ class RuleGeneralizer:
             for plan in (guest_fixed_roles, host_fixed_roles):
                 for reg in plan.producers:
                     mapping[reg] = reg
-            guest_insts = _instructions_to_ast(window.guest.instructions)
-            host_insts = _instructions_to_ast(window.host.instructions)
+            guest_insts = _instructions_to_ast(window.guest.instructions, guest_arch)
+            host_insts = _instructions_to_ast(window.host.instructions, host_arch)
             guest_insts = _generalize_instructions_with_roles(
                 guest_insts,
                 window.guest.instructions,
@@ -1325,14 +1329,53 @@ def _replace_immediates_with_metadata(
 
         return _replacer
 
-    def _replace_operand(op: Operand, pattern: re.Pattern[str], replacer) -> Operand:
+    def _replace_operand(
+        op: Operand, pattern: re.Pattern[str], replacer, arch: str
+    ) -> Operand:
         """Apply immediate regex substitution to a single operand's text,
         rebuilding typed operands where possible."""
         from angr_rule_learning.rules.ast import (
+            AddressExpr,
             ImmOp,
             LitOp,
+            MemoryOperand,
             RegTextOp,
         )
+
+        if isinstance(op, MemoryOperand):
+            address = op.address
+            return MemoryOperand(
+                address=AddressExpr(
+                    base=(
+                        _replace_operand(address.base, pattern, replacer, arch)
+                        if address.base is not None
+                        else None
+                    ),
+                    index=(
+                        _replace_operand(address.index, pattern, replacer, arch)
+                        if address.index is not None
+                        else None
+                    ),
+                    scale=(
+                        _replace_operand(address.scale, pattern, replacer, arch)
+                        if address.scale is not None
+                        else None
+                    ),
+                    shift=(
+                        _replace_operand(address.shift, pattern, replacer, arch)
+                        if address.shift is not None
+                        else None
+                    ),
+                    displacement=(
+                        _replace_operand(address.displacement, pattern, replacer, arch)
+                        if address.displacement is not None
+                        else None
+                    ),
+                ),
+                syntax=op.syntax,
+                value_bits=op.value_bits,
+                size_keyword=op.size_keyword,
+            )
 
         text = op.to_text()
         new_text = pattern.sub(replacer, text)
@@ -1341,7 +1384,7 @@ def _replace_immediates_with_metadata(
 
         # Try to re-parse the replaced text as a typed operand.
         # The Instruction._parse_operand static method handles this.
-        parsed = AstInstruction._parse_operand(new_text)
+        parsed = AstInstruction._parse_operand(new_text, arch=arch)
         if isinstance(parsed, ImmOp):
             # Transfer ids; the parsed ImmOp may have a new id — trust the
             # replacer's assignment (the ImmOp's id field reflects the last
@@ -1364,7 +1407,7 @@ def _replace_immediates_with_metadata(
         result: list[Instruction] = []
         for inst in insts:
             new_operands = tuple(
-                _replace_operand(op, pattern, replacer) for op in inst.operands
+                _replace_operand(op, pattern, replacer, arch) for op in inst.operands
             )
             if new_operands != inst.operands:
                 inst = AstInstruction(
@@ -1683,11 +1726,13 @@ def _annotate_dead_writes(
 
 def _instructions_to_ast(
     instructions: tuple[ExtractedInstruction, ...],
+    arch: str | None = None,
 ) -> tuple[Instruction, ...]:
     from angr_rule_learning.rules.ast import Instruction as AstInstruction
 
     return tuple(
-        AstInstruction.from_text(_instruction_text(inst)) for inst in instructions
+        AstInstruction.from_text(_instruction_text(inst), arch=arch)
+        for inst in instructions
     )
 
 
@@ -1828,7 +1873,7 @@ def _generalize_instructions_with_roles(
         # Re-parse the rewritten text into an Instruction, then upgrade
         # any LitOp/RegTextOp that is now a pure placeholder into its
         # typed AST node.
-        parsed = AstInstruction.from_text(rewritten)
+        parsed = AstInstruction.from_text(rewritten, arch=arch)
         new_operands: list = []
         for op in parsed.operands:
             if isinstance(op, (LitOp, RegTextOp)):
@@ -1873,7 +1918,14 @@ def _validate_no_remaining_registers(
     *,
     allowed_literals: frozenset[str] = frozenset(),
 ) -> None:
-    from angr_rule_learning.rules.ast import LitOp, MemoryOperand, RegTextOp
+    from angr_rule_learning.rules.ast import (
+        BitSliceOp,
+        ExtOp,
+        LitOp,
+        MemoryOperand,
+        RegTextOp,
+        RegViewOp,
+    )
 
     known = known_register_tokens(arch)
 
@@ -1914,10 +1966,30 @@ def _validate_no_remaining_registers(
             if token_n in known:
                 raise _RuleSkip("unmapped_register_surface")
 
+    def _validate_operand(op) -> None:
+        if isinstance(op, (LitOp, RegTextOp)):
+            _validate_text(op.to_text())
+        elif isinstance(op, RegViewOp):
+            _validate_operand(op.base)
+        elif isinstance(op, BitSliceOp):
+            _validate_operand(op.base)
+        elif isinstance(op, ExtOp):
+            _validate_operand(op.value)
+        elif isinstance(op, MemoryOperand):
+            address = op.address
+            for child in (
+                address.base,
+                address.index,
+                address.scale,
+                address.shift,
+                address.displacement,
+            ):
+                if child is not None:
+                    _validate_operand(child)
+
     for inst in insts:
         for op in inst.operands:
-            if isinstance(op, (LitOp, RegTextOp, MemoryOperand)):
-                _validate_text(op.to_text())
+            _validate_operand(op)
 
 
 def _instruction_lines(

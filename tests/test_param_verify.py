@@ -153,3 +153,47 @@ def test_wrong_shift_scale_rule_fails() -> None:
 
     assert report.status == "fail"
     assert report.reason == "parameterized_register_mismatch"
+
+
+def test_reg64_views_allow_equivalent_low_32_bit_lea() -> None:
+    rule = _rule(
+        guest=(Instruction.from_text("add i32_reg1, i32_reg2, i32_reg3"),),
+        host=(
+            Instruction.from_text("lea i32_reg1, [reg64(i32_reg2) + reg64(i32_reg3)]"),
+        ),
+    )
+
+    report = ParameterizedRuleVerifier().verify(ParameterizedVerifyRequest(rule))
+
+    assert report.status == "pass"
+
+
+def test_reg64_views_do_not_constrain_high_bits_across_sides() -> None:
+    rule = _rule(
+        guest=(
+            Instruction.from_text("add i64_reg1, reg64(i32_reg2), reg64(i32_reg3)"),
+        ),
+        host=(
+            Instruction.from_text("lea i64_reg1, [reg64(i32_reg2) + reg64(i32_reg3)]"),
+        ),
+    )
+
+    report = ParameterizedRuleVerifier().verify(ParameterizedVerifyRequest(rule))
+
+    assert report.status == "fail"
+    assert report.reason == "parameterized_register_mismatch"
+
+
+def test_composed_shift_or_immediate_expression_passes() -> None:
+    rule = _rule(
+        guest=(
+            Instruction.from_text("mov i32_reg1, imm1"),
+            Instruction.from_text("lsl i32_reg1, i32_reg1, imm2"),
+            Instruction.from_text("orr i32_reg1, i32_reg1, imm3"),
+        ),
+        host=(Instruction.from_text("mov i32_reg1, ${(imm1 << imm2) | imm3}"),),
+    )
+
+    report = ParameterizedRuleVerifier().verify(ParameterizedVerifyRequest(rule))
+
+    assert report.status == "pass"

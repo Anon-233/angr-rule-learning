@@ -1943,6 +1943,51 @@ def test_scale_derivation_uses_span_not_operand_search() -> None:
     assert result_disp is None
 
 
+def test_reverse_scale_derivation_distinguishes_shift_from_displacement() -> None:
+    from angr_rule_learning.rules.ast import Instruction as AstInst
+    from angr_rule_learning.rules.derivation import (
+        DerivationContext,
+        _derive_reverse_index_scale,
+    )
+
+    guest_inst = AstInst.from_text("mov eax, dword ptr [rdi + rsi*imm1]", arch="x86-64")
+    host_inst = AstInst.from_text("ldr w0, [x0, x1, lsl #imm2]", arch="aarch64")
+    ctx = DerivationContext(
+        guest_insts=(guest_inst,),
+        host_insts=(host_inst,),
+        guest_arch="x86-64",
+        host_arch="aarch64",
+        value_by_id={"1": 4, "2": 2},
+    )
+    operand_text = host_inst.operands[1].to_text()
+    shift_start = operand_text.index("imm2")
+    shift_span = (shift_start, shift_start + 4)
+
+    assert _derive_reverse_index_scale(ctx, "2", 0, 1, shift_span) is not None
+
+    displacement_inst = AstInst.from_text("ldr w0, [x0, #imm2]", arch="aarch64")
+    displacement_ctx = DerivationContext(
+        guest_insts=(guest_inst,),
+        host_insts=(displacement_inst,),
+        guest_arch="x86-64",
+        host_arch="aarch64",
+        value_by_id={"1": 4, "2": 2},
+    )
+    displacement_text = displacement_inst.operands[1].to_text()
+    displacement_start = displacement_text.index("imm2")
+
+    assert (
+        _derive_reverse_index_scale(
+            displacement_ctx,
+            "2",
+            0,
+            1,
+            (displacement_start, displacement_start + 4),
+        )
+        is None
+    )
+
+
 def test_fixed_role_cl_rejected_without_rcx_producer() -> None:
     """cl is a fixed-role register.  Without a host instruction that
     writes to the RCX family the Guest→Host binding is invisible in the

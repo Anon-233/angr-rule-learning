@@ -18,8 +18,8 @@ class ParameterizedRuleVerifier:
     def verify(self, request: ParameterizedVerifyRequest) -> ParameterizedVerifyReport:
         ctx = EvalContext(imm_domains=request.imm_domains)
         try:
-            guest = evaluate_instructions(request.rule.guest, ctx)
-            host = evaluate_instructions(request.rule.host, ctx)
+            guest = evaluate_instructions(request.rule.guest, ctx, namespace="guest")
+            host = evaluate_instructions(request.rule.host, ctx, namespace="host")
         except UnsupportedRuleSemantics as exc:
             return ParameterizedVerifyReport(status="unsupported", reason=str(exc))
 
