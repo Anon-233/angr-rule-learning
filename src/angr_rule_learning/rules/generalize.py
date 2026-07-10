@@ -80,13 +80,23 @@ class GeneratedRule:
         candidate_id: str,
         guest_lines: tuple[str, ...],
         host_lines: tuple[str, ...],
+        *,
+        guest_arch: str | None = None,
+        host_arch: str | None = None,
     ) -> "GeneratedRule":
         from angr_rule_learning.rules.ast import Rule
 
         return cls(
             rule_id=rule_id,
             candidate_id=candidate_id,
-            rule=Rule.from_generated(rule_id, candidate_id, guest_lines, host_lines),
+            rule=Rule.from_generated(
+                rule_id,
+                candidate_id,
+                guest_lines,
+                host_lines,
+                guest_arch=guest_arch,
+                host_arch=host_arch,
+            ),
         )
 
 
@@ -658,6 +668,7 @@ def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
         RegOp,
         RegTextOp,
         RegViewOp,
+        ReadWriteOp,
         TmpOp,
     )
 
@@ -672,6 +683,9 @@ def _collect_ast_placeholders(insts: tuple[Instruction, ...]) -> frozenset[str]:
             _collect(op.base)
         elif isinstance(op, ExtOp):
             _collect(op.value)
+        elif isinstance(op, ReadWriteOp):
+            _collect(op.read)
+            _collect(op.write)
         elif isinstance(op, MemoryOperand):
             if op.address.base is not None:
                 _collect(op.address.base)
@@ -1371,6 +1385,7 @@ def _replace_immediates_with_metadata(
                         if address.displacement is not None
                         else None
                     ),
+                    writeback=address.writeback,
                 ),
                 syntax=op.syntax,
                 value_bits=op.value_bits,
@@ -1787,18 +1802,28 @@ def _generalize_instructions_with_roles(
                 is_read = True
 
             if is_written and is_read:
-                occurrence = [0]
+                pattern = rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])"
+                matches = list(re.finditer(pattern, rewritten, flags=re.IGNORECASE))
+                if len(matches) == 1:
+                    rewritten = re.sub(
+                        pattern,
+                        f"rw({in_ph}, {out_ph})",
+                        rewritten,
+                        flags=re.IGNORECASE,
+                    )
+                else:
+                    occurrence = [0]
 
-                def _repl(match: re.Match[str]) -> str:
-                    occurrence[0] += 1
-                    return out_ph if occurrence[0] == 1 else in_ph
+                    def _repl(match: re.Match[str]) -> str:
+                        occurrence[0] += 1
+                        return out_ph if occurrence[0] == 1 else in_ph
 
-                rewritten = re.sub(
-                    rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
-                    _repl,
-                    rewritten,
-                    flags=re.IGNORECASE,
-                )
+                    rewritten = re.sub(
+                        pattern,
+                        _repl,
+                        rewritten,
+                        flags=re.IGNORECASE,
+                    )
             elif is_written:
                 rewritten = re.sub(
                     rf"(?<![A-Za-z0-9_]){re.escape(register)}(?![A-Za-z0-9_])",
@@ -1923,6 +1948,7 @@ def _validate_no_remaining_registers(
         ExtOp,
         LitOp,
         MemoryOperand,
+        ReadWriteOp,
         RegTextOp,
         RegViewOp,
     )
@@ -1975,6 +2001,9 @@ def _validate_no_remaining_registers(
             _validate_operand(op.base)
         elif isinstance(op, ExtOp):
             _validate_operand(op.value)
+        elif isinstance(op, ReadWriteOp):
+            _validate_operand(op.read)
+            _validate_operand(op.write)
         elif isinstance(op, MemoryOperand):
             address = op.address
             for child in (

@@ -81,6 +81,29 @@ def test_shared_add_immediate_rule_passes() -> None:
     assert report.status == "pass"
 
 
+def test_read_modify_write_output_rule_passes() -> None:
+    rule = _rule(
+        guest=(Instruction.from_text("add i32_reg1, i32_reg1, #imm1"),),
+        host=(Instruction.from_text("add i32_reg1, imm1"),),
+    )
+
+    report = ParameterizedRuleVerifier().verify(ParameterizedVerifyRequest(rule))
+
+    assert report.status == "pass"
+
+
+def test_read_modify_write_output_mismatch_fails() -> None:
+    rule = _rule(
+        guest=(Instruction.from_text("add i32_reg1, i32_reg1, #imm1"),),
+        host=(Instruction.from_text("sub i32_reg1, imm1"),),
+    )
+
+    report = ParameterizedRuleVerifier().verify(ParameterizedVerifyRequest(rule))
+
+    assert report.status == "fail"
+    assert report.reason == "parameterized_register_mismatch"
+
+
 def test_shared_immediate_add_sub_rule_fails() -> None:
     rule = _rule(
         guest=(

@@ -338,6 +338,8 @@ The AST currently includes:
 - literal fallbacks: `LitOp`, `RegTextOp`;
 - register/bit-vector views: `RegViewOp`, `GuestRegViewOp`, `BitSliceOp`,
   `ExtOp`;
+- implicit read/write roles: `ReadWriteOp` for one physical operand whose
+  pre-state input and post-state output use different semantic placeholders;
 - memory operands: `MemoryOperand(AddressExpr)` for supported x86-style and
   AArch64-style rule operands;
 - derived immediate expressions: `ImmExpr` nodes such as `ShiftLeftExpr`,
@@ -357,6 +359,12 @@ The AST supports:
 - **Structured memory traversal**: placeholders and immediates nested inside
   memory operands are visible to fingerprinting, derivation, validation, and
   verifier frontends without reparsing entire instruction lines.
+- **Validated construction**: incoherent address combinations are rejected
+  instead of being silently dropped during serialization. AArch64 pre/post-index
+  writeback is retained in `AddressExpr.writeback`.
+- **Unified operand traversal**: `iter_instruction_operands` and `map_operand`
+  centralize recursion through register views, read/write roles, memory
+  addresses, and metadata.
 - **Pre/post metadata ordering**: `Instruction.meta` holds pre-instruction
   annotations (e.g. `save`), `Instruction.post_meta` holds post-instruction
   annotations (e.g. `restore`).  This preserves the correct execution order:
@@ -497,6 +505,11 @@ The parameterized rule verifier applies the same contract.  It reuses the
 low semantic placeholder and creates side-specific fresh high bits, so a
 32-bit observable result may prove equivalent while an unjustified 64-bit
 result does not.
+
+For read/modify/write instructions, the parameterized verifier also supports
+an output placeholder that is read from the shared pre-state. This is required
+for two-operand instructions such as x86 `add` and does not require a separate
+symbolic-execution special case.
 
 **Current scope** (first phase):
 

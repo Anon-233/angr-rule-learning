@@ -51,6 +51,7 @@ TAG_META_BLOCK = 22
 TAG_POST_META_BLOCK = 23
 TAG_MEMORY = 24
 TAG_ADDRESS = 25
+TAG_READWRITE = 26
 SYN_HASH = 30
 SYN_NEG = 31
 
@@ -220,6 +221,7 @@ class _FingerprintBuilder:
             LitOp,
             MemoryOperand,
             RegOp,
+            ReadWriteOp,
             RegTextOp,
             RegViewOp,
             TmpOp,
@@ -239,6 +241,12 @@ class _FingerprintBuilder:
         elif isinstance(op, ExtOp):
             value_fp = self._fingerprint_op(op.value)
             return (TAG_EXT, op.kind, op.bits) + value_fp
+        elif isinstance(op, ReadWriteOp):
+            return (
+                TAG_READWRITE,
+                self._fingerprint_op(op.read),
+                self._fingerprint_op(op.write),
+            )
         elif isinstance(op, ImmOp):
             if op.derived is not None:
                 parts: list[object] = [
@@ -317,7 +325,7 @@ class _FingerprintBuilder:
         raise TypeError(f"unknown immediate expression type: {type(expr)!r}")
 
     def _fingerprint_address(self, address) -> tuple[object, ...]:
-        parts: list[object] = [TAG_ADDRESS]
+        parts: list[object] = [TAG_ADDRESS, address.writeback]
         if address.base is not None:
             parts.append(("base", self._fingerprint_op(address.base)))
         if address.index is not None:

@@ -56,6 +56,7 @@ class DerivationStrategy(Protocol):
         host_idx: int,
         op_idx: int,
         span: tuple[int, int] | None,
+        address_role: str | None,
     ) -> str | None: ...
 
 
@@ -95,49 +96,17 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
             elif isinstance(op, MemoryOperand):
                 address = op.address
 
-                operand_text = op.to_text()
-
                 def _derive_address_part(part, role: str):
                     if not isinstance(part, ImmOp) or str(part.id) not in host_only:
                         return part
-                    spans = [
-                        (match.start(), match.end())
-                        for match in IMM_PLACEHOLDER_RE.finditer(operand_text)
-                        if match.group(1) == str(part.id)
-                    ]
-                    if role == "scale":
-                        span = next(
-                            (
-                                item
-                                for item in spans
-                                if item[0] > 0 and operand_text[item[0] - 1] == "*"
-                            ),
-                            None,
-                        )
-                    elif role == "shift":
-                        span = next(
-                            (
-                                item
-                                for item in spans
-                                if "lsl" in operand_text[max(0, item[0] - 6) : item[0]]
-                            ),
-                            None,
-                        )
-                    else:
-                        span = next(
-                            (
-                                item
-                                for item in spans
-                                if not (
-                                    item[0] > 0 and operand_text[item[0] - 1] == "*"
-                                )
-                                and "lsl"
-                                not in operand_text[max(0, item[0] - 6) : item[0]]
-                            ),
-                            None,
-                        )
                     derived = _try_strategies(
-                        strategies, ctx, str(part.id), host_idx, op_idx, span
+                        strategies,
+                        ctx,
+                        str(part.id),
+                        host_idx,
+                        op_idx,
+                        None,
+                        address_role=role,
                     )
                     if derived is None:
                         return part
@@ -157,6 +126,7 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                         displacement=_derive_address_part(
                             address.displacement, "displacement"
                         ),
+                        writeback=address.writeback,
                     ),
                     syntax=op.syntax,
                     value_bits=op.value_bits,
@@ -201,9 +171,11 @@ def _try_strategies(
     host_idx: int,
     op_idx: int,
     span: tuple[int, int] | None,
+    *,
+    address_role: str | None = None,
 ) -> str | None:
     for strategy in strategies:
-        derived = strategy(ctx, imm_id, host_idx, op_idx, span)
+        derived = strategy(ctx, imm_id, host_idx, op_idx, span, address_role)
         if derived is not None:
             return derived
     return None
@@ -218,6 +190,7 @@ def _derive_tbz_mask(
     host_idx: int,
     op_idx: int,
     span: tuple[int, int] | None,
+    address_role: str | None = None,
 ) -> str | None:
     """Derive host ``and`` mask from guest ``tbz``/``tbnz`` bit position.
 
@@ -260,6 +233,7 @@ def _derive_movk_constant(
     host_idx: int,
     op_idx: int,
     span: tuple[int, int] | None,
+    address_role: str | None = None,
 ) -> str | None:
     """Derive a 64-bit host constant from guest ``mov`` + ``movk``.
 
@@ -334,6 +308,7 @@ def _derive_index_scale(
     host_idx: int,
     op_idx: int,
     span: tuple[int, int] | None,
+    address_role: str | None = None,
 ) -> str | None:
     """Derive host index scale from guest ``lsl #immN``.
 
@@ -346,7 +321,15 @@ def _derive_index_scale(
 
     host_inst = ctx.host_insts[host_idx]
     host_op = host_inst.operands[op_idx]
-    if span is not None:
+    if address_role is not None:
+        if address_role != "scale":
+            return None
+        if not isinstance(host_op, MemoryOperand):
+            return None
+        scale = host_op.address.scale
+        if not isinstance(scale, ImmOp) or str(scale.id) != imm_id:
+            return None
+    elif span is not None:
         operand_text = host_op.to_text()
         start, _end = span
         if start == 0 or operand_text[start - 1] != "*":
@@ -391,6 +374,7 @@ def _derive_reverse_index_scale(
     host_idx: int,
     op_idx: int,
     span: tuple[int, int] | None,
+    address_role: str | None = None,
 ) -> str | None:
     """Derive host AArch64 ``lsl #immN`` shift from guest x86-64 ``*immN`` scale.
 
@@ -404,7 +388,13 @@ def _derive_reverse_index_scale(
 
     host_inst = ctx.host_insts[host_idx]
     host_op = host_inst.operands[op_idx]
-    if isinstance(host_op, MemoryOperand):
+    if address_role is not None:
+        if address_role != "shift" or not isinstance(host_op, MemoryOperand):
+            return None
+        shift = host_op.address.shift
+        if not isinstance(shift, ImmOp) or str(shift.id) != imm_id:
+            return None
+    elif isinstance(host_op, MemoryOperand):
         shift = host_op.address.shift
         if not isinstance(shift, ImmOp) or str(shift.id) != imm_id:
             return None

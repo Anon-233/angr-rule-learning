@@ -28,12 +28,6 @@ class ParameterizedRuleVerifier:
             return ParameterizedVerifyReport(
                 status="unsupported", reason="no_common_outputs"
             )
-        if outputs & (guest.prestate_reads | host.prestate_reads):
-            return ParameterizedVerifyReport(
-                status="unsupported",
-                reason="prestate_output_placeholders_unsupported",
-            )
-
         for output in sorted(outputs):
             guest_expr = guest.registers[output]
             host_expr = host.registers[output]

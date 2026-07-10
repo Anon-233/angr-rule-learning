@@ -51,6 +51,23 @@ but are distinguished in the rule output so that memory operand base
 registers are explicitly identified.  When a kernel input has type
 ``ptr``, the generalizer emits ``ptr64_regN`` instead of ``i64_regN``.
 
+### Memory Operands
+
+Memory syntax remains native to each ISA, while the Rule AST stores a shared
+`AddressExpr` containing base, index, scale/shift, displacement, and writeback
+mode. Examples include:
+
+```
+ldr i32_reg1, [ptr64_reg2, i64_reg3, lsl #imm1]
+mov i32_reg1, dword ptr [ptr64_reg2 + i64_reg3*${(1 << imm1)}]
+stp i64_reg1, i64_reg2, [sp64, #-imm1]!
+ldp i64_reg1, i64_reg2, [sp64], #imm1
+```
+
+The last two forms are AArch64 pre-index and post-index writeback. Their update
+amount remains inside the structured memory operand rather than becoming an
+unrelated instruction operand.
+
 Guest and host sides share the same placeholder when the registers are paired
 as semantically equivalent. The `{N}` suffix is a per-rule counter that
 increments globally (not per bit-width) — `i32_reg1` and `i64_reg2` may
@@ -254,6 +271,22 @@ Host:  lsl i32_reg1, i32_reg1, lo8(guest.rcx)
 It is not a general-register placeholder and is not alpha-renumbered.
 This form lets Host-side code generation read a source-ISA fixed-role value
 without pretending it is an arbitrary `i32_regN`.
+
+### Implicit Read/Write Operands — `rw(read, write)`
+
+Some two-operand instructions read and overwrite the same physical register,
+while the semantic input and output belong to different placeholders:
+
+```
+Guest: add i32_reg1, i32_reg2, i32_reg3
+Host:  add rw(i32_reg2, i32_reg1), i32_reg3
+```
+
+`rw(i32_reg2, i32_reg1)` means that the physical destination contains
+`i32_reg2` before the instruction and defines `i32_reg1` afterwards. It is one
+machine operand, not an inserted move or an additional instruction. The rule
+matcher and register allocator must satisfy both roles with the same physical
+register.
 
 ### Semantic Bit Views — `lo{bits}(...)`, `zext{bits}(...)`, `sext{bits}(...)`
 

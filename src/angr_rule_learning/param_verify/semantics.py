@@ -17,6 +17,7 @@ from angr_rule_learning.rules.ast import (
     Operand,
     RegOp,
     RegViewOp,
+    ReadWriteOp,
     RegTextOp,
     TmpOp,
     ShiftLeftExpr,
@@ -321,6 +322,15 @@ def _eval_operand(
             high_name = f"{namespace}_{op.base.to_text()}_reg{op.view_bits}_high"
             value = claripy.Concat(ctx.placeholder(high_name, high_bits), base)
         return fit_width(value, desired_bits or op.view_bits)
+    if isinstance(op, ReadWriteOp):
+        return _eval_operand(
+            op.read,
+            ctx,
+            registers,
+            desired_bits,
+            prestate_reads,
+            namespace=namespace,
+        )
     if isinstance(op, ImmOp):
         bits = desired_bits or 64
         value = _eval_immediate(op, ctx, bits)
@@ -466,7 +476,7 @@ def _eval_address_operand(
                 )
                 index <<= shift
             total += index
-        if address.displacement is not None:
+        if address.displacement is not None and address.writeback != "post":
             total += _eval_operand(
                 address.displacement,
                 ctx,
@@ -528,6 +538,8 @@ def _placeholder_key(op: Operand) -> str:
     op = _parse_lit_view(op)
     if isinstance(op, (RegOp, TmpOp)):
         return op.to_text()
+    if isinstance(op, ReadWriteOp):
+        return op.write.to_text()
     raise UnsupportedRuleSemantics(f"unsupported_destination:{op.to_text()}")
 
 
@@ -537,6 +549,8 @@ def _operand_bits(op: Operand) -> int:
         return op.bits
     if isinstance(op, RegViewOp):
         return op.view_bits
+    if isinstance(op, ReadWriteOp):
+        return op.write.bits
     if isinstance(op, BitSliceOp):
         return op.bits
     if isinstance(op, ExtOp):

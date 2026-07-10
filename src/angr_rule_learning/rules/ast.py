@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import ClassVar
+from collections.abc import Callable, Iterator
+from typing import ClassVar, Literal
 
 
 # ── Operand types ──────────────────────────────────────────────────────
@@ -286,14 +287,44 @@ class ExtOp:
 
 
 @dataclass(frozen=True)
+class ReadWriteOp:
+    """One physical operand with distinct pre-state and post-state values."""
+
+    read: Operand
+    write: RegOp | TmpOp
+
+    def to_text(self) -> str:
+        return f"rw({self.read.to_text()}, {self.write.to_text()})"
+
+
+@dataclass(frozen=True)
 class AddressExpr:
     base: "Operand | None"
     index: "Operand | None" = None
     scale: "Operand | None" = None
     shift: "Operand | None" = None
     displacement: "Operand | None" = None
+    writeback: Literal["none", "pre", "post"] = "none"
+
+    def __post_init__(self) -> None:
+        if self.scale is not None and self.index is None:
+            raise ValueError("address scale requires an index")
+        if self.shift is not None and self.index is None:
+            raise ValueError("address shift requires an index")
+        if self.scale is not None and self.shift is not None:
+            raise ValueError("address cannot contain both scale and shift")
+        if self.writeback not in {"none", "pre", "post"}:
+            raise ValueError(f"unknown address writeback mode: {self.writeback!r}")
+        if self.writeback != "none" and self.base is None:
+            raise ValueError("writeback address requires a base")
+        if self.writeback != "none" and self.displacement is None:
+            raise ValueError("writeback address requires a displacement")
+        if self.writeback == "post" and self.index is not None:
+            raise ValueError("post-index address cannot contain an index")
 
     def to_x86_text(self) -> str:
+        if self.writeback != "none":
+            raise ValueError("x86 address does not support writeback")
         text = self.base.to_text() if self.base is not None else ""
         if self.index is not None:
             index = self.index.to_text()
@@ -313,6 +344,8 @@ class AddressExpr:
     def to_aarch64_text(self) -> str:
         if self.base is None:
             raise ValueError("aarch64 memory operand requires a base register")
+        if self.writeback == "post":
+            return f"[{self.base.to_text()}], {self.displacement.to_text()}"
         parts = [self.base.to_text()]
         if self.index is not None:
             parts.append(self.index.to_text())
@@ -320,7 +353,8 @@ class AddressExpr:
                 parts.append(f"lsl {self.shift.to_text()}")
         elif self.displacement is not None:
             parts.append(self.displacement.to_text())
-        return f"[{', '.join(parts)}]"
+        suffix = "!" if self.writeback == "pre" else ""
+        return f"[{', '.join(parts)}]{suffix}"
 
 
 @dataclass(frozen=True)
@@ -329,6 +363,36 @@ class MemoryOperand:
     syntax: str
     value_bits: int | None = None
     size_keyword: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.syntax not in {"x86", "aarch64"}:
+            raise ValueError(f"unknown memory operand syntax: {self.syntax!r}")
+        if self.value_bits is not None and self.value_bits <= 0:
+            raise ValueError("memory operand width must be positive")
+        if self.syntax == "x86":
+            if self.address.shift is not None:
+                raise ValueError("x86 memory operand cannot use shift")
+            if self.address.writeback != "none":
+                raise ValueError("x86 memory operand cannot use writeback")
+        else:
+            if self.address.base is None:
+                raise ValueError("aarch64 memory operand requires a base")
+            if self.address.scale is not None:
+                raise ValueError("aarch64 memory operand cannot use scale")
+            if self.address.index is not None and self.address.displacement is not None:
+                raise ValueError(
+                    "aarch64 memory operand cannot combine index and displacement"
+                )
+            if self.size_keyword is not None:
+                raise ValueError("aarch64 memory operand cannot use x86 size keyword")
+        if self.size_keyword is not None:
+            keyword = self.size_keyword.lower()
+            if keyword not in _SIZE_BITS:
+                raise ValueError(
+                    f"unknown x86 memory size keyword: {self.size_keyword!r}"
+                )
+            if self.value_bits is not None and self.value_bits != _SIZE_BITS[keyword]:
+                raise ValueError("memory width does not match size keyword")
 
     def to_text(self) -> str:
         if self.syntax == "x86":
@@ -354,6 +418,7 @@ Operand = (
     | GuestRegViewOp
     | BitSliceOp
     | ExtOp
+    | ReadWriteOp
     | MemoryOperand
 )
 
@@ -367,6 +432,12 @@ class MetaOp:
 
     kind: str  # "save" | "restore"
     regs: tuple[Operand, ...]
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"save", "restore"}:
+            raise ValueError(f"unknown meta operation: {self.kind!r}")
+        if not self.regs:
+            raise ValueError("meta operation requires at least one register")
 
     def to_text(self) -> str:
         return f"{self.kind} {', '.join(r.to_text() for r in self.regs)}"
@@ -412,14 +483,44 @@ class Instruction:
         return cls(mnemonic=mnemonic, operands=operands, post_meta=())
 
     @classmethod
-    def _parse_operands(cls, text: str, *, arch: str | None = None) -> list[Operand]:
+    def _parse_operands(
+        cls,
+        text: str,
+        *,
+        arch: str | None = None,
+    ) -> list[Operand]:
         if not text:
             return []
         # Split on commas that are not inside brackets or ${}.
         parts = cls._split_operands(text)
         result: list[Operand] = []
-        for part in parts:
-            result.append(cls._parse_operand(part.strip(), arch=arch))
+        index = 0
+        while index < len(parts):
+            operand = cls._parse_operand(parts[index].strip(), arch=arch)
+            if (
+                isinstance(operand, MemoryOperand)
+                and operand.syntax == "aarch64"
+                and operand.address.writeback == "none"
+                and index + 1 == len(parts) - 1
+            ):
+                update = cls._parse_operand(parts[index + 1].strip(), arch=arch)
+                address = operand.address
+                operand = MemoryOperand(
+                    address=AddressExpr(
+                        base=address.base,
+                        index=address.index,
+                        scale=address.scale,
+                        shift=address.shift,
+                        displacement=update,
+                        writeback="post",
+                    ),
+                    syntax=operand.syntax,
+                    value_bits=operand.value_bits,
+                    size_keyword=operand.size_keyword,
+                )
+                index += 1
+            result.append(operand)
+            index += 1
         return result
 
     @staticmethod
@@ -492,6 +593,18 @@ class Instruction:
                 bits=int(m.group(1)),
             )
 
+        # Implicit read/modify/write register with distinct semantic roles.
+        m = re.fullmatch(r"rw\((.*)\)", text)
+        if m:
+            parts = Instruction._split_operands(m.group(1))
+            if len(parts) != 2:
+                raise ValueError(f"read/write operand requires two roles: {text!r}")
+            read = Instruction._parse_operand(parts[0])
+            write = Instruction._parse_operand(parts[1])
+            if not isinstance(write, (RegOp, TmpOp)):
+                raise ValueError(f"read/write destination is not assignable: {text!r}")
+            return ReadWriteOp(read=read, write=write)
+
         # Zero/sign extension: zext32(lo8(i32_reg1)), sext64(i32_reg1)
         m = re.fullmatch(r"(zext|sext)(\d+)\((.+)\)", text)
         if m:
@@ -525,6 +638,95 @@ class Instruction:
         return LitOp(value=text)
 
 
+def operand_children(op: Operand) -> tuple[Operand, ...]:
+    """Return direct nested operands in stable semantic order."""
+    if isinstance(op, RegViewOp):
+        return (op.base,)
+    if isinstance(op, BitSliceOp):
+        return (op.base,)
+    if isinstance(op, ExtOp):
+        return (op.value,)
+    if isinstance(op, ReadWriteOp):
+        return (op.read, op.write)
+    if isinstance(op, MemoryOperand):
+        address = op.address
+        return tuple(
+            child
+            for child in (
+                address.base,
+                address.index,
+                address.scale,
+                address.shift,
+                address.displacement,
+            )
+            if child is not None
+        )
+    return ()
+
+
+def iter_operand_tree(op: Operand) -> Iterator[Operand]:
+    """Yield an operand and every nested operand depth-first."""
+    yield op
+    for child in operand_children(op):
+        yield from iter_operand_tree(child)
+
+
+def map_operand(op: Operand, transform: Callable[[Operand], Operand]) -> Operand:
+    """Map an operand tree bottom-up while preserving wrapper semantics."""
+    rebuilt = op
+    if isinstance(op, RegViewOp):
+        base = map_operand(op.base, transform)
+        if not isinstance(base, (RegOp, TmpOp)):
+            raise ValueError("register view transform produced invalid base")
+        rebuilt = RegViewOp(base=base, view_bits=op.view_bits, mode=op.mode)
+    elif isinstance(op, BitSliceOp):
+        rebuilt = BitSliceOp(base=map_operand(op.base, transform), bits=op.bits)
+    elif isinstance(op, ExtOp):
+        rebuilt = ExtOp(
+            kind=op.kind,
+            bits=op.bits,
+            value=map_operand(op.value, transform),
+        )
+    elif isinstance(op, ReadWriteOp):
+        read = map_operand(op.read, transform)
+        write = map_operand(op.write, transform)
+        if not isinstance(write, (RegOp, TmpOp)):
+            raise ValueError("read/write transform produced invalid destination")
+        rebuilt = ReadWriteOp(read=read, write=write)
+    elif isinstance(op, MemoryOperand):
+        address = op.address
+
+        def _map_optional(child: Operand | None) -> Operand | None:
+            return map_operand(child, transform) if child is not None else None
+
+        rebuilt = MemoryOperand(
+            address=AddressExpr(
+                base=_map_optional(address.base),
+                index=_map_optional(address.index),
+                scale=_map_optional(address.scale),
+                shift=_map_optional(address.shift),
+                displacement=_map_optional(address.displacement),
+                writeback=address.writeback,
+            ),
+            syntax=op.syntax,
+            value_bits=op.value_bits,
+            size_keyword=op.size_keyword,
+        )
+    return transform(rebuilt)
+
+
+def iter_instruction_operands(
+    instructions: tuple[Instruction, ...],
+) -> Iterator[Operand]:
+    """Yield operands, including nested and metadata operands, in order."""
+    for instruction in instructions:
+        for operand in instruction.operands:
+            yield from iter_operand_tree(operand)
+        for meta in instruction.meta + instruction.post_meta:
+            for operand in meta.regs:
+                yield from iter_operand_tree(operand)
+
+
 _X86_MEMORY_RE = re.compile(
     r"^(?:(?P<size>byte|word|dword|qword)\s+ptr\s+)?(?P<addr>\[.+\])$",
     re.IGNORECASE,
@@ -546,11 +748,21 @@ def _memory_syntax_for_arch(arch: str | None) -> str | None:
 def _parse_memory_operand(
     text: str, *, syntax_hint: str | None = None
 ) -> MemoryOperand | None:
-    if (syntax_hint == "aarch64" and text.startswith("[") and text.endswith("]")) or (
-        text.startswith("[") and text.endswith("]") and "," in text
+    pre_index = text.endswith("]!")
+    bracket_text = text[:-1] if pre_index else text
+    if (
+        syntax_hint == "aarch64"
+        and bracket_text.startswith("[")
+        and bracket_text.endswith("]")
+    ) or (
+        bracket_text.startswith("[")
+        and bracket_text.endswith("]")
+        and "," in bracket_text
     ):
         return MemoryOperand(
-            address=_parse_aarch64_address(text[1:-1]),
+            address=_parse_aarch64_address(
+                bracket_text[1:-1], writeback="pre" if pre_index else "none"
+            ),
             syntax="aarch64",
         )
     x86_match = _X86_MEMORY_RE.fullmatch(text)
@@ -577,6 +789,10 @@ def _parse_x86_address(inner: str) -> AddressExpr:
     displacement: Operand | None = None
     for sign, term in _split_signed_terms(inner):
         if "*" in term:
+            if index is not None or scale is not None:
+                raise ValueError(
+                    f"x86 memory operand has multiple index terms: {inner!r}"
+                )
             left, right = (part.strip() for part in term.split("*", 1))
             index = Instruction._parse_operand(left)
             scale = Instruction._parse_operand(right)
@@ -592,8 +808,14 @@ def _parse_x86_address(inner: str) -> AddressExpr:
             elif index is None:
                 index = operand
             else:
-                displacement = operand
+                raise ValueError(
+                    f"x86 memory operand has too many register terms: {inner!r}"
+                )
         else:
+            if displacement is not None:
+                raise ValueError(
+                    f"x86 memory operand has multiple displacements: {inner!r}"
+                )
             displacement = operand
     if base is None and index is None:
         raise ValueError(f"x86 memory operand requires base register: {inner!r}")
@@ -605,18 +827,20 @@ def _parse_x86_address(inner: str) -> AddressExpr:
     )
 
 
-def _parse_aarch64_address(inner: str) -> AddressExpr:
+def _parse_aarch64_address(
+    inner: str, *, writeback: Literal["none", "pre"] = "none"
+) -> AddressExpr:
     parts = [part.strip() for part in Instruction._split_operands(inner)]
     if not parts:
         raise ValueError("empty aarch64 memory operand")
     base = Instruction._parse_operand(parts[0])
     if len(parts) == 1:
-        return AddressExpr(base=base)
+        return AddressExpr(base=base, writeback=writeback)
     if len(parts) == 2:
         second = Instruction._parse_operand(parts[1])
         if _is_address_register_operand(second):
-            return AddressExpr(base=base, index=second)
-        return AddressExpr(base=base, displacement=second)
+            return AddressExpr(base=base, index=second, writeback=writeback)
+        return AddressExpr(base=base, displacement=second, writeback=writeback)
     if len(parts) == 3:
         shift_text = parts[2]
         if not shift_text.lower().startswith("lsl "):
@@ -625,6 +849,7 @@ def _parse_aarch64_address(inner: str) -> AddressExpr:
             base=base,
             index=Instruction._parse_operand(parts[1]),
             shift=Instruction._parse_operand(shift_text[4:].strip()),
+            writeback=writeback,
         )
     raise ValueError(f"unsupported aarch64 memory operand: {inner!r}")
 
@@ -725,11 +950,53 @@ class Rule:
         candidate_id: str,
         guest_lines: tuple[str, ...],
         host_lines: tuple[str, ...],
+        *,
+        guest_arch: str | None = None,
+        host_arch: str | None = None,
     ) -> "Rule":
         """Build AST from the text-based generalizer output."""
-        guest = tuple(Instruction.from_text(ln) for ln in guest_lines)
-        host = tuple(Instruction.from_text(ln) for ln in host_lines)
+        guest = parse_instruction_sequence(guest_lines, arch=guest_arch)
+        host = parse_instruction_sequence(host_lines, arch=host_arch)
         return cls(rule_id=rule_id, candidate_id=candidate_id, guest=guest, host=host)
+
+
+def parse_instruction_sequence(
+    lines: tuple[str, ...], *, arch: str | None = None
+) -> tuple[Instruction, ...]:
+    """Parse serialized rule lines and restore save/restore attachment."""
+    result: list[Instruction] = []
+    pending_meta: list[MetaOp] = []
+    for line in lines:
+        parsed = Instruction.from_text(line, arch=arch)
+        mnemonic = parsed.mnemonic.lower()
+        if mnemonic == "save":
+            pending_meta.append(MetaOp("save", parsed.operands))
+            continue
+        if mnemonic == "restore":
+            if pending_meta:
+                raise ValueError("restore cannot appear before pending save target")
+            if not result:
+                raise ValueError("restore requires a preceding instruction")
+            previous = result[-1]
+            result[-1] = Instruction(
+                mnemonic=previous.mnemonic,
+                operands=previous.operands,
+                meta=previous.meta,
+                post_meta=previous.post_meta + (MetaOp("restore", parsed.operands),),
+            )
+            continue
+        result.append(
+            Instruction(
+                mnemonic=parsed.mnemonic,
+                operands=parsed.operands,
+                meta=tuple(pending_meta),
+                post_meta=parsed.post_meta,
+            )
+        )
+        pending_meta.clear()
+    if pending_meta:
+        raise ValueError("save requires a following instruction")
+    return tuple(result)
 
 
 # ── Collection helpers ────────────────────────────────────────────────
@@ -740,8 +1007,11 @@ def collect_imm_ids(rule: Rule) -> set[int]:
     ids: set[int] = set()
 
     def _walk(op):
-        if isinstance(op, ImmOp) and op.id != 0:
-            ids.add(op.id)
+        if isinstance(op, ImmOp):
+            if op.derived is not None:
+                ids.update(op.derived.imm_ids())
+            elif op.id != 0:
+                ids.add(op.id)
 
     _walk_rule(rule, _walk)
     return ids
@@ -793,8 +1063,13 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
         if isinstance(op, ImmOp):
             if op.id == imm_id:
                 prefix = "#" if op.aarch64_hash else ""
-                sign = "-" if op.neg else ""
-                return LitOp(value=f"{prefix}{sign}{value}")
+                literal = value
+                if op.neg:
+                    try:
+                        literal = str(-int(value, 0))
+                    except ValueError:
+                        literal = value[1:] if value.startswith("-") else f"-{value}"
+                return LitOp(value=f"{prefix}{literal}")
             if op.derived is not None:
                 return ImmOp(
                     id=op.id,
@@ -808,38 +1083,17 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
             text = re.sub(rf"#imm{imm_id}\b", f"#{value}", text)
             text = re.sub(rf"(?<!\$)imm{imm_id}\b", value, text)
             return LitOp(value=text)
-        if isinstance(op, MemoryOperand):
-            address = op.address
-            return MemoryOperand(
-                address=AddressExpr(
-                    base=_sub(address.base) if address.base is not None else None,
-                    index=_sub(address.index) if address.index is not None else None,
-                    scale=_sub(address.scale) if address.scale is not None else None,
-                    shift=_sub(address.shift) if address.shift is not None else None,
-                    displacement=(
-                        _sub(address.displacement)
-                        if address.displacement is not None
-                        else None
-                    ),
-                ),
-                syntax=op.syntax,
-                value_bits=op.value_bits,
-                size_keyword=op.size_keyword,
-            )
-        if isinstance(op, RegViewOp):
-            return RegViewOp(base=op.base, view_bits=op.view_bits, mode=op.mode)
-        if isinstance(op, BitSliceOp):
-            return BitSliceOp(base=_sub(op.base), bits=op.bits)
-        if isinstance(op, ExtOp):
-            return ExtOp(kind=op.kind, bits=op.bits, value=_sub(op.value))
         return op
+
+    def _sub_meta(meta: MetaOp) -> MetaOp:
+        return MetaOp(meta.kind, tuple(map_operand(op, _sub) for op in meta.regs))
 
     def _sub_inst(inst: Instruction) -> Instruction:
         return Instruction(
             mnemonic=inst.mnemonic,
-            operands=tuple(_sub(op) for op in inst.operands),
-            meta=inst.meta,
-            post_meta=inst.post_meta,
+            operands=tuple(map_operand(op, _sub) for op in inst.operands),
+            meta=tuple(_sub_meta(meta) for meta in inst.meta),
+            post_meta=tuple(_sub_meta(meta) for meta in inst.post_meta),
         )
 
     return Rule(
@@ -851,32 +1105,8 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
 
 
 def _walk_rule(rule: Rule, visitor):
-    def _walk(op: Operand) -> None:
-        visitor(op)
-        if isinstance(op, RegViewOp):
-            _walk(op.base)
-        elif isinstance(op, BitSliceOp):
-            _walk(op.base)
-        elif isinstance(op, ExtOp):
-            _walk(op.value)
-        elif isinstance(op, MemoryOperand):
-            if op.address.base is not None:
-                _walk(op.address.base)
-            if op.address.index is not None:
-                _walk(op.address.index)
-            if op.address.scale is not None:
-                _walk(op.address.scale)
-            if op.address.shift is not None:
-                _walk(op.address.shift)
-            if op.address.displacement is not None:
-                _walk(op.address.displacement)
-
-    for inst in rule.guest + rule.host:
-        for op in inst.operands:
-            _walk(op)
-        for meta in inst.meta + inst.post_meta:
-            for op in meta.regs:
-                _walk(op)
+    for operand in iter_instruction_operands(rule.guest + rule.host):
+        visitor(operand)
 
 
 # ── Placeholder parsing and collection ─────────────────────────────────
@@ -887,13 +1117,19 @@ IMM_PLACEHOLDER_RE = re.compile(r"\bimm(\d+)\b")
 
 def parse_placeholder(
     placeholder: str,
-) -> RegOp | TmpOp | RegViewOp | BitSliceOp | ExtOp:
+) -> RegOp | TmpOp | RegViewOp | BitSliceOp | ExtOp | ReadWriteOp:
     """Parse a placeholder string into its AST operand type.
 
     Supports ``i32_reg1``, ``ptr64_reg1``, ``sp64``, ``fp64`` → RegOp,
     ``i32_tmp1``, ``i64_tmp1`` → TmpOp, and
     ``reg64(i32_reg1)`` → RegViewOp.
     """
+    m = re.fullmatch(r"rw\((.*)\)", placeholder)
+    if m:
+        parsed = Instruction._parse_operand(placeholder)
+        if isinstance(parsed, ReadWriteOp):
+            return parsed
+        raise ValueError(f"invalid read/write placeholder: {placeholder!r}")
     m = re.fullmatch(r"reg(\d+)\((.+)\)", placeholder)
     if m:
         view_bits = int(m.group(1))
@@ -951,27 +1187,9 @@ def collect_instruction_imm_ids(insts: tuple[Instruction, ...]) -> set[str]:
         elif isinstance(op, (LitOp, RegTextOp)):
             for m in IMM_PLACEHOLDER_RE.finditer(op.to_text()):
                 ids.add(m.group(1))
-        elif isinstance(op, RegViewOp):
-            _collect(op.base)
-        elif isinstance(op, BitSliceOp):
-            _collect(op.base)
-        elif isinstance(op, ExtOp):
-            _collect(op.value)
-        elif isinstance(op, MemoryOperand):
-            if op.address.base is not None:
-                _collect(op.address.base)
-            if op.address.index is not None:
-                _collect(op.address.index)
-            if op.address.scale is not None:
-                _collect(op.address.scale)
-            if op.address.shift is not None:
-                _collect(op.address.shift)
-            if op.address.displacement is not None:
-                _collect(op.address.displacement)
 
-    for inst in insts:
-        for op in inst.operands:
-            _collect(op)
+    for op in iter_instruction_operands(insts):
+        _collect(op)
     return ids
 
 

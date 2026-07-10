@@ -615,8 +615,26 @@ def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> Non
     prevents accidental aliasing through register-view resolution."""
     diagnostics = RuleDiagnostics()
     pair = _window_pair(
-        (_inst("aarch64", 0x1000, "add", "w8, w0, w8"),),
-        (_inst("x86-64", 0x2000, "add", "eax, ecx"),),
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "add",
+                "w8, w0, w8",
+                write_registers=("w8",),
+                read_registers=("w0", "w8"),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "add",
+                "eax, ecx",
+                write_registers=("eax",),
+                read_registers=("eax", "ecx"),
+            ),
+        ),
     )
     candidate = _candidate(
         inputs=(("w0", "eax"), ("w8", "ecx")),
@@ -634,7 +652,7 @@ def test_generalizer_role_split_prevents_coalescing_distinct_guest_regs() -> Non
     # w0 gets its own placeholder (i32_reg2) because host "eax" is
     # shared across output and input pairs — side-symmetric role split.
     assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg3",)
-    assert rule.host_lines == ("add i32_reg1, i32_reg3",)
+    assert rule.host_lines == ("add rw(i32_reg2, i32_reg1), i32_reg3",)
 
 
 def test_generalizer_uses_stack_pointer_placeholder_without_reg_suffix() -> None:
@@ -668,8 +686,26 @@ def test_generalizer_handles_input_reusing_output_host_register() -> None:
     diagnostics = RuleDiagnostics()
     generalizer = RuleGeneralizer(diagnostics)
     window = _window_pair(
-        (_inst("aarch64", 0x1000, "add", "w8, w0, w8"),),
-        (_inst("x86-64", 0x2000, "add", "eax, ecx"),),
+        (
+            _inst(
+                "aarch64",
+                0x1000,
+                "add",
+                "w8, w0, w8",
+                write_registers=("w8",),
+                read_registers=("w0", "w8"),
+            ),
+        ),
+        (
+            _inst(
+                "x86-64",
+                0x2000,
+                "add",
+                "eax, ecx",
+                write_registers=("eax",),
+                read_registers=("eax", "ecx"),
+            ),
+        ),
     )
     candidate = _candidate(
         inputs=(("w0", "eax"), ("w8", "ecx")),
@@ -682,7 +718,7 @@ def test_generalizer_handles_input_reusing_output_host_register() -> None:
     # w0 gets i32_reg2; w8 write gets i32_reg1; w8 read gets i32_reg3
     # (from guest-side role split).
     assert rule.guest_lines == ("add i32_reg1, i32_reg2, i32_reg3",)
-    assert rule.host_lines == ("add i32_reg1, i32_reg3",)
+    assert rule.host_lines == ("add rw(i32_reg2, i32_reg1), i32_reg3",)
 
 
 def test_splits_guest_register_when_output_and_input_pair_differently() -> None:
