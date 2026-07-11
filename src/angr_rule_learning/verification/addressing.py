@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from angr_rule_learning.addressing import AddressExpr as SharedAddressExpr
 
 
 _REGISTER_RE = r"[A-Za-z][A-Za-z0-9_]*"
@@ -20,53 +20,64 @@ _INDEX_RE = re.compile(
 )
 
 
-@dataclass(frozen=True)
-class AddressExpr:
-    base: str | None
-    index: str | None = None
-    scale: int = 1
-    displacement: int = 0
-    width: int = 64
+class AddressExpr(SharedAddressExpr[str, int]):
+    """Concrete 64-bit machine address specialization."""
 
     def __post_init__(self) -> None:
-        base = self.base.strip().lower() if self.base is not None else None
-        index = self.index.strip().lower() if self.index is not None else None
-        object.__setattr__(self, "base", base)
-        object.__setattr__(self, "index", index)
-        if base is None:
+        super().__post_init__()
+        if self.base is None:
             raise ValueError("address base register is required")
-        if index is None and self.scale != 1:
-            raise ValueError("scale requires index")
-        if self.scale not in {1, 2, 4, 8}:
+        object.__setattr__(self, "base", self.base.strip().lower())
+        if self.index is not None:
+            object.__setattr__(self, "index", self.index.strip().lower())
+        if self.scale is not None and self.scale not in {1, 2, 4, 8}:
             raise ValueError("unsupported address scale")
-        if self.width != 64:
-            raise ValueError("only 64-bit addresses are supported")
-
-    def registers(self) -> tuple[str, ...]:
-        result = [self.base] if self.base is not None else []
-        if self.index is not None:
-            result.append(self.index)
-        return tuple(result)
-
-    def canonical(self) -> str:
-        parts = [self.base]
-        if self.index is not None:
-            if self.scale == 1:
-                parts.append(self.index)
-            else:
-                parts.append(f"{self.index} * {self.scale}")
-        text = " + ".join(part for part in parts if part)
-        if self.displacement > 0:
-            text = f"{text} + {self.displacement}"
-        elif self.displacement < 0:
-            text = f"{text} - {abs(self.displacement)}"
-        return text
-
-    def solve_base_for_slot(self, slot_base: int, index_value: int = 0) -> int:
-        return slot_base - index_value * self.scale - self.displacement
+        if self.scale == 1:
+            object.__setattr__(self, "scale", None)
+        if self.displacement == 0:
+            object.__setattr__(self, "displacement", None)
 
 
-def parse_address_binding(expression: str) -> AddressExpr:
+type ConcreteAddressExpr = AddressExpr
+
+
+def address_scale(expression: ConcreteAddressExpr) -> int:
+    return expression.scale if expression.scale is not None else 1
+
+
+def address_displacement(expression: ConcreteAddressExpr) -> int:
+    return expression.displacement if expression.displacement is not None else 0
+
+
+def canonical_address(expression: ConcreteAddressExpr) -> str:
+    if expression.base is None:
+        raise ValueError("address base register is required")
+    parts = [expression.base]
+    if expression.index is not None:
+        scale = address_scale(expression)
+        parts.append(
+            expression.index if scale == 1 else f"{expression.index} * {scale}"
+        )
+    text = " + ".join(parts)
+    displacement = address_displacement(expression)
+    if displacement > 0:
+        text = f"{text} + {displacement}"
+    elif displacement < 0:
+        text = f"{text} - {abs(displacement)}"
+    return text
+
+
+def solve_base_for_slot(
+    expression: ConcreteAddressExpr, slot_base: int, index_value: int = 0
+) -> int:
+    return (
+        slot_base
+        - index_value * address_scale(expression)
+        - address_displacement(expression)
+    )
+
+
+def parse_address_binding(expression: str) -> ConcreteAddressExpr:
     expr = expression.strip().lower()
     for parser in (_parse_base, _parse_base_disp, _parse_indexed):
         parsed = parser(expr)
@@ -75,14 +86,14 @@ def parse_address_binding(expression: str) -> AddressExpr:
     raise ValueError(f"unsupported address expression: {expression}")
 
 
-def _parse_base(expr: str) -> AddressExpr | None:
+def _parse_base(expr: str) -> ConcreteAddressExpr | None:
     match = _BASE_RE.match(expr)
     if match is None:
         return None
     return AddressExpr(base=match.group("base"))
 
 
-def _parse_base_disp(expr: str) -> AddressExpr | None:
+def _parse_base_disp(expr: str) -> ConcreteAddressExpr | None:
     match = _BASE_DISP_RE.match(expr)
     if match is None:
         return None
@@ -92,7 +103,7 @@ def _parse_base_disp(expr: str) -> AddressExpr | None:
     )
 
 
-def _parse_indexed(expr: str) -> AddressExpr | None:
+def _parse_indexed(expr: str) -> ConcreteAddressExpr | None:
     match = _INDEX_RE.match(expr)
     if match is None:
         return None

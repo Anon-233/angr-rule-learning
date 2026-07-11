@@ -53,6 +53,8 @@ can proceed independently of the constructive learner.
 ```text
 src/angr_rule_learning/
   cli.py
+  addressing/
+    model.py
   arch/
     registry.py
     registers.py
@@ -60,8 +62,10 @@ src/angr_rule_learning/
     memory.py
     aarch64/
       memory.py
+      rule_memory.py
     x86_64/
       memory.py
+      rule_memory.py
   kernel/
     models.py
     synthesize.py
@@ -110,21 +114,30 @@ src/angr_rule_learning/
     skip_patterns.py
   rules/
     ast.py
+    ast_immediates.py
+    ast_traversal.py
     derivation.py
     registers.py
     generalize.py
+    generalization/
+      deduplicate.py
+      models.py
     writer.py
 ```
 
 The package boundaries are:
 
+- `addressing`: defines the single generic `AddressExpr[Register, Immediate]`
+  structure shared by concrete verifier addresses and typed rule operands. It
+  enforces representation-independent invariants only; ISA syntax and numeric
+  interpretation remain outside this package.
 - `arch`: owns canonical architecture names, angr and clang identifiers,
   register families and bit ranges, stack/frame roles, fixed register roles,
   architecture-specific flag expressions, and instruction-level memory
-  recognition. `arch.memory` defines the shared memory-operand contract and
-  dispatches to per-ISA packages such as `arch.aarch64.memory` and
-  `arch.x86_64.memory`. Capability APIs receive an architecture explicitly and
-  contain no guest/host policy.
+  recognition. `arch.memory` defines the concrete instruction memory contract,
+  while `arch.rule_memory` defines the rule-memory parse/validate/format seam.
+  Both dispatch to per-ISA adapters under `arch/<isa>/`; capability interfaces
+  receive an architecture explicitly and contain no guest/host policy.
 - `io`: converts strict JSON dictionaries into typed verifier models and writes
   report/summary JSON.
 - `kernel`: owns the constructive learning route. It defines IR-kernel models,
@@ -137,8 +150,11 @@ The package boundaries are:
 - `extraction`: contains the legacy source/debug-info mining route and reusable
   object/disassembly models. It is no longer the primary learning entry point,
   but `kernel.extract` intentionally reuses `ObjectExtractor`.
-- `rules`: defines the structured Rule AST (`ast.py`) as the canonical
-  internal rule model; classifies registers; generalizes verified extraction
+- `rules`: defines the structured Rule AST as the canonical internal rule
+  model. `ast.py` contains its public nodes and compatibility interface,
+  `ast_immediates.py` owns immediate-expression syntax, and
+  `ast_traversal.py` owns recursive transformations. The package classifies
+  registers; generalizes verified extraction
   windows into typed placeholder rules; derives host-only immediates from
   prescribed instruction-aware templates (`derivation.py`); performs
   relationship-preserving alpha-equivalence deduplication and consolidation;
@@ -163,7 +179,8 @@ IRKernel
   -> kernel.KernelBindingBuilder
      -> VerificationCandidate values
   -> verification.BatchVerifier
-     -> addressing.parse_address_binding (AddressExpr for memory bindings)
+     -> addressing.AddressExpr (shared address structure)
+     -> verification.addressing (concrete parsing and numeric interpretation)
   -> VerificationReport values
   -> rules.RuleGeneralizer
      -> rules.registers (register classification + generalization)

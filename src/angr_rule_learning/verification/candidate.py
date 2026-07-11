@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from angr_rule_learning.verification.addressing import parse_address_binding
+from angr_rule_learning.verification.addressing import (
+    canonical_address,
+    parse_address_binding,
+)
 
 
 def _canonicalize_binding(expression: str) -> str:
@@ -14,7 +17,7 @@ def _canonicalize_binding(expression: str) -> str:
     ``unsupported_address_expression`` at the right stage.
     """
     try:
-        return parse_address_binding(expression).canonical()
+        return canonical_address(parse_address_binding(expression))
     except ValueError:
         return expression
 

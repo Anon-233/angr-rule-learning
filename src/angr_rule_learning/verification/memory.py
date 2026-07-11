@@ -8,7 +8,10 @@ import claripy
 from angr_rule_learning.arch.registers import is_compatible_frame_base_pair
 from angr_rule_learning.verification.addressing import (
     AddressExpr,
+    address_displacement,
+    address_scale,
     parse_address_binding,
+    solve_base_for_slot,
 )
 from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.config import VerificationConfig
@@ -102,8 +105,8 @@ def _initialize_memory_registers(
         host_index_val = assigned.get(host_expr.index, 0) if host_expr.index else 0
 
         if _is_frame_register_pair(candidate, guest_expr.base, host_expr.base):
-            guest_base_val = guest_expr.solve_base_for_slot(base, guest_index_val)
-            host_base_val = host_expr.solve_base_for_slot(base, host_index_val)
+            guest_base_val = solve_base_for_slot(guest_expr, base, guest_index_val)
+            host_base_val = solve_base_for_slot(host_expr, base, host_index_val)
             offset = host_base_val - guest_base_val
             key = (guest_expr.base, host_expr.base)
             existing_offset = frame_offsets.get(key)
@@ -118,7 +121,7 @@ def _initialize_memory_registers(
             continue
 
         # Compute guest base register value from the guest expression.
-        guest_base_val = guest_expr.solve_base_for_slot(base, guest_index_val)
+        guest_base_val = solve_base_for_slot(guest_expr, base, guest_index_val)
         _assign_witness(assigned, guest_expr.base, guest_base_val)
         host_pair = guest_to_host.get(guest_expr.base)
         if host_pair is not None:
@@ -128,7 +131,7 @@ def _initialize_memory_registers(
         # compute independently so the memory-event address check
         # can still verify the host-side effective address.
         if host_to_guest.get(host_expr.base) is None:
-            host_base_val = host_expr.solve_base_for_slot(base, host_index_val)
+            host_base_val = solve_base_for_slot(host_expr, base, host_index_val)
             _assign_witness(assigned, host_expr.base, host_base_val)
 
     for register, value in assigned.items():
@@ -343,12 +346,14 @@ def _allocate_frame_group(
 
         slot_base = (
             guest_frame_base
-            + guest_index_val * guest_expr.scale
-            + guest_expr.displacement
+            + guest_index_val * address_scale(guest_expr)
+            + address_displacement(guest_expr)
         )
 
         expected_host_frame = (
-            slot_base - host_index_val * host_expr.scale - host_expr.displacement
+            slot_base
+            - host_index_val * address_scale(host_expr)
+            - address_displacement(host_expr)
         )
         current_host_offset = expected_host_frame - guest_frame_base
         if host_frame_offset is None:

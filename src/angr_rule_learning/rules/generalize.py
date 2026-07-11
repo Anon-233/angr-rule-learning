@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from angr_rule_learning.arch.registers import (
@@ -23,6 +22,15 @@ from angr_rule_learning.rules.derivation import (
     DerivationContext,
     derive_host_expressions,
 )
+from angr_rule_learning.rules.generalization.models import (
+    GeneratedRule,
+    ImmediateMetadata,
+    ImmediateOccurrence,
+    ImmediateReplacementResult,
+    RuleDiagnostics,
+    RuleSkipDetail,
+)
+from angr_rule_learning.rules.generalization.deduplicate import RuleDeduplicator
 from angr_rule_learning.rules.partial_registers import (
     PartialRegisterRewriteError,
     resolve_partial_register_views,
@@ -45,152 +53,10 @@ from angr_rule_learning.verification.candidate import VerificationCandidate
 from angr_rule_learning.verification.report import VerificationReport
 
 if TYPE_CHECKING:
-    from angr_rule_learning.rules.ast import Instruction, Operand, Rule as AstRule
+    from angr_rule_learning.rules.ast import Instruction, Operand
 
 
 _RESERVED_LITERALS = frozenset({"0", "00", "000"})
-
-
-@dataclass(frozen=True)
-class GeneratedRule:
-    rule_id: int
-    candidate_id: str
-    rule: AstRule
-
-    @property
-    def guest_lines(self) -> tuple[str, ...]:
-        result: list[str] = []
-        for inst in self.rule.guest:
-            for line in inst.to_text().split("\n"):
-                result.append(line)
-        return tuple(result)
-
-    @property
-    def host_lines(self) -> tuple[str, ...]:
-        result: list[str] = []
-        for inst in self.rule.host:
-            for line in inst.to_text().split("\n"):
-                result.append(line)
-        return tuple(result)
-
-    @classmethod
-    def from_text_lines(
-        cls,
-        rule_id: int,
-        candidate_id: str,
-        guest_lines: tuple[str, ...],
-        host_lines: tuple[str, ...],
-        *,
-        guest_arch: str | None = None,
-        host_arch: str | None = None,
-    ) -> "GeneratedRule":
-        from angr_rule_learning.rules.ast import Rule
-
-        return cls(
-            rule_id=rule_id,
-            candidate_id=candidate_id,
-            rule=Rule.from_generated(
-                rule_id,
-                candidate_id,
-                guest_lines,
-                host_lines,
-                guest_arch=guest_arch,
-                host_arch=host_arch,
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class RuleSkipDetail:
-    candidate_id: str
-    reason: str
-    guest_lines: tuple[str, ...]
-    host_lines: tuple[str, ...]
-    input_registers: tuple[tuple[str, str], ...]
-    output_registers: tuple[tuple[str, str], ...]
-    memory_bindings: tuple[dict[str, str], ...]
-
-    def to_json(self) -> dict[str, object]:
-        return {
-            "candidate_id": self.candidate_id,
-            "reason": self.reason,
-            "guest_lines": list(self.guest_lines),
-            "host_lines": list(self.host_lines),
-            "input_registers": [list(pair) for pair in self.input_registers],
-            "output_registers": [list(pair) for pair in self.output_registers],
-            "memory_bindings": list(self.memory_bindings),
-        }
-
-
-@dataclass(frozen=True)
-class ImmediateOccurrence:
-    side: str
-    instruction_index: int
-    operand_index: int
-    value: int
-    text: str
-
-
-@dataclass(frozen=True)
-class ImmediateMetadata:
-    value_by_id: dict[str, int] = field(default_factory=dict)
-    occurrences_by_id: dict[str, tuple[ImmediateOccurrence, ...]] = field(
-        default_factory=dict
-    )
-
-
-@dataclass(frozen=True)
-class ImmediateReplacementResult:
-    guest: tuple[Instruction, ...]
-    host: tuple[Instruction, ...]
-    metadata: ImmediateMetadata
-
-
-@dataclass
-class RuleDiagnostics:
-    collect_details: bool = False
-    rules_considered: int = 0
-    rules_emitted: int = 0
-    rules_subsumed: int = 0
-    skip_reasons: Counter[str] = field(default_factory=Counter)
-    skipped_rules: list[RuleSkipDetail] = field(default_factory=list)
-
-    @property
-    def rules_skipped(self) -> int:
-        return sum(self.skip_reasons.values())
-
-    def record_considered(self) -> None:
-        self.rules_considered += 1
-
-    def record_emitted(self) -> None:
-        self.rules_emitted += 1
-
-    def record_subsumed(self, count: int = 1) -> None:
-        self.rules_subsumed += count
-        self.rules_emitted -= count
-
-    def record_skipped(
-        self,
-        reason: str,
-        detail: RuleSkipDetail | None = None,
-    ) -> None:
-        self.skip_reasons.update((reason,))
-        if self.collect_details and detail is not None:
-            self.skipped_rules.append(detail)
-
-    def to_json(self, *, include_details: bool = False) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "rules_considered": self.rules_considered,
-            "rules_emitted": self.rules_emitted,
-            "rules_skipped": self.rules_skipped,
-            "rules_subsumed": self.rules_subsumed,
-            "skip_reasons": dict(sorted(self.skip_reasons.items())),
-        }
-        if include_details:
-            payload["skipped_rules"] = [
-                detail.to_json() for detail in self.skipped_rules
-            ]
-        return payload
 
 
 @dataclass(frozen=True)
@@ -247,7 +113,7 @@ class RuleGeneralizer:
         parameterized_verifier: object | None = None,
     ) -> None:
         self.diagnostics = diagnostics or RuleDiagnostics()
-        self._emitted_fingerprints: list[tuple[object, ...]] = []
+        self._deduplicator = RuleDeduplicator()
         if parameterized_verifier is None:
             from angr_rule_learning.param_verify.checker import (
                 ParameterizedRuleVerifier,
@@ -396,30 +262,22 @@ class RuleGeneralizer:
             self._record_skip(candidate, exc.reason, guest_raw_insts, host_raw_insts)
             return None
 
-        # AST alpha-equivalence dedup: compare full Rules, not separate
-        # guest/host sequences, so that guest↔host relationships are
-        # preserved across the comparison.
-        from angr_rule_learning.rules._fingerprint import build_rule_fingerprint
         from angr_rule_learning.rules.ast import Rule as AstRule
 
-        candidate_fp = build_rule_fingerprint(
-            AstRule(
-                rule_id=0,
-                candidate_id="",
-                guest=guest_insts,
-                host=host_insts,
-            )
+        candidate_rule = AstRule(
+            rule_id=0,
+            candidate_id="",
+            guest=guest_insts,
+            host=host_insts,
         )
-        for existing_fp in self._emitted_fingerprints:
-            if candidate_fp == existing_fp:
-                self._record_skip(
-                    candidate,
-                    "duplicate_rule",
-                    guest_insts,
-                    host_insts,
-                )
-                return None
-        self._emitted_fingerprints.append(candidate_fp)
+        if not self._deduplicator.accept(candidate_rule):
+            self._record_skip(
+                candidate,
+                "duplicate_rule",
+                guest_insts,
+                host_insts,
+            )
+            return None
 
         rule = GeneratedRule(
             rule_id=rule_id,

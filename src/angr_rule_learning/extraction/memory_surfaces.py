@@ -13,7 +13,11 @@ from angr_rule_learning.arch.registers import (
     is_stack_pointer,
 )
 from angr_rule_learning.extraction.liveness import family_for_register
-from angr_rule_learning.verification.addressing import AddressExpr
+from angr_rule_learning.verification.addressing import (
+    AddressExpr,
+    address_displacement,
+    canonical_address,
+)
 from angr_rule_learning.extraction.models import (
     ExtractedInstruction,
     InstructionWindow,
@@ -128,8 +132,8 @@ def infer_memory_surface(pair: WindowPair) -> MemorySurface:
         bindings.append(
             MemoryBinding(
                 slot_name,
-                guest.address.canonical(),
-                host.address.canonical(),
+                canonical_address(guest.address),
+                canonical_address(host.address),
                 guest.kind,
             )
         )
@@ -234,11 +238,13 @@ def _reorder_stack_operands(
             if op.kind != first_kind:
                 return False
         # Check for overlapping address ranges.
-        sorted_ops = sorted(ops, key=lambda x: x.operand.address.displacement)
+        sorted_ops = sorted(ops, key=lambda x: address_displacement(x.operand.address))
         for i in range(len(sorted_ops) - 1):
             a = sorted_ops[i].operand
             b = sorted_ops[i + 1].operand
-            if a.address.displacement + a.width > b.address.displacement:
+            if address_displacement(a.address) + a.width > address_displacement(
+                b.address
+            ):
                 return False  # overlap
         return True
 
@@ -248,8 +254,12 @@ def _reorder_stack_operands(
     elif not _can_reorder(guest) or not _can_reorder(host):
         return (), (), "memory_address_order_conflict"
     else:
-        guest = tuple(sorted(guest, key=lambda x: x.operand.address.displacement))
-        host = tuple(sorted(host, key=lambda x: x.operand.address.displacement))
+        guest = tuple(
+            sorted(guest, key=lambda x: address_displacement(x.operand.address))
+        )
+        host = tuple(
+            sorted(host, key=lambda x: address_displacement(x.operand.address))
+        )
     return guest, host, None
 
 
@@ -269,7 +279,7 @@ def _adjust_for_sp_delta(
             base=op.address.base,
             index=op.address.index,
             scale=op.address.scale,
-            displacement=op.address.displacement + delta,
+            displacement=address_displacement(op.address) + delta,
         ),
         text=op.text,
         value_register=op.value_register,
