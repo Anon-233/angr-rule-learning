@@ -10,6 +10,8 @@ if TYPE_CHECKING:
 
 
 class AArch64RuleMemoryAdapter:
+    syntax = "aarch64"
+
     def validate(self, operand: MemoryOperand) -> None:
         address = operand.address
         if address.base is None:
@@ -79,6 +81,38 @@ class AArch64RuleMemoryAdapter:
             parts.append(address.displacement.to_text())
         suffix = "!" if address.writeback == "pre" else ""
         return f"[{', '.join(parts)}]{suffix}"
+
+    def combine_operands(self, operands: list[object]) -> list[object]:
+        from angr_rule_learning.rules.ast import MemoryOperand
+
+        result: list[object] = []
+        index = 0
+        while index < len(operands):
+            operand = operands[index]
+            if (
+                isinstance(operand, MemoryOperand)
+                and operand.address.writeback == "none"
+                and index + 1 == len(operands) - 1
+            ):
+                update = operands[index + 1]
+                address = operand.address
+                operand = MemoryOperand(
+                    address=AddressExpr(
+                        base=address.base,
+                        index=address.index,
+                        scale=address.scale,
+                        shift=address.shift,
+                        displacement=update,
+                        writeback="post",
+                    ),
+                    syntax=operand.syntax,
+                    value_bits=operand.value_bits,
+                    size_keyword=operand.size_keyword,
+                )
+                index += 1
+            result.append(operand)
+            index += 1
+        return result
 
 
 ADAPTER = AArch64RuleMemoryAdapter()

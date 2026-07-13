@@ -3096,7 +3096,6 @@ class TestRegViewOpRoundtrip:
         rv = parse_placeholder("reg64(i32_reg1)")
         assert isinstance(rv, RegViewOp)
         assert rv.view_bits == 64
-        assert rv.mode == "reg"
         assert rv.base.to_text() == "i32_reg1"
         assert rv.to_text() == "reg64(i32_reg1)"
 

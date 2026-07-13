@@ -232,7 +232,7 @@ class _FingerprintBuilder:
             return (TAG_REG, cid, op.prefix, op.bits)
         elif isinstance(op, RegViewOp):
             base_fp = self._fingerprint_op(op.base)
-            return (TAG_REGVIEW, op.view_bits, op.mode) + base_fp
+            return (TAG_REGVIEW, op.view_bits) + base_fp
         elif isinstance(op, GuestRegViewOp):
             return (TAG_GUEST_REGVIEW, op.bits, op.scope, op.register)
         elif isinstance(op, BitSliceOp):

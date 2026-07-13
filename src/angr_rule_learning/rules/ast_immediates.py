@@ -118,7 +118,7 @@ def parse_imm_expr(text: str) -> ImmExpr:
     match = re.fullmatch(r"log2\((.+)\)", inner)
     if match:
         return Log2Expr(parse_imm_expr(match.group(1)))
-    return RawImmExpr(inner)
+    raise ValueError(f"unsupported immediate expression: {text!r}")
 
 
 def _split_top_level_expr(text: str, operator: str) -> tuple[str, str] | None:

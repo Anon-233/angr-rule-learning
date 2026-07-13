@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 
 
 class X8664RuleMemoryAdapter:
+    syntax = "x86-64"
     _memory_re = re.compile(
         r"^(?:(?P<size>byte|word|dword|qword)\s+ptr\s+)?(?P<addr>\[.+\])$",
         re.IGNORECASE,
@@ -52,7 +53,7 @@ class X8664RuleMemoryAdapter:
         address = self._parse_address(match.group("addr")[1:-1], parse_operand)
         return MemoryOperand(
             address=address,
-            syntax="x86",
+            syntax=self.syntax,
             value_bits=self._size_bits[size.lower()] if size is not None else None,
             size_keyword=size.lower() if size is not None else None,
         )
@@ -122,6 +123,9 @@ class X8664RuleMemoryAdapter:
         if operand.size_keyword is not None:
             return f"{operand.size_keyword} ptr {result}"
         return result
+
+    def combine_operands(self, operands: list[object]) -> list[object]:
+        return operands
 
 
 ADAPTER = X8664RuleMemoryAdapter()

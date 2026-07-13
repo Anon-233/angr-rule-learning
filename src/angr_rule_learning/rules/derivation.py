@@ -88,7 +88,7 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                 )
                 if derived is not None:
                     op = ImmOp(
-                        id=op.id,
+                        id=0,
                         derived=f"${{{derived}}}",
                         aarch64_hash=op.aarch64_hash,
                         neg=op.neg,
@@ -111,7 +111,7 @@ def derive_host_expressions(ctx: DerivationContext) -> tuple[Instruction, ...]:
                     if derived is None:
                         return part
                     return ImmOp(
-                        id=part.id,
+                        id=0,
                         derived=f"${{{derived}}}",
                         aarch64_hash=part.aarch64_hash,
                         neg=part.neg,

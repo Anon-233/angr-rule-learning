@@ -115,6 +115,8 @@ src/angr_rule_learning/
   rules/
     ast.py
     ast_immediates.py
+    ast_parser.py
+    ast_transform.py
     ast_traversal.py
     derivation.py
     registers.py
@@ -152,8 +154,10 @@ The package boundaries are:
   but `kernel.extract` intentionally reuses `ObjectExtractor`.
 - `rules`: defines the structured Rule AST as the canonical internal rule
   model. `ast.py` contains its public nodes and compatibility interface,
-  `ast_immediates.py` owns immediate-expression syntax, and
-  `ast_traversal.py` owns recursive transformations. The package classifies
+  `ast_parser.py` owns text parsing, `ast_immediates.py` owns the closed
+  immediate-expression language, `ast_traversal.py` owns operand-tree
+  recursion, and `ast_transform.py` owns complete-rule queries and immutable
+  transformations. The package classifies
   registers; generalizes verified extraction
   windows into typed placeholder rules; derives host-only immediates from
   prescribed instruction-aware templates (`derivation.py`); performs
@@ -343,8 +347,10 @@ Detailed verifier behavior and support boundaries are documented in
 
 ## Rule AST
 
-The canonical rule model lives in `rules/ast.py`.  Every generated rule is
-a dataclass tree of `Rule`, `Instruction`, and typed `Operand` nodes.  Text
+The canonical rule model is exposed by `rules/ast.py`, with parsing and
+transformations implemented by the neighboring `ast_*` modules. Every
+generated rule is a dataclass tree of `Rule`, `Instruction`, and typed
+`Operand` nodes. Text
 rules remain the storage/interchange format, but rule generation, immediate
 derivation, alpha-equivalence, and the parameterized-rule verifier operate on
 this AST before serializing with `Rule.to_text()`.
@@ -378,7 +384,11 @@ The AST supports:
   verifier frontends without reparsing entire instruction lines.
 - **Validated construction**: incoherent address combinations are rejected
   instead of being silently dropped during serialization. AArch64 pre/post-index
-  writeback is retained in `AddressExpr.writeback`.
+  writeback is retained in `AddressExpr.writeback`. `RegViewOp` has exactly
+  one meaning (same-family view with unspecified newly exposed high bits),
+  while zero/sign extension is represented only by `ExtOp`. Unknown derived
+  immediate syntax is rejected by the parser rather than silently becoming
+  opaque text; `RawImmExpr` is reserved for explicit internal construction.
 - **Unified operand traversal**: `iter_instruction_operands` and `map_operand`
   centralize recursion through register views, read/write roles, memory
   addresses, and metadata.

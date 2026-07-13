@@ -6,10 +6,8 @@ structural comparison, substitution, and normalisation.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from collections.abc import Callable, Iterator
-from typing import ClassVar
 
 from angr_rule_learning.addressing import AddressExpr
 from angr_rule_learning.rules.ast_immediates import (
@@ -25,6 +23,48 @@ from angr_rule_learning.rules.ast_immediates import (
     parse_imm_expr,
 )
 
+__all__ = [
+    "AddressExpr",
+    "BitOrExpr",
+    "BitSliceOp",
+    "ExtOp",
+    "GuestRegViewOp",
+    "ImmExpr",
+    "ImmOp",
+    "ImmRefExpr",
+    "Instruction",
+    "IntExpr",
+    "LabelOp",
+    "LitOp",
+    "Log2Expr",
+    "MemoryOperand",
+    "MetaOp",
+    "NegExpr",
+    "Operand",
+    "RawImmExpr",
+    "ReadWriteOp",
+    "RegOp",
+    "RegTextOp",
+    "RegViewOp",
+    "Rule",
+    "ShiftLeftExpr",
+    "TmpOp",
+    "collect_imm_ids",
+    "collect_instruction_imm_ids",
+    "has_literal",
+    "instruction_sequences_alpha_equal",
+    "iter_instruction_operands",
+    "iter_operand_tree",
+    "labels_are_consistent",
+    "map_operand",
+    "operand_children",
+    "parse_imm_expr",
+    "parse_instruction_sequence",
+    "parse_placeholder",
+    "rule_alpha_equal",
+    "substitute_imm",
+]
+
 
 # ── Operand types ──────────────────────────────────────────────────────
 
@@ -36,6 +76,19 @@ class RegOp:
     prefix: str  # "i8", "i16", "i32", "i64", "sp", "fp"
     bits: int
     id: int
+
+    def __post_init__(self) -> None:
+        if self.bits <= 0:
+            raise ValueError("register width must be positive")
+        if self.id < 0:
+            raise ValueError("register placeholder id must not be negative")
+        if self.prefix in {"sp", "fp"}:
+            if self.id != 0:
+                raise ValueError("stack/frame placeholders must use id zero")
+        else:
+            width_text = self.prefix.removeprefix("ptr").removeprefix("i")
+            if not width_text.isdigit() or int(width_text) != self.bits:
+                raise ValueError("register prefix does not match its bit width")
 
     def to_text(self) -> str:
         if self.prefix in ("sp", "fp"):
@@ -53,6 +106,10 @@ class ImmOp:
     neg: bool = False  # True for negative immediates like #-imm1
 
     def __post_init__(self) -> None:
+        if self.derived is None and self.id < 1:
+            raise ValueError("immediate placeholder id must be positive")
+        if self.derived is not None and self.id != 0:
+            raise ValueError("derived immediate must use id zero")
         derived = self.derived
         if isinstance(self.derived, str):
             derived = parse_imm_expr(self.derived)
@@ -81,6 +138,15 @@ class TmpOp:
     bits: int
     id: int
 
+    def __post_init__(self) -> None:
+        if self.bits <= 0:
+            raise ValueError("temporary width must be positive")
+        if self.id < 1:
+            raise ValueError("temporary id must be positive")
+        width_text = self.prefix[1:] if self.prefix[:1] in {"i", "f", "v"} else ""
+        if not width_text.isdigit() or int(width_text) != self.bits:
+            raise ValueError("temporary prefix does not match its bit width")
+
     def to_text(self) -> str:
         return f"{self.prefix}_tmp{self.id}"
 
@@ -102,6 +168,10 @@ class LabelOp:
     id: int
     aarch64_hash: bool = False
 
+    def __post_init__(self) -> None:
+        if self.id < 1:
+            raise ValueError("label id must be positive")
+
     def to_text(self) -> str:
         prefix = "#" if self.aarch64_hash else ""
         return f"{prefix}label{self.id}"
@@ -122,15 +192,17 @@ class RegViewOp:
     """Register view/cast: ``reg64(i32_reg1)``, ``reg32(i64_reg1)``.
 
     Expresses that a semantic placeholder is accessed at a different bit
-    width at a specific use point.  ``mode="reg"`` means same-family
-    register view: low bits are bound to the base placeholder, high bits
-    are unspecified.  Modes ``"zext"``, ``"sext"``, and ``"lo"`` are
-    reserved for future use.
+    width at a specific use point. Low bits are bound to the base placeholder;
+    newly exposed high bits are unspecified. Zero/sign extension use
+    :class:`ExtOp` instead.
     """
 
     base: RegOp | TmpOp
     view_bits: int
-    mode: str = "reg"
+
+    def __post_init__(self) -> None:
+        if self.view_bits <= 0:
+            raise ValueError("register view width must be positive")
 
     def to_text(self) -> str:
         return f"reg{self.view_bits}({self.base.to_text()})"
@@ -149,6 +221,14 @@ class GuestRegViewOp:
     register: str
     bits: int
 
+    def __post_init__(self) -> None:
+        if self.scope not in {"guest", "host"}:
+            raise ValueError("physical register view scope must be guest or host")
+        if not self.register:
+            raise ValueError("physical register view requires a register")
+        if self.bits <= 0:
+            raise ValueError("physical register view width must be positive")
+
     def to_text(self) -> str:
         return f"lo{self.bits}({self.scope}.{self.register})"
 
@@ -159,6 +239,10 @@ class BitSliceOp:
 
     base: Operand
     bits: int
+
+    def __post_init__(self) -> None:
+        if self.bits <= 0:
+            raise ValueError("bit slice width must be positive")
 
     def to_text(self) -> str:
         return f"lo{self.bits}({self.base.to_text()})"
@@ -171,6 +255,12 @@ class ExtOp:
     kind: str
     bits: int
     value: Operand
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"zext", "sext"}:
+            raise ValueError(f"unsupported extension kind: {self.kind!r}")
+        if self.bits <= 0:
+            raise ValueError("extension width must be positive")
 
     def to_text(self) -> str:
         return f"{self.kind}{self.bits}({self.value.to_text()})"
@@ -195,8 +285,8 @@ class MemoryOperand:
     size_keyword: str | None = None
 
     def __post_init__(self) -> None:
-        if self.syntax not in {"x86", "aarch64"}:
-            raise ValueError(f"unknown memory operand syntax: {self.syntax!r}")
+        if not self.syntax.strip():
+            raise ValueError("memory operand syntax must not be empty")
         if self.value_bits is not None and self.value_bits <= 0:
             raise ValueError("memory operand width must be positive")
         from angr_rule_learning.arch.rule_memory import validate_rule_memory
@@ -257,8 +347,6 @@ class Instruction:
     meta: tuple[MetaOp, ...] = ()
     post_meta: tuple[MetaOp, ...] = ()
 
-    _PUNCT_RE: ClassVar[re.Pattern[str]] = re.compile(r"([\[\],#+*\-])")
-
     def to_text(self) -> str:
         parts: list[str] = []
         for m in self.meta:
@@ -280,11 +368,9 @@ class Instruction:
         This is a best-effort parser for the subset of syntax the
         generalizer produces.  It is not a full assembly parser.
         """
-        tokens = line.strip().split(maxsplit=1)
-        mnemonic = tokens[0]
-        ops_text = tokens[1] if len(tokens) > 1 else ""
-        operands = tuple(cls._parse_operands(ops_text, arch=arch))
-        return cls(mnemonic=mnemonic, operands=operands, post_meta=())
+        from angr_rule_learning.rules.ast_parser import parse_instruction
+
+        return parse_instruction(line, arch=arch)
 
     @classmethod
     def _parse_operands(
@@ -293,153 +379,21 @@ class Instruction:
         *,
         arch: str | None = None,
     ) -> list[Operand]:
-        if not text:
-            return []
-        # Split on commas that are not inside brackets or ${}.
-        parts = cls._split_operands(text)
-        result: list[Operand] = []
-        index = 0
-        while index < len(parts):
-            operand = cls._parse_operand(parts[index].strip(), arch=arch)
-            if (
-                isinstance(operand, MemoryOperand)
-                and operand.syntax == "aarch64"
-                and operand.address.writeback == "none"
-                and index + 1 == len(parts) - 1
-            ):
-                update = cls._parse_operand(parts[index + 1].strip(), arch=arch)
-                address = operand.address
-                operand = MemoryOperand(
-                    address=AddressExpr(
-                        base=address.base,
-                        index=address.index,
-                        scale=address.scale,
-                        shift=address.shift,
-                        displacement=update,
-                        writeback="post",
-                    ),
-                    syntax=operand.syntax,
-                    value_bits=operand.value_bits,
-                    size_keyword=operand.size_keyword,
-                )
-                index += 1
-            result.append(operand)
-            index += 1
-        return result
+        from angr_rule_learning.rules.ast_parser import parse_operands
+
+        return parse_operands(text, arch=arch)
 
     @staticmethod
     def _split_operands(text: str) -> list[str]:
-        parts: list[str] = []
-        depth = 0
-        current: list[str] = []
-        for ch in text:
-            if ch in "([{":
-                depth += 1
-            elif ch in ")]}":
-                depth -= 1
-            if ch == "," and depth == 0:
-                parts.append("".join(current))
-                current = []
-            else:
-                current.append(ch)
-        if current:
-            parts.append("".join(current))
-        return parts
+        from angr_rule_learning.rules.ast_parser import split_operands
+
+        return split_operands(text)
 
     @staticmethod
     def _parse_operand(text: str, *, arch: str | None = None) -> Operand:
-        text = text.strip()
-        if not text:
-            return RegTextOp(text)
+        from angr_rule_learning.rules.ast_parser import parse_operand
 
-        memory = _parse_memory_operand(text, syntax_hint=_memory_syntax_for_arch(arch))
-        if memory is not None:
-            return memory
-
-        # Label
-        m = re.fullmatch(r"(#?)label(\d+)", text)
-        if m:
-            return LabelOp(id=int(m.group(2)), aarch64_hash=bool(m.group(1)))
-
-        # Temp: i32_tmp1, i64_tmp1, etc.
-        m = re.fullmatch(r"(i\d+|f\d+|v\d+)_tmp(\d+)", text)
-        if m:
-            prefix = m.group(1)
-            bits = int(prefix[1:])
-            return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
-
-        # Immediate with derivation
-        m = re.fullmatch(r"(#?)(-?)\$\{.*\}", text)
-        if m:
-            derived_text = text[len(m.group(1)) + len(m.group(2)) :]
-            return ImmOp(
-                id=0,
-                derived=derived_text,
-                aarch64_hash=bool(m.group(1)),
-                neg=bool(m.group(2)),
-            )
-
-        # Immediate: #immN, #-immN, -immN, immN
-        m = re.fullmatch(r"(#?)(-?)imm(\d+)", text)
-        if m:
-            return ImmOp(
-                id=int(m.group(3)),
-                aarch64_hash=bool(m.group(1)),
-                neg=bool(m.group(2)),
-            )
-
-        # Physical Guest register view: lo8(guest.rcx)
-        m = re.fullmatch(r"lo(\d+)\((guest|host)\.([A-Za-z][A-Za-z0-9]*)\)", text)
-        if m:
-            return GuestRegViewOp(
-                scope=m.group(2).lower(),
-                register=m.group(3).lower(),
-                bits=int(m.group(1)),
-            )
-
-        # Implicit read/modify/write register with distinct semantic roles.
-        m = re.fullmatch(r"rw\((.*)\)", text)
-        if m:
-            parts = Instruction._split_operands(m.group(1))
-            if len(parts) != 2:
-                raise ValueError(f"read/write operand requires two roles: {text!r}")
-            read = Instruction._parse_operand(parts[0])
-            write = Instruction._parse_operand(parts[1])
-            if not isinstance(write, (RegOp, TmpOp)):
-                raise ValueError(f"read/write destination is not assignable: {text!r}")
-            return ReadWriteOp(read=read, write=write)
-
-        # Zero/sign extension: zext32(lo8(i32_reg1)), sext64(i32_reg1)
-        m = re.fullmatch(r"(zext|sext)(\d+)\((.+)\)", text)
-        if m:
-            inner = Instruction._parse_operand(m.group(3))
-            return ExtOp(kind=m.group(1), bits=int(m.group(2)), value=inner)
-
-        # Low-bit slice: lo8(i32_reg1)
-        m = re.fullmatch(r"lo(\d+)\((.+)\)", text)
-        if m:
-            inner = Instruction._parse_operand(m.group(2))
-            return BitSliceOp(base=inner, bits=int(m.group(1)))
-
-        # Register view/cast: reg64(i32_reg1)
-        m = re.fullmatch(r"reg(\d+)\((.+)\)", text)
-        if m:
-            view_bits = int(m.group(1))
-            inner_text = m.group(2)
-            base = Instruction._parse_operand(inner_text)
-            if isinstance(base, (RegOp, TmpOp)):
-                return RegViewOp(base=base, view_bits=view_bits)
-            # If the inner text didn't parse as a placeholder, fall through
-            # to LitOp rather than producing an invalid RegViewOp.
-
-        # Register: delegate to parse_placeholder
-        try:
-            return parse_placeholder(text)
-        except ValueError:
-            pass
-
-        # Literal: #0, #-4, 0, etc.
-        return LitOp(value=text)
+        return parse_operand(text, arch=arch)
 
 
 def operand_children(op: Operand) -> tuple[Operand, ...]:
@@ -472,45 +426,6 @@ def iter_instruction_operands(
     )
 
     yield from impl(instructions)
-
-
-_X86_MEMORY_RE = re.compile(
-    r"^(?:(?P<size>byte|word|dword|qword)\s+ptr\s+)?(?P<addr>\[.+\])$",
-    re.IGNORECASE,
-)
-
-
-def _memory_syntax_for_arch(arch: str | None) -> str | None:
-    if arch is None:
-        return None
-    normalized = arch.strip().lower().replace("_", "-")
-    if normalized in {"aarch64", "arm64"}:
-        return "aarch64"
-    if normalized in {"x86-64", "amd64"}:
-        return "x86"
-    return None
-
-
-def _parse_memory_operand(
-    text: str, *, syntax_hint: str | None = None
-) -> MemoryOperand | None:
-    from angr_rule_learning.arch.rule_memory import parse_rule_memory
-
-    pre_index = text.endswith("]!")
-    bracket_text = text[:-1] if pre_index else text
-    syntax = syntax_hint
-    if syntax is None and bracket_text.startswith("[") and bracket_text.endswith("]"):
-        syntax = "aarch64" if "," in bracket_text else "x86"
-    if syntax is None and _X86_MEMORY_RE.fullmatch(text) is not None:
-        syntax = "x86"
-    if syntax is None:
-        return None
-    return parse_rule_memory(
-        text,
-        syntax,
-        Instruction._parse_operand,
-        Instruction._split_operands,
-    )
 
 
 # ── Rule ───────────────────────────────────────────────────────────────
@@ -556,39 +471,9 @@ def parse_instruction_sequence(
     lines: tuple[str, ...], *, arch: str | None = None
 ) -> tuple[Instruction, ...]:
     """Parse serialized rule lines and restore save/restore attachment."""
-    result: list[Instruction] = []
-    pending_meta: list[MetaOp] = []
-    for line in lines:
-        parsed = Instruction.from_text(line, arch=arch)
-        mnemonic = parsed.mnemonic.lower()
-        if mnemonic == "save":
-            pending_meta.append(MetaOp("save", parsed.operands))
-            continue
-        if mnemonic == "restore":
-            if pending_meta:
-                raise ValueError("restore cannot appear before pending save target")
-            if not result:
-                raise ValueError("restore requires a preceding instruction")
-            previous = result[-1]
-            result[-1] = Instruction(
-                mnemonic=previous.mnemonic,
-                operands=previous.operands,
-                meta=previous.meta,
-                post_meta=previous.post_meta + (MetaOp("restore", parsed.operands),),
-            )
-            continue
-        result.append(
-            Instruction(
-                mnemonic=parsed.mnemonic,
-                operands=parsed.operands,
-                meta=tuple(pending_meta),
-                post_meta=parsed.post_meta,
-            )
-        )
-        pending_meta.clear()
-    if pending_meta:
-        raise ValueError("save requires a following instruction")
-    return tuple(result)
+    from angr_rule_learning.rules.ast_parser import parse_instruction_sequence as impl
+
+    return impl(lines, arch=arch)
 
 
 # ── Collection helpers ────────────────────────────────────────────────
@@ -596,30 +481,16 @@ def parse_instruction_sequence(
 
 def collect_imm_ids(rule: Rule) -> set[int]:
     """Return the set of immediate placeholder IDs used in *rule*."""
-    ids: set[int] = set()
+    from angr_rule_learning.rules.ast_transform import collect_imm_ids as impl
 
-    def _walk(op):
-        if isinstance(op, ImmOp):
-            if op.derived is not None:
-                ids.update(op.derived.imm_ids())
-            elif op.id != 0:
-                ids.add(op.id)
-
-    _walk_rule(rule, _walk)
-    return ids
+    return impl(rule)
 
 
 def has_literal(rule: Rule, literals: frozenset[str]) -> bool:
     """Return True if *rule* contains any of the given literal values."""
-    found = False
+    from angr_rule_learning.rules.ast_transform import has_literal as impl
 
-    def _walk(op):
-        nonlocal found
-        if isinstance(op, LitOp) and op.value in literals:
-            found = True
-
-    _walk_rule(rule, _walk)
-    return found
+    return impl(rule, literals)
 
 
 def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
@@ -629,76 +500,9 @@ def substitute_imm(rule: Rule, imm_id: int, value: str) -> Rule:
     nested inside derived ``${...}`` expressions.
     """
 
-    def _literal_expr() -> ImmExpr:
-        try:
-            return IntExpr(int(value, 0))
-        except ValueError:
-            return RawImmExpr(value)
+    from angr_rule_learning.rules.ast_transform import substitute_imm as impl
 
-    def _sub_expr(expr: ImmExpr) -> ImmExpr:
-        if isinstance(expr, ImmRefExpr):
-            return _literal_expr() if expr.id == imm_id else expr
-        if isinstance(expr, ShiftLeftExpr):
-            return ShiftLeftExpr(_sub_expr(expr.left), _sub_expr(expr.right))
-        if isinstance(expr, BitOrExpr):
-            return BitOrExpr(_sub_expr(expr.left), _sub_expr(expr.right))
-        if isinstance(expr, NegExpr):
-            return NegExpr(_sub_expr(expr.value))
-        if isinstance(expr, Log2Expr):
-            return Log2Expr(_sub_expr(expr.value))
-        if isinstance(expr, RawImmExpr):
-            text = re.sub(rf"\bimm{imm_id}\b", value, expr.text)
-            return RawImmExpr(text)
-        return expr
-
-    def _sub(op: Operand) -> Operand:
-        if isinstance(op, ImmOp):
-            if op.id == imm_id:
-                prefix = "#" if op.aarch64_hash else ""
-                literal = value
-                if op.neg:
-                    try:
-                        literal = str(-int(value, 0))
-                    except ValueError:
-                        literal = value[1:] if value.startswith("-") else f"-{value}"
-                return LitOp(value=f"{prefix}{literal}")
-            if op.derived is not None:
-                return ImmOp(
-                    id=op.id,
-                    derived=_sub_expr(op.derived),
-                    aarch64_hash=op.aarch64_hash,
-                    neg=op.neg,
-                )
-            return op
-        if isinstance(op, LitOp):
-            text = op.value
-            text = re.sub(rf"#imm{imm_id}\b", f"#{value}", text)
-            text = re.sub(rf"(?<!\$)imm{imm_id}\b", value, text)
-            return LitOp(value=text)
-        return op
-
-    def _sub_meta(meta: MetaOp) -> MetaOp:
-        return MetaOp(meta.kind, tuple(map_operand(op, _sub) for op in meta.regs))
-
-    def _sub_inst(inst: Instruction) -> Instruction:
-        return Instruction(
-            mnemonic=inst.mnemonic,
-            operands=tuple(map_operand(op, _sub) for op in inst.operands),
-            meta=tuple(_sub_meta(meta) for meta in inst.meta),
-            post_meta=tuple(_sub_meta(meta) for meta in inst.post_meta),
-        )
-
-    return Rule(
-        rule_id=rule.rule_id,
-        candidate_id=rule.candidate_id,
-        guest=tuple(_sub_inst(i) for i in rule.guest),
-        host=tuple(_sub_inst(i) for i in rule.host),
-    )
-
-
-def _walk_rule(rule: Rule, visitor):
-    for operand in iter_instruction_operands(rule.guest + rule.host):
-        visitor(operand)
+    return impl(rule, imm_id, value)
 
 
 # ── Placeholder parsing and collection ─────────────────────────────────
@@ -713,46 +517,9 @@ def parse_placeholder(
     ``i32_tmp1``, ``i64_tmp1`` → TmpOp, and
     ``reg64(i32_reg1)`` → RegViewOp.
     """
-    m = re.fullmatch(r"rw\((.*)\)", placeholder)
-    if m:
-        parsed = Instruction._parse_operand(placeholder)
-        if isinstance(parsed, ReadWriteOp):
-            return parsed
-        raise ValueError(f"invalid read/write placeholder: {placeholder!r}")
-    m = re.fullmatch(r"reg(\d+)\((.+)\)", placeholder)
-    if m:
-        view_bits = int(m.group(1))
-        inner = m.group(2)
-        base = parse_placeholder(inner)  # recursively parse inner
-        if isinstance(base, (RegOp, TmpOp)):
-            return RegViewOp(base=base, view_bits=view_bits)
-        raise ValueError(f"invalid register view base: {placeholder!r}")
-    m = re.fullmatch(r"(zext|sext)(\d+)\((.+)\)", placeholder)
-    if m:
-        value = Instruction._parse_operand(m.group(3))
-        return ExtOp(kind=m.group(1), bits=int(m.group(2)), value=value)
-    m = re.fullmatch(r"lo(\d+)\((.+)\)", placeholder)
-    if m:
-        base = Instruction._parse_operand(m.group(2))
-        return BitSliceOp(base=base, bits=int(m.group(1)))
-    m = re.fullmatch(r"(ptr\d+)_reg(\d+)", placeholder)
-    if m:
-        prefix = m.group(1)
-        bits = int(prefix[3:])
-        return RegOp(prefix=prefix, bits=bits, id=int(m.group(2)))
-    m = re.fullmatch(r"(i\d+)_reg(\d+)", placeholder)
-    if m:
-        bits = int(m.group(1)[1:])
-        return RegOp(prefix=m.group(1), bits=bits, id=int(m.group(2)))
-    m = re.fullmatch(r"(sp|fp)(\d+)", placeholder)
-    if m:
-        return RegOp(prefix=m.group(1), bits=int(m.group(2)), id=0)
-    m = re.fullmatch(r"(i\d+|f\d+|v\d+)_tmp(\d+)", placeholder)
-    if m:
-        prefix = m.group(1)
-        bits = int(prefix[1:])
-        return TmpOp(prefix=prefix, bits=bits, id=int(m.group(2)))
-    raise ValueError(f"unknown placeholder format: {placeholder!r}")
+    from angr_rule_learning.rules.ast_parser import parse_placeholder as impl
+
+    return impl(placeholder)
 
 
 def collect_instruction_imm_ids(insts: tuple[Instruction, ...]) -> set[str]:

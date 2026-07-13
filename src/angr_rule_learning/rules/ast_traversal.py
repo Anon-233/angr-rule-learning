@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from angr_rule_learning.rules.ast import Instruction, Operand
 
 
-def operand_children(op):
+def operand_children(op: Operand) -> tuple[Operand, ...]:
     from angr_rule_learning.rules.ast import (
         BitSliceOp,
         ExtOp,
@@ -38,13 +42,13 @@ def operand_children(op):
     return ()
 
 
-def iter_operand_tree(op) -> Iterator:
+def iter_operand_tree(op: Operand) -> Iterator[Operand]:
     yield op
     for child in operand_children(op):
         yield from iter_operand_tree(child)
 
 
-def map_operand(op, transform: Callable):
+def map_operand(op: Operand, transform: Callable[[Operand], Operand]) -> Operand:
     from angr_rule_learning.addressing import AddressExpr
     from angr_rule_learning.rules.ast import (
         BitSliceOp,
@@ -61,7 +65,7 @@ def map_operand(op, transform: Callable):
         base = map_operand(op.base, transform)
         if not isinstance(base, (RegOp, TmpOp)):
             raise ValueError("register view transform produced invalid base")
-        rebuilt = RegViewOp(base=base, view_bits=op.view_bits, mode=op.mode)
+        rebuilt = RegViewOp(base=base, view_bits=op.view_bits)
     elif isinstance(op, BitSliceOp):
         rebuilt = BitSliceOp(base=map_operand(op.base, transform), bits=op.bits)
     elif isinstance(op, ExtOp):
@@ -79,7 +83,7 @@ def map_operand(op, transform: Callable):
     elif isinstance(op, MemoryOperand):
         address = op.address
 
-        def mapped(child):
+        def mapped(child: Operand | None) -> Operand | None:
             return map_operand(child, transform) if child is not None else None
 
         rebuilt = MemoryOperand(
@@ -98,7 +102,9 @@ def map_operand(op, transform: Callable):
     return transform(rebuilt)
 
 
-def iter_instruction_operands(instructions) -> Iterator:
+def iter_instruction_operands(
+    instructions: tuple[Instruction, ...],
+) -> Iterator[Operand]:
     for instruction in instructions:
         for operand in instruction.operands:
             yield from iter_operand_tree(operand)

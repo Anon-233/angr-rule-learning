@@ -3,6 +3,7 @@ import pytest
 from angr_rule_learning.rules.ast import (
     AddressExpr,
     BitOrExpr,
+    ExtOp,
     ImmOp,
     ImmRefExpr,
     Instruction,
@@ -11,6 +12,7 @@ from angr_rule_learning.rules.ast import (
     MetaOp,
     NegExpr,
     RegOp,
+    RegViewOp,
     ReadWriteOp,
     ShiftLeftExpr,
     collect_instruction_imm_ids,
@@ -21,6 +23,43 @@ from angr_rule_learning.rules.ast import (
     rule_alpha_equal,
     substitute_imm,
 )
+
+
+def test_all_supported_view_and_extension_nodes_round_trip() -> None:
+    operands = (
+        RegViewOp(RegOp("i32", 32, 1), 64),
+        ExtOp("zext", 64, RegOp("i32", 32, 1)),
+        ExtOp("sext", 64, RegOp("i32", 32, 1)),
+    )
+
+    for operand in operands:
+        parsed = Instruction.from_text(f"mov {operand.to_text()}").operands[0]
+        assert parsed == operand
+
+
+def test_ast_rejects_unsupported_extension_and_invalid_widths() -> None:
+    with pytest.raises(ValueError, match="unsupported extension kind"):
+        ExtOp("invalid", 64, RegOp("i32", 32, 1))
+    with pytest.raises(ValueError, match="view width must be positive"):
+        RegViewOp(RegOp("i32", 32, 1), 0)
+
+
+def test_unknown_derived_immediate_is_not_silently_opaque() -> None:
+    with pytest.raises(ValueError, match="unsupported immediate expression"):
+        Instruction.from_text("mov i32_reg1, ${imm1 + imm2}")
+
+
+def test_parser_rejects_empty_instruction_and_unbalanced_operands() -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        Instruction.from_text("")
+    with pytest.raises(ValueError, match="unbalanced operand delimiters"):
+        Instruction.from_text("mov i32_reg1, [ptr64_reg2")
+
+
+def test_arch_without_memory_adapter_still_parses_non_memory_rule() -> None:
+    instruction = Instruction.from_text("add i32_reg1, i32_reg2", arch="arm")
+
+    assert instruction.to_text() == "add i32_reg1, i32_reg2"
 
 
 def test_derived_immediate_is_structured_expression() -> None:
@@ -42,7 +81,7 @@ def test_x86_memory_operand_has_structured_address() -> None:
     mem = inst.operands[1]
 
     assert isinstance(mem, MemoryOperand)
-    assert mem.syntax == "x86"
+    assert mem.syntax == "x86-64"
     assert mem.value_bits == 32
     assert isinstance(mem.address, AddressExpr)
     assert mem.address.base == RegOp("ptr64", 64, 2)
@@ -63,7 +102,7 @@ def test_x86_index_only_address_is_structured() -> None:
     mem = inst.operands[1]
 
     assert isinstance(mem, MemoryOperand)
-    assert mem.syntax == "x86"
+    assert mem.syntax == "x86-64"
     assert mem.address.base is None
     assert mem.address.index is not None
     assert mem.address.index.to_text() == "reg64(i32_reg2)"
@@ -100,7 +139,7 @@ def test_memory_operand_rejects_syntax_incompatible_address() -> None:
         shift=LitOp("#2"),
     )
     with pytest.raises(ValueError, match="x86 memory operand cannot use shift"):
-        MemoryOperand(address=shifted, syntax="x86")
+        MemoryOperand(address=shifted, syntax="x86-64")
 
     scaled = AddressExpr(
         base=RegOp("ptr64", 64, 1),
@@ -258,7 +297,7 @@ def test_negative_derived_displacement_preserves_sign() -> None:
 
 
 def test_negative_flag_normalizes_into_derived_expression() -> None:
-    immediate = ImmOp(id=2, derived="${(1 << imm1)}", neg=True)
+    immediate = ImmOp(id=0, derived="${(1 << imm1)}", neg=True)
 
     assert isinstance(immediate.derived, NegExpr)
     assert immediate.neg is False
