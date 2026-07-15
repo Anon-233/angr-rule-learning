@@ -15,7 +15,11 @@ seeds should all feed the same candidate and report boundary.
 
 Implemented:
 
-- builtin scalar integer IR kernels for `add`, `sub`, `and`, `or`, and `xor`;
+- typed scalar `KernelSchema` values with SSA validation and LLVM
+  materialization;
+- a declarative kernel catalog covering scalar arithmetic, constants, shifts,
+  division/remainder, and selected multi-operation DAGs at `i32` and `i64`;
+- constructive load/store kernels for base, indexed, and displaced addresses;
 - clang-based LLVM IR compilation for Guest and Host targets;
 - object extraction and conservative snippet filtering;
 - ABI-based scalar register binding for AArch64 and x86-64;
@@ -23,16 +27,14 @@ Implemented:
 - text rule generation with typed placeholders;
 - JSON/JSONL verifier utility input and report output;
 - architecture capability modules for register families, fixed-role registers,
-  flags, and memory operand recognition;
-- legacy source/DWARF extraction modules retained for reference and reuse.
+  flags, and memory operand recognition.
 
 Not implemented yet:
 
-- memory and branch IR kernels in the constructive pipeline;
-- variable-shift kernels with explicit LLVM shift-domain constraints;
+- branch IR kernels in the constructive pipeline;
+- automatic bounded-DAG enumeration and feedback-driven corpus expansion;
 - rule store and coverage evaluation against a reference rule table;
-- replacement of the current heuristic immediate derivation module;
-- large or feedback-driven kernel corpus synthesis.
+- replacement of the current heuristic immediate derivation module.
 
 ## Quick Start
 
@@ -107,12 +109,12 @@ uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl \
 ```text
 src/angr_rule_learning/
   arch/          architecture identities and per-ISA semantic recognizers
-  kernel/        IR-kernel synthesis, compilation, extraction, binding, pipeline
+  kernel/        IR-kernel schemas, catalog, compilation, binding, pipeline
   verification/  verifier models, execution, checks, reports, and batching
   rules/         register classification, rule generalization, text formatting
   io/            JSON/JSONL readers, writers, and schema conversion
   smt/           shared bit-vector width utilities
-  extraction/    legacy source/debug-info mining modules retained for reference
+  extraction/    source/debug-info mining and candidate extraction utilities
 tests/           pytest coverage for kernel learning, verifier, rules, and CLI
 examples/        small candidate batches for verifier smoke testing
 docs/            architecture and format documentation

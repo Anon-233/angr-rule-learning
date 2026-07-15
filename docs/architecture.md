@@ -26,7 +26,9 @@ The kernel package (`src/angr_rule_learning/kernel/`) implements the first
 four stages for the current MVP:
 
 ```text
-HardcodedKernelSynthesizer
+KernelGenerator
+  -> scalar KernelSchema catalog + specialized kernels
+  -> LLVM materialization
   -> KernelCompiler (clang -x ir)
   -> SnippetExtractor (ObjectExtractor + conservative filtering)
   -> KernelBindingBuilder (scalar ABI register binding)
@@ -48,6 +50,18 @@ and `x86-64`, and the same code path supports the reverse direction.
 The CLI still accepts candidate JSON/JSONL through `verify` so verifier work
 can proceed independently of the constructive learner.
 
+Scalar arithmetic kernels are declared as typed, straight-line SSA graphs in
+`kernel.catalog`. `KernelSchema` validates definition order, operand widths,
+the returned value, and dead instruction results before `materialize_kernel()`
+renders LLVM IR. Width-dependent constants such as shift masks are values in
+the catalog rather than branches spread across individual kernel builders.
+
+The first schema implementation intentionally covers same-type integer binary
+instructions and connected multi-instruction DAGs. Memory, compare/select, and
+probe kernels still use specialized builders until their distinct type and
+effect semantics are represented explicitly. `IRKernel` remains the common
+input consumed by compilation and every later pipeline stage.
+
 ## Package Structure
 
 ```text
@@ -67,6 +81,8 @@ src/angr_rule_learning/
       memory.py
       rule_memory.py
   kernel/
+    schema.py
+    catalog.py
     models.py
     synthesize.py
     compile.py
@@ -142,10 +158,11 @@ The package boundaries are:
   receive an architecture explicitly and contain no guest/host policy.
 - `io`: converts strict JSON dictionaries into typed verifier models and writes
   report/summary JSON.
-- `kernel`: owns the constructive learning route. It defines IR-kernel models,
-  synthesizes the builtin scalar corpus, compiles LLVM IR through clang,
-  extracts snippets from target objects, builds ABI-based verifier candidates,
-  invokes verification, and emits generalized rules and diagnostics.
+- `kernel`: owns the constructive learning route. It validates typed scalar
+  schemas, instantiates the declarative catalog, materializes LLVM IR, compiles
+  it through clang, extracts target snippets, builds ABI-based verifier
+  candidates, invokes verification, and emits generalized rules and
+  diagnostics.
 - `smt`: holds shared bit-vector width helpers used by relation checks.
 - `verification`: owns the verifier data model, execution setup, semantic
   checks, report model, and batch API.
