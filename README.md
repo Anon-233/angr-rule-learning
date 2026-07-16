@@ -15,7 +15,8 @@ seeds should all feed the same candidate and report boundary.
 
 Implemented:
 
-- typed scalar `KernelSchema` values with SSA validation and LLVM
+- typed `KernelSchema` operations for scalar arithmetic, comparisons, casts,
+  selects, loads, and stores, with SSA/effect validation and LLVM
   materialization;
 - a declarative kernel catalog covering scalar arithmetic, constants, shifts,
   division/remainder, and selected multi-operation DAGs at `i32` and `i64`;
@@ -95,6 +96,8 @@ uv run angr-rule-learning verify examples/aarch64_x86_64_batch.jsonl \
 
 - [Architecture](docs/architecture.md): current package structure, data flow,
   and extension points.
+- [Kernel Schema](docs/kernel-schema.md): typed operations, validation,
+  memory/address semantics, and materialization boundary.
 - [Verifier](docs/verifier.md): semantic verifier behavior, SMT checks, memory
   model, branch scope, and known coverage limits.
 - [Candidate Format](docs/candidate-format.md): input candidate JSON, report

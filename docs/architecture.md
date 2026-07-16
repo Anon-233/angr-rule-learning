@@ -27,7 +27,7 @@ four stages for the current MVP:
 
 ```text
 KernelGenerator
-  -> scalar KernelSchema catalog + specialized kernels
+  -> typed KernelSchema catalog
   -> LLVM materialization
   -> KernelCompiler (clang -x ir)
   -> SnippetExtractor (ObjectExtractor + conservative filtering)
@@ -50,17 +50,20 @@ and `x86-64`, and the same code path supports the reverse direction.
 The CLI still accepts candidate JSON/JSONL through `verify` so verifier work
 can proceed independently of the constructive learner.
 
-Scalar arithmetic kernels are declared as typed, straight-line SSA graphs in
-`kernel.catalog`. `KernelSchema` validates definition order, operand widths,
-the returned value, and dead instruction results before `materialize_kernel()`
-renders LLVM IR. Width-dependent constants such as shift masks are values in
-the catalog rather than branches spread across individual kernel builders.
+Builtin kernels are declared as typed, straight-line SSA/effect graphs.
+`KernelSchema` represents integer binary operations, `icmp`, integer casts,
+`select`, and memory load/store operations. It validates definition order,
+operand and result types, cast direction, condition widths, returned values,
+dead results, unused inputs, memory-object references, and address widths
+before `materialize_kernel()` renders LLVM IR.
 
-The first schema implementation intentionally covers same-type integer binary
-instructions and connected multi-instruction DAGs. Memory, compare/select, and
-probe kernels still use specialized builders until their distinct type and
-effect semantics are represented explicitly. `IRKernel` remains the common
-input consumed by compilation and every later pipeline stage.
+Memory schema nodes use `KernelAddressSpec` directly. Materialization derives
+both the LLVM `getelementptr`/load/store sequence and the corresponding
+`IRKernel.memory_accesses`, so executable IR and verifier memory declarations
+do not maintain separate address descriptions. Store operations are effect
+roots, allowing a void kernel to keep all producers of the stored value live.
+`IRKernel` remains the common input consumed by compilation and every later
+pipeline stage.
 
 ## Package Structure
 

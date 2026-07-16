@@ -12,6 +12,7 @@ from angr_rule_learning.verification.report import VerificationReport
 
 
 _INTEGER_TYPES = {
+    "i1": 1,
     "i8": 8,
     "i16": 16,
     "i32": 32,

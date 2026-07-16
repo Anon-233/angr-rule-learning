@@ -99,6 +99,19 @@ def test_stable_division_kernels_use_constant_denominators() -> None:
     assert "srem i64 %a, 3" in divrem["kernel_srem_i64"].llvm_ir
 
 
+def test_multi_access_probe_derives_store_value_from_schema() -> None:
+    kernel = next(
+        kernel
+        for kernel in KernelGenerator().generate("probe")
+        if kernel.id == "probe_load_store_i32"
+    )
+
+    assert [access.kind for access in kernel.memory_accesses] == ["load", "store"]
+    assert kernel.memory_accesses[0].result == "old"
+    assert kernel.memory_accesses[1].value == "r"
+    assert "store i32 %r, ptr %p" in kernel.llvm_ir
+
+
 def test_kernel_generator_defaults_to_stable_suite() -> None:
     kernels = KernelGenerator().generate()
 
